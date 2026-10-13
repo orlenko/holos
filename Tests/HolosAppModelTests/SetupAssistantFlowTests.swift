@@ -230,6 +230,20 @@ private func state(_ items: [SetupAssistantItem], _ kind: SetupAssistantItem.Kin
     #expect(SetupAssistantFlow().enable(facts) == .alreadyOn)
 }
 
+@Test func aRecoveredInstalledModelWaitsForAnOlderInstallationToEnd() {
+    var facts = granted
+    facts.speechModel = "downloading"
+    facts.installingSpeechModel = true
+    let flow = SetupAssistantFlow()
+    #expect(flow.enable(facts) == .afterSpeechModelInstall)
+    facts.speechModel = "installed"  // the recovered selection's model is already present
+    #expect(flow.enable(facts) == .afterSpeechModelInstall)
+    facts.installingSpeechModel = false
+    #expect(flow.enable(facts) == .now)
+    facts.speechModel = "supported"
+    #expect(flow.enable(facts) == .afterSpeechModelInstall)
+}
+
 @Test func requiredInputMonitoringIsAnEnablePrerequisite() {
     var facts = granted
     facts.speechModel = "installed"

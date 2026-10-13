@@ -28,7 +28,8 @@ launches, and **Skip — Show All Settings**, open the main window on **Settings
 (**Settings…** ⌘, in the menu). Use its Permissions card to grant Microphone and
 Accessibility access explicitly (Input Monitoring is not needed; its row appears only if
 macOS refuses the hold-to-talk key with Accessibility on); in the Dictation card pick the
-**Dictation language** (English (Canada) by default) and the hold-to-talk shortcut, and
+**Dictation language** (English (Canada) by default; Russian, Ukrainian and the other
+languages only Apple's dictation recognizer has are listed too) and the hold-to-talk shortcut, and
 install Apple's speech model for the language; each row updates live, and its button
 opens the matching System Settings pane. A new language applies from the next dictation;
 when its model is missing, dictation turns off until it is installed. The asset action
@@ -437,6 +438,9 @@ behavior, and permission owner for each row.
 | Unwritable target after a streamed prefix | The clipboard is unchanged; Copy Result holds only the unwritten tail, with its leading space, so pasting it after the prefix gives correctly spaced text. |
 | Silent hold past the screensaver delay | Set the screensaver to start after 1 minute. Hold the shortcut, say a few words, stay silent and still for 2 minutes, then speak and release. The screensaver does not start, the field keeps focus, and the last words land. After release, the screensaver starts again on its usual delay. |
 | Sleep/lock and wake | Capture stops; shortcut stays paused until manually re-enabled. |
+| Pick Russian (Russia) as the dictation language, then dictate a sentence into TextEdit | The picker lists it among the other languages; Settings checks (and, if missing, installs) its speech model; dictation turns on, the preview shows Cyrillic words while you speak, and the sentence lands in the field. The meeting start panel does not list Russian. |
+| Pick Ukrainian (Ukraine), then dictate a sentence into TextEdit | The same as Russian: its model is checked, the preview shows the words, and the sentence lands. Pick English again: the next dictation is in English. |
+| Run Again on a Russian or Ukrainian dictation with that language chosen | The saved audio is recognized again in that language and the comparison shows it; Apple Intelligence's fix reports "not yet tried". |
 
 Also test the clipboard: after text Voice is Local could not write, the clipboard should
 still hold whatever was there before; **Copy Result** should then copy the retained

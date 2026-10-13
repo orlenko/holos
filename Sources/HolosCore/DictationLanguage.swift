@@ -1,7 +1,8 @@
 import Foundation
 
-/// The language dictation listens for: a locale identifier Apple's speech transcriber supports, chosen in Setup.
-/// Meetings use the same identifiers, list, and default (their own choice is made in the meeting start panel).
+/// The language dictation listens for: a locale identifier one of Apple's recognizers supports
+/// (`RecognizerLocales`), chosen in Setup. Meetings use the same identifiers, the `SpeechTranscriber` part of the list,
+/// and a default of their own (`RecognizerLocales.meetingLanguage`; their choice is made in the meeting start panel).
 public enum DictationLanguage {
     /// The last resort: when none of the user's languages is supported, or the supported list is not known yet.
     public static let standard = "en-CA"
@@ -33,20 +34,20 @@ public enum DictationLanguage {
                   region: Locale.current.region?.identifier)
     }
 
-    /// The dictation language: the saved choice, else the default (`preferred`). Nil while the default is not known
-    /// yet (`supported` nil: the supported languages have not loaded), so an action that uses the language (an
-    /// install, a meeting start) waits instead of taking `standard` for a user whose language is another. An empty
-    /// `supported` (the list could not be loaded) gives `standard`.
-    public static func resolved(saved: String?, supported: [String]?, preferredLanguages: [String],
+    /// The dictation language: the saved choice, else the default (`RecognizerLocales.preferredDictation`). Nil while
+    /// the default is not known yet (`recognizers` nil: the supported languages have not loaded), so an action that
+    /// uses the language (an install, a meeting start) waits instead of taking `standard` for a user whose language
+    /// is another. Empty lists (they could not be loaded) give `standard`.
+    public static func resolved(saved: String?, recognizers: RecognizerLocales?, preferredLanguages: [String],
                                 region: String? = nil) -> String? {
         if let saved, !saved.isEmpty { return saved }
-        guard let supported else { return nil }
-        return preferred(supported: supported, preferredLanguages: preferredLanguages, region: region)
+        guard let recognizers else { return nil }
+        return recognizers.preferredDictation(preferredLanguages: preferredLanguages, region: region)
     }
 
     /// `resolved` for this Mac: the user's preferred languages and region.
-    public static func resolvedForSystem(saved: String?, supported: [String]?) -> String? {
-        resolved(saved: saved, supported: supported, preferredLanguages: Locale.preferredLanguages,
+    public static func resolvedForSystem(saved: String?, recognizers: RecognizerLocales?) -> String? {
+        resolved(saved: saved, recognizers: recognizers, preferredLanguages: Locale.preferredLanguages,
                  region: Locale.current.region?.identifier)
     }
 

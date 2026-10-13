@@ -132,6 +132,11 @@ public struct SetupAssistantItem: Equatable, Sendable {
 /// enabled, whether the app must reopen, what a launch shows, and what the Finish page and the check after reopening
 /// list. The progress lives in memory: closing the window keeps it for this run, and the next launch starts again at
 /// Welcome while `setupAssistantDone` is not true.
+///
+/// Invariants:
+/// 1. `step` changes only through page-navigation methods.
+/// 2. Each recorded permission request stays recorded for the lifetime of the flow.
+/// 3. An active model installation defers enabling even when the selected language's model reports installed.
 public struct SetupAssistantFlow: Equatable, Sendable {
     /// UserDefaults key: absent before the assistant ever ran, false once it started, true once finished or skipped.
     public static let doneKey = "setupAssistantDone"
@@ -293,7 +298,9 @@ public struct SetupAssistantFlow: Equatable, Sendable {
         let inputMonitoringMissing = facts.inputMonitoringNeeded && !facts.inputMonitoring
         if inputMonitoringMissing && !requestedInputMonitoring { return .notPossible }
         switch facts.speechModel {
-        case "installed": return inputMonitoringMissing ? .afterReopen : .now
+        case "installed":
+            if facts.installingSpeechModel { return .afterSpeechModelInstall }  // invariant 3
+            return inputMonitoringMissing ? .afterReopen : .now
         case "unsupported": return .notPossible
         // Downloading, not installed yet, or still being checked. With Input Monitoring pending, the install resumes
         // after the reopen, so enabling follows it there.

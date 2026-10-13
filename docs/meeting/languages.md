@@ -14,12 +14,14 @@ English+French mix or other multilingual environments) can be transcribed correc
 through post-processing. It's ok if post-processing takes a while, we don't care about
 instantaneous meeting feedback. The dictation stays monolingual."
 
-**Phase 1 (LANG1, PR #43).** The start panel's Language pop-up (the dictation languages,
+**Phase 1 (LANG1, PR #43).** The start panel's Language pop-up (the `SpeechTranscriber` languages,
 `DictationLanguage.groups`) sets the meeting language; UserDefaults `meetingLocales` keeps
 a list, the first used; `MeetingStartSettings.locales`; the recorder gets
 `--locale=<first>`; the manifest records one `locale`. Settings without a language (never
 from the start panel, which keeps Start off until it has one) record in the recorder's
 default, `AppleSpeechEngine.defaultLocale`, in process and as a child alike (docs/meeting/recorder.md §4.1).
+The start panel treats a failed or timed-out asset check as unknown and keeps Install available
+for another attempt; only a returned unsupported status says the language cannot be transcribed.
 
 **Phase 2 (LANG2).** A meeting may name up to three languages (`DictationLanguage.
 maximumMeetingLanguages`), each a different language (`sameLanguage`: language and script;

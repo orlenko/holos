@@ -34,8 +34,8 @@ struct Doctor: AsyncParsableCommand {
             foundationModel: String(describing: model.availability),
             contextSize: model.isAvailable ? model.contextSize : nil,
             voiceCount: NativeSpeechRenderer.voices().count, speech: speech, dictation: dictation, locale: locale,
-            speechAssetStatus: (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .speech)) ?? "unsupported",
-            dictationAssetStatus: (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .dictation)) ?? "unsupported",
+            speechAssetStatus: await AppleSpeechEngine.assetStatusOrUnknown(locale: locale, backend: .speech),
+            dictationAssetStatus: await AppleSpeechEngine.assetStatusOrUnknown(locale: locale, backend: .dictation),
             sessionsDirectory: HolosPaths.sessions.path,
             speakerModels: speakerModels.doctorValue, deepTranscriptionModel: whisperModel,
             naturalVoices: Dictionary(uniqueKeysWithValues: NaturalVoicePack.allCases.map {
@@ -60,7 +60,14 @@ struct Doctor: AsyncParsableCommand {
         for pack in NaturalVoicePack.allCases {
             Console.output("Natural voices (\(pack.languageName)): \(report.naturalVoices?[pack.rawValue]?.summary ?? "unknown")")
         }
-        Console.output("Install transcription assets with: voiceislocal setup --locale \(locale)")
+        let recognizers = RecognizerLocales(speech: speech.supportedLocales, dictation: dictation.supportedLocales)
+        if let backend = recognizers.knownBackend(for: locale) {
+            Console.output("Install transcription assets with: voiceislocal setup --locale \(locale)"
+                + (backend == .dictation ? " --backend dictation" : ""))
+        } else {
+            Console.output(recognizers.isComplete ? "No Apple recognizer supports \(locale)."
+                : "Language lists are incomplete; retry doctor for an installation command.")
+        }
         if speakerModels != .verified { Console.output("Install speaker models with: voiceislocal setup --speakers") }
         if whisperModel == .notInstalled {
             Console.output("Install the deep transcription model with: voiceislocal setup --whisper (about 1.6 GB)")

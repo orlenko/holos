@@ -3,6 +3,7 @@ import Foundation
 import HolosCore
 import HolosDictation
 import HolosMeeting
+import HolosSpeech
 import HolosStorage
 
 /// `voiceislocal history`: the dictation history the app keeps on this Mac (docs/design.md "Dictation history").
@@ -140,9 +141,12 @@ struct History: ParsableCommand {
             } catch {
                 throw HolosError.invalidInput("Could not read words.json: \(error.localizedDescription)")
             }
-            var chosen = language ?? preferences.language
-            if chosen == nil { chosen = await RecognitionOptions.defaultLocale(backend: .speech) }
-            let locale = chosen ?? DictationLanguage.standard
+            let recognizers = await AppleSpeechEngine.recognizerLocales()
+            try Task.checkCancellation()
+            let chosen = language ?? preferences.language
+            // The app's default dictation language, over both recognizers (`RecognizerLocales.preferredDictation`).
+            let locale = chosen ?? recognizers.preferredDictationForSystem()
+            let backend = recognizers.backend(for: locale)  // one snapshot for the whole invocation
             let names = await PeopleNames().refreshed()
             let (pipeline, note) = DictationRerun.pipeline(language: locale, removeFillers: preferences.removeFillers,
                                                            corrections: corrections, wordList: wordList.terms,
@@ -153,7 +157,7 @@ struct History: ParsableCommand {
                                                            backticks: preferences.spokenCodeBackticks)
             if all {
                 try await runAll(records, store: store, pipeline: pipeline, note: note,
-                                 aiFix: preferences.aiFix && !noAIFix)
+                                 aiFix: preferences.aiFix && !noAIFix, backend: backend)
                 return
             }
             let record = try HistoryLookup.find(dictation ?? "latest", in: records)
@@ -164,7 +168,7 @@ struct History: ParsableCommand {
                     : "The audio of this dictation is no longer on this Mac.")
             }
             let report = try await DictationRerun.run(record, audio: store.audioURL(for: record.id),
-                                                      pipeline: pipeline, aiNote: note)
+                                                      pipeline: pipeline, aiNote: note, backend: backend)
             if json {
                 try Console.json(report)
             } else {
@@ -173,11 +177,12 @@ struct History: ParsableCommand {
         }
 
         private func runAll(_ records: [DictationRecord], store: DictationHistoryStore, pipeline: DictationTextPipeline,
-                            note: String?, aiFix: Bool) async throws {
+                            note: String?, aiFix: Bool, backend: SpeechBackend) async throws {
             let cutoff = since.flatMap(HistorySince.interval).map { Date().addingTimeInterval(-$0) }
             let chosen = records.reversed().filter { record in cutoff.map { record.date >= $0 } ?? true }
             var items: [DictationRerunBatch.Item] = []
             for record in chosen {
+                try Task.checkCancellation()
                 let url = store.audioURL(for: record.id)
                 guard record.audio != nil, FileManager.default.isReadableFile(atPath: url.path) else {
                     items.append(.init(record: record, skipped: record.audio == nil ? "no audio kept"
@@ -185,9 +190,11 @@ struct History: ParsableCommand {
                     continue
                 }
                 do {
-                    let report = try await DictationRerun.run(record, audio: url, pipeline: pipeline, aiNote: note)
+                    let report = try await DictationRerun.run(record, audio: url, pipeline: pipeline, aiNote: note,
+                                                            backend: backend)
                     items.append(.init(report: report))
                 } catch {
+                    try Task.checkCancellation()
                     items.append(.init(record: record, error: error.localizedDescription))
                 }
                 if !json { Console.error("Ran \(items.count) of \(chosen.count)…") }

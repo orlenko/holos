@@ -62,6 +62,9 @@ extension HolosAppDelegate {
         guard let url = historyAudioURL(record) else {
             throw HolosError.unavailable("The audio of this dictation is no longer on this Mac.")
         }
+        await loadLanguages()
+        try Task.checkCancellation()
+        let locale = locale, backend = dictationBackend
         refreshWordList()
         let (pipeline, note) = DictationRerun.pipeline(language: locale, removeFillers: removeFillers,
                                                        corrections: corrections, wordList: wordList.terms,
@@ -70,7 +73,7 @@ extension HolosAppDelegate {
                                                        aiFix: AIFixSetting.isOn,
                                                        spokenCode: SpokenCodeSetting.isOn,
                                                        backticks: SpokenCodeSetting.backticks)
-        return try await DictationRerun.run(record, audio: url, pipeline: pipeline, aiNote: note)
+        return try await DictationRerun.run(record, audio: url, pipeline: pipeline, aiNote: note, backend: backend)
     }
 
     /// Settings › Keep the audio of dictations. Turning it off stops keeping new audio and offers to delete the audio

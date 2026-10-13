@@ -4,8 +4,12 @@ The adapter over Apple's on-device speech recognition (`SpeechAnalyzer` with `Sp
 `DictationTranscriber`).
 
 **Owns**
-- `AppleSpeechEngine`: locale capabilities, the default language (`defaultLocale`: the supported one closest to the
-  user's), asset status, installing assets, transcribing a file
+- `AppleSpeechEngine`: locale capabilities, both recognizers' languages (`recognizerLocales`, from which dictation
+  picks its recognizer), a backend's default language (`defaultLocale`: the supported one closest to the user's),
+  a process-wide `RecognizerLocaleCache` that retains known languages across temporarily empty responses,
+  supported-language queries bounded to five seconds per backend (a timeout is a retryable empty response),
+  asset checks bounded to fifteen seconds and installs bounded to fifteen minutes,
+  asset status, installing assets, transcribing a file
   (`transcribe(file:…)`, used by `voiceislocal transcribe`), and building a module for a locale and
   `SpeechBackend` (`.speech` or `.dictation`).
 - `AppleSpeechSession` (actor): one recognition session. `make(locale:backend:contextualStrings:accurate:onUpdate:)`

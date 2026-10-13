@@ -5,8 +5,9 @@ wiring between them and the library controllers (docs/design.md "Main window").
 
 **Owns**
 - `HolosApp.swift`: `HolosAppMain` (`@main`; `--check` prints a permission report) and `HolosAppDelegate`, the menu
-  bar item and menu, plus 12 `HolosApp+<Area>.swift` extensions (Meeting, DeepTranscription, MeetingSummary,
-  EchoCatchUp, BackgroundJobs, MainWindow, History, People, WordList, Reading, SetupAssistant, MeetingLanguage) with
+  bar item and menu, plus 13 `HolosApp+<Area>.swift` extensions (Meeting, DeepTranscription, MeetingSummary,
+  EchoCatchUp, BackgroundJobs, MainWindow, History, People, WordList, Reading, SetupAssistant, MeetingLanguage,
+  DictationLanguage: the dictation languages and the recognizer each needs) with
   their state holders (`MeetingAppState`, `DeepTranscriptionAppState`, …). `+BackgroundJobs` wires `HolosMeeting`'s
   `BackgroundJobCoordinator`, which runs final transcripts, echo analyses and summaries.
 - `MainWindow/`: `MainWindowController` (sidebar window) and the panes (History, Meetings, People, Corrections,

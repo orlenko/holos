@@ -488,7 +488,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             // No languages yet while the default one is not known: the panel keeps Start off until they arrive.
             locales: meetingLocales ?? [],
             consentDismissed: UserDefaults.standard.bool(forKey: MeetingAppState.consentKey))
-        if localeGroups.isEmpty { Task { await loadLanguages() } }
+        if meetingLocaleGroups.isEmpty { Task { await loadLanguages() } }
         if meeting.speakerModels != "verified" { refreshSpeakerModels() }
     }
 

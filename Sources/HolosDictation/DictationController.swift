@@ -95,7 +95,8 @@ struct DictationDependencies {
 /// 2. Only startup (preparing) and post-release finalization are timed out (`watchdog`); listening never is.
 /// 3. The display is kept awake (`displayHold`) exactly while the phase is preparing or listening: `publish` takes the
 ///    hold on entering those phases and releases it on leaving them, so every way out lets it go.
-/// 4. Settings read at `begin` (locale, contextual strings, seam terms) never change an utterance in progress.
+/// 4. Settings read at `begin` (locale, the recognizer it picks from `recognizers`, contextual strings, seam terms)
+///    never change an utterance in progress.
 @MainActor
 public final class DictationController {
     public private(set) var status = DictationStatus(phase: .idle)
@@ -104,6 +105,9 @@ public final class DictationController {
     public var contextualStrings: [String] = []
     /// The recognizer's locale; read when each utterance starts, so a change never affects one in progress.
     public var locale: String
+    /// Both recognizers' languages: at each `begin` the utterance's recognizer is the one `locale` needs
+    /// (`RecognizerLocales.backend(for:)`). Unknown lists give `.speech`.
+    public var recognizers: RecognizerLocales = .unknown
     /// Words whose capitals stay after a pause (`DictationSeams.terms`: the word list, learned corrections' meant
     /// phrases, people's names); asked when each utterance starts, so a change counts from the next one.
     public var seamTerms: @MainActor () -> [String] = { [] }
@@ -111,7 +115,6 @@ public final class DictationController {
     /// dictation from exactly what was recognized.
     public var frameTap: (@MainActor (UUID, PCMFrame) -> Void)?
 
-    private let backend: SpeechBackend
     private let watchdog: DictationWatchdog
     private let onUpdate: @MainActor (DictationStatus) -> Void
     private let dependencies: DictationDependencies
@@ -135,24 +138,21 @@ public final class DictationController {
     private var displayHold: (any PowerAssertionHandle)?
 
     /// Listening has no duration cutoff. Only startup and post-release finalization are timed out.
-    public init(locale: String = DictationLanguage.standard, backend: SpeechBackend = .speech,
-                startupTimeout: TimeInterval = 120,
+    public init(locale: String = DictationLanguage.standard, startupTimeout: TimeInterval = 120,
                 onUpdate: @escaping @MainActor (DictationStatus) -> Void) {
         self.locale = locale
-        self.backend = backend
         self.watchdog = DictationWatchdog(startupTimeout: startupTimeout, finalizationTimeout: 30,
                                           sleep: { try await Task.sleep(for: $0) })
         self.onUpdate = onUpdate
         self.dependencies = .live
     }
 
-    init(locale: String = DictationLanguage.standard, backend: SpeechBackend = .speech,
+    init(locale: String = DictationLanguage.standard,
          startupTimeout: TimeInterval = 120, finalizationTimeout: TimeInterval = 30,
          sleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
          dependencies: DictationDependencies,
          onUpdate: @escaping @MainActor (DictationStatus) -> Void) {
         self.locale = locale
-        self.backend = backend
         self.watchdog = DictationWatchdog(startupTimeout: startupTimeout, finalizationTimeout: finalizationTimeout,
                                           sleep: sleep)
         self.onUpdate = onUpdate
@@ -187,8 +187,11 @@ public final class DictationController {
             return true
         }
         watchdog.startStartup { [weak self] in self?.startupTimedOut(id) }
-        let locale = locale, vocabulary = contextualStrings
-        prepareTask = Task { [weak self] in await self?.prepare(id, locale: locale, vocabulary: vocabulary) }
+        // Invariant 4: the language, its recognizer and the vocabulary are fixed here for the whole utterance.
+        let locale = locale, backend = recognizers.backend(for: locale), vocabulary = contextualStrings
+        prepareTask = Task { [weak self] in
+            await self?.prepare(id, locale: locale, backend: backend, vocabulary: vocabulary)
+        }
         return true
     }
 
@@ -227,7 +230,7 @@ public final class DictationController {
 
     public func reset() { cancel() }
 
-    private func prepare(_ id: UUID, locale: String, vocabulary: [String]) async {
+    private func prepare(_ id: UUID, locale: String, backend: SpeechBackend, vocabulary: [String]) async {
         guard generation == id else { return }
         if releaseRequested {
             finishReleasedBeforeReady(id)

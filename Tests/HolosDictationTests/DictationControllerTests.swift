@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import HolosCore
 import HolosAudio
+import HolosTestSupport
 import Synchronization
 @testable import HolosDictation
 
@@ -45,6 +46,8 @@ private final class FakeCapture: DictationCapture {
     }
 }
 
+/// Invariants:
+/// 1. Cancellation is remembered for the lifetime of the fake; cancellation assertions wait for actor cleanup.
 private actor FakeSpeech: DictationSpeech {
     var appendError: Error?
     var finalSegments: [TranscriptSegment] = []
@@ -66,6 +69,11 @@ private actor FakeSpeech: DictationSpeech {
     }
 
     func cancel() async { cancelled = true }
+    func waitForCancellation() async -> Bool {
+        var budget = PollBudget(timeout: .seconds(30))
+        while !cancelled && !budget.isSpent { await budget.poll() }
+        return cancelled
+    }
     func setSegments(_ segments: [TranscriptSegment]) { finalSegments = segments }
     func setAppendError(_ error: Error) { appendError = error }
     func setHoldFinish(_ hold: Bool) { holdFinish = hold }
@@ -78,6 +86,9 @@ private final class FakeDisplayHold: PowerAssertionHandle {
     func release() { count.withLock { $0 += 1 } }
 }
 
+/// Invariants:
+/// 1. Each speech request records its locale, backend and vocabulary before suspending.
+/// 2. A delayed speech request is released once before another delayed request starts.
 @MainActor
 private final class Harness {
     let capture = FakeCapture()
@@ -87,6 +98,8 @@ private final class Harness {
     var update: (@Sendable (TranscriptUpdate) -> Void)?
     /// The locale of each recognizer made, in order.
     var locales: [String] = []
+    /// The kind of each recognizer made, in order.
+    var backends: [SpeechBackend] = []
     /// The contextual strings of each recognizer made, in order.
     var vocabularies: [[String]] = []
     /// Each display hold taken, in order.
@@ -94,8 +107,9 @@ private final class Harness {
 
     var dependencies: DictationDependencies {
         DictationDependencies(permission: { "authorized" }, makeCapture: { self.capture },
-            makeSpeech: { locale, _, vocabulary, onUpdate in
+            makeSpeech: { locale, backend, vocabulary, onUpdate in
                 self.locales.append(locale)
+                self.backends.append(backend)
                 self.vocabularies.append(vocabulary)
                 self.update = onUpdate
                 if self.delaySpeech {
@@ -112,17 +126,6 @@ private final class Harness {
 
     func releaseSpeech() { speechWaiter?.resume(returning: speech); speechWaiter = nil }
     func emit(_ update: TranscriptUpdate) { self.update?(update) }
-}
-
-/// Polls `condition` every 10 ms, at least 30 s in all: long enough for actor hops and main-actor work on a loaded
-/// machine (the count, not the clock, ends it, so a stalled poll does not use up the budget).
-@MainActor
-private func eventually(_ condition: () -> Bool) async -> Bool {
-    for _ in 0..<3_000 {
-        if condition() { return true }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    return condition()
 }
 
 /// Advances watchdog sleeps explicitly. Even cancelled sleeps can return late, as a platform callback can.
@@ -163,7 +166,7 @@ private final class DictationSleeper {
     #expect(await eventually { controller.status.phase == .failed })
     #expect(controller.status.utteranceID == id)
     #expect(harness.capture.starts == 0)
-    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.waitForCancellation())
 }
 
 @Test @MainActor func aLocaleChangeAppliesFromTheNextUtterance() async {
@@ -179,6 +182,43 @@ private final class DictationSleeper {
     #expect(harness.locales == ["en-CA", "fr-CA"])
     controller.cancel()
     harness.releaseSpeech()
+}
+
+/// Each utterance takes the recognizer its language needs when it begins: Russian, which only the dictation
+/// transcriber has, uses it; a change of language or lists after `begin` waits for the next utterance.
+@Test @MainActor func theRecognizerFollowsTheLanguageFromTheNextUtterance() async {
+    let harness = Harness(); harness.delaySpeech = true
+    let controller = DictationController(locale: "en-CA", dependencies: harness.dependencies) { _ in }
+    controller.recognizers = RecognizerLocales(speech: ["en_CA"], dictation: ["en_CA", "ru_RU"])
+    for locale in ["en-CA", "ru-RU", "en-CA"] {
+        controller.locale = locale
+        #expect(await eventually { controller.begin() })
+        controller.locale = locale == "ru-RU" ? "en-CA" : "ru-RU"  // before the recognizer is made
+        controller.recognizers = .unknown
+        #expect(await eventually { harness.speechWaiter != nil })
+        controller.cancel()
+        harness.releaseSpeech()
+        controller.recognizers = RecognizerLocales(speech: ["en_CA"], dictation: ["en_CA", "ru_RU"])
+    }
+    #expect(harness.locales == ["en-CA", "ru-RU", "en-CA"])
+    #expect(harness.backends == [.speech, .dictation, .speech])
+}
+
+@Test @MainActor func aRecoveredSpeechInventoryChangesTheBackendFromTheNextUtterance() async {
+    let harness = Harness(); harness.delaySpeech = true
+    let controller = DictationController(locale: "en-CA", dependencies: harness.dependencies) { _ in }
+    controller.recognizers = RecognizerLocales(speech: [], dictation: ["en_CA"])
+    #expect(controller.begin())
+    controller.recognizers = RecognizerLocales(speech: ["en_CA"], dictation: ["en_CA"])
+    #expect(await eventually { harness.speechWaiter != nil })
+    controller.cancel()
+    harness.releaseSpeech()
+    #expect(await eventually { controller.begin() })
+    #expect(await eventually { harness.speechWaiter != nil })
+    controller.cancel()
+    harness.releaseSpeech()
+    #expect(harness.locales == ["en-CA", "en-CA"])
+    #expect(harness.backends == [.dictation, .speech])
 }
 
 /// A reload of words.json or corrections.json sets new contextual strings while an utterance starts; it keeps the
@@ -230,7 +270,7 @@ private final class DictationSleeper {
     harness.releaseSpeech()
     #expect(await eventually { controller.begin() })
     controller.cancel()
-    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.waitForCancellation())
     #expect(controller.status.phase == .idle)
 }
 
@@ -247,7 +287,7 @@ private final class DictationSleeper {
     try? await Task.sleep(for: .milliseconds(20))
     #expect(controller.status.phase == .idle)
     #expect(controller.status.text.isEmpty)
-    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.waitForCancellation())
 }
 
 @Test @MainActor func doubleBeginIsRejectedWithoutChangingIdentity() async {
@@ -271,7 +311,7 @@ private final class DictationSleeper {
     harness.capture.releaseStart()
     #expect(await eventually { controller.status.phase == .failed })
     #expect(harness.capture.stops == 1)
-    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.waitForCancellation())
 }
 
 @Test @MainActor func previewReplacesVolatileTextAndFinalResultIsTrimmedOnce() async {
@@ -432,7 +472,7 @@ private final class DictationSleeper {
     controller.cancel()
     #expect(controller.status.phase == .idle)
     #expect(await eventually { harness.capture.stops == 1 })
-    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.waitForCancellation())
     #expect(await harness.speech.finished == 0)
 }
 
@@ -456,7 +496,7 @@ func hungSpeechOrMicrophoneStartupStillTimesOut(microphone: Bool) async {
     #expect(await eventually { controller.begin() }) // cleanup must finish before another utterance
     controller.cancel()
     #expect(harness.capture.stops == (microphone ? 1 : 0))
-    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.waitForCancellation())
 }
 
 @Test @MainActor func captureStreamFailureStopsMicrophone() async {
@@ -468,7 +508,7 @@ func hungSpeechOrMicrophoneStartupStillTimesOut(microphone: Bool) async {
     #expect(await eventually { controller.status.phase == .failed })
     #expect(controller.status.message?.contains("Capture disconnected") == true)
     #expect(await eventually { harness.capture.stops == 1 })
-    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.waitForCancellation())
 }
 
 @Test @MainActor func recognizerAppendFailureStopsMicrophone() async throws {
@@ -525,7 +565,7 @@ func hungSpeechOrMicrophoneStartupStillTimesOut(microphone: Bool) async {
     await harness.speech.releaseFinish()
     try? await Task.sleep(for: .milliseconds(20))
     #expect(resultCount == 0)
-    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.waitForCancellation())
 }
 
 @Test @MainActor func idleCallbackCannotBeginBeforeCleanupGateExists() async {
