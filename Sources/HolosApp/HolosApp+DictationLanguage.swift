@@ -33,25 +33,25 @@ extension HolosAppDelegate {
 
     /// Loads the languages Apple's recognizers support, for Setup, the menu, the meeting start panel, and the
     /// default language; returns once they are loaded (or could not be: the default is then
-    /// `DictationLanguage.standard`, and a later call tries again). Loads them once.
+    /// `DictationLanguage.standard`, and a later call tries again). Retains known languages and retries an empty
+    /// backend until both lists are populated (invariants 1 and 2).
     func loadLanguages() async {
-        if let recognizerLocales, !recognizerLocales.isEmpty { return }
+        if let recognizerLocales, recognizerLocales.isComplete { return }
         if let languagesTask { return await languagesTask.value }
         let task = Task { [weak self] in
-            let loaded = await AppleSpeechEngine.recognizerLocales()
+            let discovered = await AppleSpeechEngine.recognizerLocales()
             guard let self else { return }
+            let loaded = discovered.retainingKnownLocales(from: self.recognizerLocales ?? .unknown)
             self.languagesTask = nil
             let before = (self.locale, self.dictationBackend)
-            // Also when empty: the default is then known to be `standard`, so what waited for it can go on.
+            // Invariants 1 and 2: publish the cached lists and both picker projections together.
             self.recognizerLocales = loaded  // the controller takes them when dictation is enabled (`enable`)
-            if !loaded.dictationLocales.isEmpty {
-                self.localeGroups = DictationLanguage.groups(loaded.dictationLocales)
-            }
-            if !loaded.speech.isEmpty { self.meetingLocaleGroups = DictationLanguage.groups(loaded.speech) }
+            self.localeGroups = DictationLanguage.groups(loaded.dictationLocales)
+            self.meetingLocaleGroups = DictationLanguage.groups(loaded.speech)
             // The default language, or the recognizer of a saved one, may have changed from the provisional one;
             // enabling uses the new one.
             if (self.locale, self.dictationBackend) != before {
-                self.assetState = nil
+                self.assetState = nil  // invariant 3
                 self.refreshAssetState()
             }
             self.rebuildMenu()
@@ -59,5 +59,18 @@ extension HolosAppDelegate {
         }
         languagesTask = task
         await task.value
+    }
+
+    func refreshAssetState() {
+        Task { [weak self] in
+            guard let self else { return }
+            if self.recognizerLocales?.isComplete != true { await self.loadLanguages() }
+            let locale = self.locale, backend = self.dictationBackend
+            let state = (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: backend)) ?? "unknown"
+            // Invariant 3: a later language load may also change the recognizer of this same locale.
+            guard self.locale == locale, self.dictationBackend == backend else { return }
+            self.assetState = state
+            self.updateSettings()
+        }
     }
 }

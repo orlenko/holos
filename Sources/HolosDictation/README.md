@@ -33,4 +33,5 @@ I/O and settings are in `HolosDictation/DictationRerun.swift`. The dictation ses
 still lives in `HolosApp/HolosApp.swift`.
 
 **Tests:** `Tests/HolosDictationTests` (`DictationControllerTests`, `DictationRerunTests`,
-`DictationSessionPolicyTests`).
+`DictationSessionPolicyTests`). The real-speech Run Again test requires `HOLOS_RERUN_TEST_LOCALE` and installed
+speech assets and a system voice for that language; the default suite uses no speech assets.

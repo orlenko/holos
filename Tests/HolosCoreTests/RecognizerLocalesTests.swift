@@ -45,6 +45,21 @@ private let recognizers = RecognizerLocales(
         == [["en-CA", "en-IN", "en-US"], ["fr-CA", "fr-FR"], ["de-DE", "ru-RU", "uk-UA"]])
 }
 
+@Test func partialLocaleLoadsKeepKnownLanguagesUntilBothRecognizersRespond() {
+    let speechOnly = RecognizerLocales(speech: recognizers.speech, dictation: [])
+    #expect(!speechOnly.isComplete)
+    #expect(!RecognizerLocales.unknown.isComplete)
+    #expect(RecognizerLocales.unknown.retainingKnownLocales(from: speechOnly) == speechOnly)
+    let dictationOnly = RecognizerLocales(speech: [], dictation: recognizers.dictation)
+    #expect(!dictationOnly.isComplete)
+    let recovered = dictationOnly.retainingKnownLocales(from: speechOnly)
+    #expect(recovered == recognizers)
+    #expect(recovered.isComplete)
+    #expect(recovered.backend(for: "ru-RU") == .dictation)
+    #expect(recovered.backend(for: "en-CA") == .speech)
+    #expect(speechOnly.retainingKnownLocales(from: dictationOnly) == recognizers)
+}
+
 @Test func theDefaultDictationLanguagePrefersTheSpeechTranscriber() {
     func pick(_ preferred: [String], region: String? = nil) -> String {
         recognizers.preferredDictation(preferredLanguages: preferred, region: region)

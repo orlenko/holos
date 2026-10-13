@@ -21,6 +21,15 @@ public struct RecognizerLocales: Sendable, Equatable {
     /// Both lists are empty: the load failed or found nothing, so a later load should try again.
     public var isEmpty: Bool { speech.isEmpty && dictation.isEmpty }
 
+    /// Both recognizers have returned supported languages; an empty side must be retried.
+    public var isComplete: Bool { !speech.isEmpty && !dictation.isEmpty }
+
+    /// A temporarily empty response keeps that recognizer's last known languages while the missing side is retried.
+    public func retainingKnownLocales(from previous: RecognizerLocales) -> RecognizerLocales {
+        RecognizerLocales(speech: speech.isEmpty ? previous.speech : speech,
+                         dictation: dictation.isEmpty ? previous.dictation : dictation)
+    }
+
     /// Every language dictation can use: both lists together, for the dictation language picker.
     public var dictationLocales: [String] { Set(speech + dictation).sorted() }
 

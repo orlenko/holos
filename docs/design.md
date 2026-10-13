@@ -160,6 +160,10 @@ The default for someone who has not picked a language (`preferredDictation`) is 
 closest to the macOS preferred languages over both lists, taken from `SpeechTranscriber`'s
 list whenever it has that language.
 
+The app retains each recognizer's last populated language list and retries a missing
+backend's list on a later language load. Picker groups are rebuilt from those cached lists;
+an asset check is discarded if its language or recognizer has changed while it ran.
+
 `DictationController` reads the language and picks its recognizer when each utterance
 starts (`begin`), so a change applies from the next one. The speech model that Settings and
 the Setup Assistant check and install is the chosen recognizer's for that language, and Run

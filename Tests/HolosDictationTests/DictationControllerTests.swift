@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import HolosCore
 import HolosAudio
+import HolosTestSupport
 import Synchronization
 @testable import HolosDictation
 
@@ -45,6 +46,8 @@ private final class FakeCapture: DictationCapture {
     }
 }
 
+/// Invariants:
+/// 1. Cancellation is remembered for the lifetime of the fake; cancellation assertions wait for actor cleanup.
 private actor FakeSpeech: DictationSpeech {
     var appendError: Error?
     var finalSegments: [TranscriptSegment] = []
@@ -66,6 +69,11 @@ private actor FakeSpeech: DictationSpeech {
     }
 
     func cancel() async { cancelled = true }
+    func waitForCancellation() async -> Bool {
+        var budget = PollBudget(timeout: .seconds(30))
+        while !cancelled && !budget.isSpent { await budget.poll() }
+        return cancelled
+    }
     func setSegments(_ segments: [TranscriptSegment]) { finalSegments = segments }
     func setAppendError(_ error: Error) { appendError = error }
     func setHoldFinish(_ hold: Bool) { holdFinish = hold }
@@ -117,17 +125,6 @@ private final class Harness {
     func emit(_ update: TranscriptUpdate) { self.update?(update) }
 }
 
-/// Polls `condition` every 10 ms, at least 30 s in all: long enough for actor hops and main-actor work on a loaded
-/// machine (the count, not the clock, ends it, so a stalled poll does not use up the budget).
-@MainActor
-private func eventually(_ condition: () -> Bool) async -> Bool {
-    for _ in 0..<3_000 {
-        if condition() { return true }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    return condition()
-}
-
 /// Advances watchdog sleeps explicitly. Even cancelled sleeps can return late, as a platform callback can.
 @MainActor
 private final class DictationSleeper {
@@ -166,7 +163,7 @@ private final class DictationSleeper {
     #expect(await eventually { controller.status.phase == .failed })
     #expect(controller.status.utteranceID == id)
     #expect(harness.capture.starts == 0)
-    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.waitForCancellation())
 }
 
 @Test @MainActor func aLocaleChangeAppliesFromTheNextUtterance() async {
@@ -253,7 +250,7 @@ private final class DictationSleeper {
     harness.releaseSpeech()
     #expect(await eventually { controller.begin() })
     controller.cancel()
-    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.waitForCancellation())
     #expect(controller.status.phase == .idle)
 }
 
@@ -270,7 +267,7 @@ private final class DictationSleeper {
     try? await Task.sleep(for: .milliseconds(20))
     #expect(controller.status.phase == .idle)
     #expect(controller.status.text.isEmpty)
-    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.waitForCancellation())
 }
 
 @Test @MainActor func doubleBeginIsRejectedWithoutChangingIdentity() async {
@@ -294,7 +291,7 @@ private final class DictationSleeper {
     harness.capture.releaseStart()
     #expect(await eventually { controller.status.phase == .failed })
     #expect(harness.capture.stops == 1)
-    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.waitForCancellation())
 }
 
 @Test @MainActor func previewReplacesVolatileTextAndFinalResultIsTrimmedOnce() async {
@@ -455,7 +452,7 @@ private final class DictationSleeper {
     controller.cancel()
     #expect(controller.status.phase == .idle)
     #expect(await eventually { harness.capture.stops == 1 })
-    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.waitForCancellation())
     #expect(await harness.speech.finished == 0)
 }
 
@@ -479,7 +476,7 @@ func hungSpeechOrMicrophoneStartupStillTimesOut(microphone: Bool) async {
     #expect(await eventually { controller.begin() }) // cleanup must finish before another utterance
     controller.cancel()
     #expect(harness.capture.stops == (microphone ? 1 : 0))
-    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.waitForCancellation())
 }
 
 @Test @MainActor func captureStreamFailureStopsMicrophone() async {
@@ -491,7 +488,7 @@ func hungSpeechOrMicrophoneStartupStillTimesOut(microphone: Bool) async {
     #expect(await eventually { controller.status.phase == .failed })
     #expect(controller.status.message?.contains("Capture disconnected") == true)
     #expect(await eventually { harness.capture.stops == 1 })
-    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.waitForCancellation())
 }
 
 @Test @MainActor func recognizerAppendFailureStopsMicrophone() async throws {
@@ -548,7 +545,7 @@ func hungSpeechOrMicrophoneStartupStillTimesOut(microphone: Bool) async {
     await harness.speech.releaseFinish()
     try? await Task.sleep(for: .milliseconds(20))
     #expect(resultCount == 0)
-    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.waitForCancellation())
 }
 
 @Test @MainActor func idleCallbackCannotBeginBeforeCleanupGateExists() async {

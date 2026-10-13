@@ -5,12 +5,13 @@ import HolosCore
 import HolosSpeech
 import HolosStorage
 import HolosSynthesis
+import HolosTestSupport
 @testable import HolosDictation
 
 // Run Again on real speech (docs/design.md "Dictation audio and Run Again"): a sentence rendered by the system speech
 // synthesizer (AVSpeechSynthesizer) goes through the dictation audio writer, as the microphone's frames do, and is then
-// recognized again from the saved file and compared. Skipped, with a note, when the en-US speech model or an en-US
-// voice is not installed; no microphone is used.
+// recognized again from the saved file and compared. Opt in with HOLOS_RERUN_TEST_LOCALE; skipped, with a note,
+// when the chosen language's speech model or voice is not installed. No microphone is used.
 
 private let rerunLocale = ProcessInfo.processInfo.environment["HOLOS_RERUN_TEST_LOCALE"] ?? "en-US"
 private let sentence = "I left my laptop on the kitchen table this morning."
@@ -26,7 +27,8 @@ private func synthesizedDictation(in folder: URL, store: DictationHistoryStore, 
     return writer.finish()
 }
 
-@Test(.timeLimit(.minutes(3))) @MainActor
+@Test(.enabled(if: ProcessInfo.processInfo.environment["HOLOS_RERUN_TEST_LOCALE"] != nil),
+      .timeLimit(.minutes(3))) @MainActor
 func runAgainRecognizesASavedDictationAndNamesTheNewCorrection() async throws {
     let status: String
     do {
@@ -41,9 +43,9 @@ func runAgainRecognizesASavedDictationAndNamesTheNewCorrection() async throws {
             + "voiceislocal setup --locale \(rerunLocale)).")
         return
     }
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-rerun-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: root) }
+    let temp = try TemporaryDirectory("rerun")
+    defer { temp.remove() }
+    let root = temp.url
     let store = DictationHistoryStore(directory: root.appendingPathComponent("History"))
     let id = UUID()
     guard let finished = try await synthesizedDictation(in: root, store: store, id: id) else {

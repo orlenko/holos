@@ -45,6 +45,15 @@ enum HolosAppMain {
     }
 }
 
+/// Wires the app's views to its controllers and language settings.
+///
+/// Invariants:
+/// 1. `loadLanguages` alone publishes recognizer locales and their picker groups; one language load runs at a time.
+/// 2. A load retains each recognizer's known languages and retries until both lists are populated.
+/// 3. A change to the dictation language or its recognizer invalidates `assetState`; asset checks publish only for
+///    the language and recognizer they checked.
+/// 4. Enabling awaits the language load, configures the controller from that snapshot, and checks its assets before
+///    enabling the hotkey. The controller fixes the language and recognizer for each utterance at `begin`.
 @MainActor
 final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
@@ -198,8 +207,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         get { resolvedLocale ?? DictationLanguage.standard }
         set { UserDefaults.standard.set(newValue, forKey: "dictationLocale") }
     }
-    /// The languages each of Apple's recognizers supports; nil until a load finished, empty when it failed (the
-    /// default is then `DictationLanguage.standard`, and the next `loadLanguages` tries again). Set only by
+    /// The languages each of Apple's recognizers supports; nil until a load finished. A missing backend is retried
+    /// while each backend's known languages are retained (invariant 2). Set only by
     /// `loadLanguages` (HolosApp+DictationLanguage.swift), as are the two groupings and `languagesTask`.
     var recognizerLocales: RecognizerLocales?
     /// The dictation languages (both recognizers), grouped for a picker (`DictationLanguage.groups`).
@@ -440,7 +449,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         enableTask = Task { [weak self] in
             guard let self else { return }
             do {
-                // Without a saved choice the language is the default one, known once the languages are loaded.
+                // Invariant 4: resolve the language and recognizer before configuring or enabling the controller.
                 await self.loadLanguages()
                 guard !Task.isCancelled, generation == self.enableGeneration else { return }
                 self.controller.locale = self.locale
@@ -521,7 +530,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         locale = identifier
         controller.locale = identifier
         controller.contextualStrings = dictationVocabulary(language: identifier)
-        assetState = nil
+        assetState = nil  // invariant 3
         if enabled {
             // Enabling again checks the new language's speech model; without it, dictation stays off and Setup
             // offers the install.
@@ -1512,20 +1521,6 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         if enabling || installingAssets { return MainStatus(tone: .busy, title: "Starting…", message: message) }
         if enabled { return MainStatus(tone: .ready, title: "Dictation ready", message: message) }
         return MainStatus(tone: .off, title: "Dictation off", message: message)
-    }
-
-    func refreshAssetState() {
-        Task { [weak self] in
-            guard let self else { return }
-            // The recognizer, and so the model to check, follows the language (`dictationBackend`).
-            if self.recognizerLocales == nil { await self.loadLanguages() }
-            let locale = self.locale, backend = self.dictationBackend
-            let state = (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: backend)) ?? "unknown"
-            // A check for a language changed since is dropped; the change started its own.
-            guard self.locale == locale else { return }
-            self.assetState = state
-            self.updateSettings()
-        }
     }
 
     func performSetup(_ action: SetupAction) {
