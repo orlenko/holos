@@ -6,6 +6,7 @@ The adapter over Apple's on-device speech recognition (`SpeechAnalyzer` with `Sp
 **Owns**
 - `AppleSpeechEngine`: locale capabilities, both recognizers' languages (`recognizerLocales`, from which dictation
   picks its recognizer), a backend's default language (`defaultLocale`: the supported one closest to the user's),
+  a process-wide `RecognizerLocaleCache` that retains known languages across temporarily empty responses,
   asset status, installing assets, transcribing a file
   (`transcribe(file:…)`, used by `voiceislocal transcribe`), and building a module for a locale and
   `SpeechBackend` (`.speech` or `.dictation`).

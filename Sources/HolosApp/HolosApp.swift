@@ -53,13 +53,14 @@ enum HolosAppMain {
 /// 3. A change to the dictation language or its recognizer invalidates `assetState`; asset checks publish only for
 ///    the language and recognizer they checked.
 /// 4. Enabling awaits the language load, configures the controller from that snapshot, and checks its assets before
-///    enabling the hotkey. The controller fixes the language and recognizer for each utterance at `begin`.
+///    enabling the hotkey. A recovered default is applied after the active dictation ends and rechecks assets.
+/// 5. The controller and History keep the language fixed for each utterance; a reload applies to the next one.
 @MainActor
 final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     private let overlay = DictationOverlay()
     private var monitor: GlobalHotkeyMonitor?
-    private var controller: DictationController!
+    var controller: DictationController!
     /// Meeting recording controls (HolosApp+Meeting.swift, docs/meeting/app-controls.md §5.8).
     let meeting = MeetingAppState()
     private(set) var enabled = false
@@ -204,7 +205,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// `DictationLanguage.standard` while that default is not known yet (`resolvedLocale` nil): an action that uses
     /// the language (enabling dictation, installing its speech model) awaits `loadLanguages` first.
     private(set) var locale: String {
-        get { resolvedLocale ?? DictationLanguage.standard }
+        get { historyDraft?.language ?? resolvedLocale ?? DictationLanguage.standard }
         set { UserDefaults.standard.set(newValue, forKey: "dictationLocale") }
     }
     /// The languages each of Apple's recognizers supports; nil until a load finished. A missing backend is retried
@@ -452,12 +453,17 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 // Invariant 4: resolve the language and recognizer before configuring or enabling the controller.
                 await self.loadLanguages()
                 guard !Task.isCancelled, generation == self.enableGeneration else { return }
-                self.controller.locale = self.locale
+                let locale = self.locale, backend = self.dictationBackend
+                self.controller.locale = locale
                 self.controller.recognizers = self.recognizerLocales ?? .unknown
-                self.controller.contextualStrings = self.dictationVocabulary(language: self.locale)
-                let state = try await AppleSpeechEngine.assetStatus(locale: self.locale,
-                                                                    backend: self.dictationBackend)
+                self.controller.contextualStrings = self.dictationVocabulary(language: locale)
+                let state = try await AppleSpeechEngine.assetStatus(locale: locale, backend: backend)
                 guard !Task.isCancelled, generation == self.enableGeneration else { return }
+                guard locale == self.locale, backend == self.dictationBackend else {
+                    self.enabling = false
+                    self.enable()
+                    return
+                }
                 self.assetState = state
                 guard state == "installed" else {
                     self.enabling = false
@@ -522,26 +528,6 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// Not while a dictation, install, or enable is in progress: a change applies from the next dictation.
     var canChangeLanguage: Bool { !isBusy && !enabling && !installingAssets }
 
-    func changeLanguage(to identifier: String) {
-        guard identifier != locale, canChangeLanguage else {
-            updateSettings()  // puts a refused choice back in Settings
-            return
-        }
-        locale = identifier
-        controller.locale = identifier
-        controller.contextualStrings = dictationVocabulary(language: identifier)
-        assetState = nil  // invariant 3
-        if enabled {
-            // Enabling again checks the new language's speech model; without it, dictation stays off and Setup
-            // offers the install.
-            disable()
-            enable()
-        } else {
-            show("Dictation language: \(languageName)")
-            refreshAssetState()
-        }
-    }
-
     private func handle(_ action: HotkeyAction) {
         guard enabled else { return }
         switch action {
@@ -549,6 +535,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             guard !isBusy, !refuseIfReplaced(), !TextInsertion.isSecureInputActive() else {
                 return
             }
+            if synchronizeDictationLanguage() { return }
             overlay.allowShowing()
             resultNeedsAttention = false
             forcedStopMessage = nil
@@ -1117,6 +1104,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         historyDraft = nil
+        defer { Task { self.synchronizeDictationLanguage() } }
         let outcome = historyOutcome
         historyOutcome = nil
         // Text written while the user spoke counts even when the final transcript came back empty.
@@ -1131,7 +1119,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         var heard = heard.trimmingCharacters(in: .whitespacesAndNewlines)
         if heard.isEmpty { heard = latestCommitted.trimmingCharacters(in: .whitespacesAndNewlines) }
-        let withoutFill = withoutFillers(heard)
+        let withoutFill = removeFillers ? FillerWords.remove(from: heard, language: draft.language) : heard
         let fillersRemoved = removeFillers && WordDiff.normalized(withoutFill) != WordDiff.normalized(heard)
         let swaps = dictationCorrections
             .applyCounting(to: withoutFill.trimmingCharacters(in: .whitespacesAndNewlines)).count

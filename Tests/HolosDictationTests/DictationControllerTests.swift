@@ -86,6 +86,9 @@ private final class FakeDisplayHold: PowerAssertionHandle {
     func release() { count.withLock { $0 += 1 } }
 }
 
+/// Invariants:
+/// 1. Each speech request records its locale, backend and vocabulary before suspending.
+/// 2. A delayed speech request is released once before another delayed request starts.
 @MainActor
 private final class Harness {
     let capture = FakeCapture()
@@ -199,6 +202,23 @@ private final class DictationSleeper {
     }
     #expect(harness.locales == ["en-CA", "ru-RU", "en-CA"])
     #expect(harness.backends == [.speech, .dictation, .speech])
+}
+
+@Test @MainActor func aRecoveredSpeechInventoryChangesTheBackendFromTheNextUtterance() async {
+    let harness = Harness(); harness.delaySpeech = true
+    let controller = DictationController(locale: "en-CA", dependencies: harness.dependencies) { _ in }
+    controller.recognizers = RecognizerLocales(speech: [], dictation: ["en_CA"])
+    #expect(controller.begin())
+    controller.recognizers = RecognizerLocales(speech: ["en_CA"], dictation: ["en_CA"])
+    #expect(await eventually { harness.speechWaiter != nil })
+    controller.cancel()
+    harness.releaseSpeech()
+    #expect(await eventually { controller.begin() })
+    #expect(await eventually { harness.speechWaiter != nil })
+    controller.cancel()
+    harness.releaseSpeech()
+    #expect(harness.locales == ["en-CA", "en-CA"])
+    #expect(harness.backends == [.dictation, .speech])
 }
 
 /// A reload of words.json or corrections.json sets new contextual strings while an utterance starts; it keeps the

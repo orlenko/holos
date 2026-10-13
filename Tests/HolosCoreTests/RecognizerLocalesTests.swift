@@ -88,11 +88,18 @@ private let recognizers = RecognizerLocales(
 }
 
 @Test func meetingsStandInWithASpeechLanguageForADictationOnlyOne() {
-    func meeting(_ dictation: String) -> String {
+    func meeting(_ dictation: String) -> String? {
         recognizers.meetingLanguage(dictation: dictation, preferredLanguages: ["ru-RU", "fr-CA"], region: "CA")
     }
     #expect(meeting("fr-CA") == "fr-CA")
     #expect(meeting("en-US") == "en-US")
     #expect(meeting("ru-RU") == "fr-CA")
     #expect(meeting("uk-UA") == "fr-CA")
+    #expect(meeting("en-IN") == "en-US")
+    let partial = RecognizerLocales(speech: recognizers.speech, dictation: [])
+    #expect(partial.meetingLanguage(dictation: "ru-RU", preferredLanguages: ["fr-CA"]) == "fr-CA")
+    #expect(partial.meetingLanguage(dictation: "zz-ZZ", preferredLanguages: ["fr-CA"]) == "fr-CA")
+    #expect(RecognizerLocales.unknown.meetingLanguage(dictation: "ru-RU", preferredLanguages: ["fr-CA"]) == nil)
+    #expect(RecognizerLocales(speech: ["fr_FR"], dictation: [])
+        .meetingLanguage(dictation: "ru-RU", preferredLanguages: ["ru-RU"]) == "fr-FR")
 }

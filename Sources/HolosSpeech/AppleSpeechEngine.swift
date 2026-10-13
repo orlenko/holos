@@ -5,6 +5,7 @@ import HolosCore
 import Speech
 
 public enum AppleSpeechEngine {
+    private static let localeCache = RecognizerLocaleCache()
     /// Exact readiness for the configured module, unlike the locale inventory.
     public static func assetStatus(locale: String, backend: SpeechBackend) async throws -> String {
         let module = try await makeModule(locale: locale, backend: backend)
@@ -44,11 +45,13 @@ public enum AppleSpeechEngine {
     }
 
     /// Both recognizers' supported languages, from which dictation's recognizer for a language is chosen
-    /// (`RecognizerLocales.backend(for:)`).
+    /// (`RecognizerLocales.backend(for:)`). Empty responses retain known languages for this process, so a later
+    /// request, including Run Again, uses the same supported backend as live dictation.
     public static func recognizerLocales() async -> RecognizerLocales {
         async let speech = capabilities(backend: .speech)
         async let dictation = capabilities(backend: .dictation)
-        return RecognizerLocales(speech: await speech.supportedLocales, dictation: await dictation.supportedLocales)
+        let discovered = RecognizerLocales(speech: await speech.supportedLocales, dictation: await dictation.supportedLocales)
+        return localeCache.remember(discovered)
     }
 
     public static func installAssets(locale: String, backend: SpeechBackend) async throws {

@@ -43,17 +43,18 @@ extension HolosAppDelegate {
             guard let self else { return }
             let loaded = discovered.retainingKnownLocales(from: self.recognizerLocales ?? .unknown)
             self.languagesTask = nil
-            let before = (self.locale, self.dictationBackend)
+            let before = (self.resolvedLocale, self.dictationBackend)
             // Invariants 1 and 2: publish the cached lists and both picker projections together.
             self.recognizerLocales = loaded  // the controller takes them when dictation is enabled (`enable`)
             self.localeGroups = DictationLanguage.groups(loaded.dictationLocales)
             self.meetingLocaleGroups = DictationLanguage.groups(loaded.speech)
             // The default language, or the recognizer of a saved one, may have changed from the provisional one;
             // enabling uses the new one.
-            if (self.locale, self.dictationBackend) != before {
+            if (self.resolvedLocale, self.dictationBackend) != before {
                 self.assetState = nil  // invariant 3
                 self.refreshAssetState()
             }
+            self.synchronizeDictationLanguage()  // invariants 4 and 5
             self.rebuildMenu()
             self.languagesLoaded()
         }
@@ -71,6 +72,37 @@ extension HolosAppDelegate {
             guard self.locale == locale, self.dictationBackend == backend else { return }
             self.assetState = state
             self.updateSettings()
+        }
+    }
+
+    /// Applies a recovered default between utterances, preserving a language chosen explicitly in Settings.
+    @discardableResult
+    func synchronizeDictationLanguage() -> Bool {
+        guard enabled, canChangeLanguage,
+              controller.locale != locale || controller.recognizers.backend(for: locale) != dictationBackend else {
+            return false
+        }
+        changeLanguage(to: locale, persist: false)
+        return true
+    }
+
+    func changeLanguage(to identifier: String, persist: Bool = true) {
+        guard (!persist || identifier != locale), canChangeLanguage else {
+            updateSettings()  // puts a refused choice back in Settings
+            return
+        }
+        if persist { UserDefaults.standard.set(identifier, forKey: "dictationLocale") }
+        controller.locale = identifier
+        controller.recognizers = recognizerLocales ?? .unknown
+        controller.contextualStrings = dictationVocabulary(language: identifier)
+        assetState = nil  // invariant 3
+        if enabled {
+            // Invariant 4: a recovered default, like an explicit choice, rechecks the selected recognizer's assets.
+            disable()
+            enable()
+        } else {
+            show("Dictation language: \(languageName)")
+            refreshAssetState()
         }
     }
 }

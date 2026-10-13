@@ -58,11 +58,15 @@ public struct RecognizerLocales: Sendable, Equatable {
     }
 
     /// The meeting language that stands in for the dictation language `dictation` when no meeting language was
-    /// chosen: `dictation` itself when meetings can use it (`backend(for:)` is `.speech`), else the `speech`
-    /// language closest to the user's (`DictationLanguage.preferred`).
-    public func meetingLanguage(dictation: String, preferredLanguages: [String], region: String? = nil) -> String {
-        if backend(for: dictation) == .speech { return dictation }
-        return DictationLanguage.preferred(supported: speech, preferredLanguages: preferredLanguages, region: region)
+    /// chosen: a supported region of `dictation` when meetings have its language, else the `speech` language closest
+    /// to the user's (`DictationLanguage.preferred`). Nil until the speech list is known.
+    public func meetingLanguage(dictation: String, preferredLanguages: [String], region: String? = nil) -> String? {
+        guard !speech.isEmpty else { return nil }
+        if speech.contains(where: { DictationLanguage.sameLanguage($0, dictation) }) {
+            return DictationLanguage.preferred(supported: speech, preferredLanguages: [dictation], region: region)
+        }
+        let preferred = DictationLanguage.preferred(supported: speech, preferredLanguages: preferredLanguages, region: region)
+        return speech.contains(preferred) ? preferred : speech[0]
     }
 
     /// `preferredDictation` for this Mac: the user's preferred languages and region.
@@ -71,7 +75,7 @@ public struct RecognizerLocales: Sendable, Equatable {
     }
 
     /// `meetingLanguage` for this Mac: the user's preferred languages and region.
-    public func meetingLanguageForSystem(dictation: String) -> String {
+    public func meetingLanguageForSystem(dictation: String) -> String? {
         meetingLanguage(dictation: dictation, preferredLanguages: Locale.preferredLanguages,
                         region: Locale.current.region?.identifier)
     }
