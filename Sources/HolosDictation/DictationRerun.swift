@@ -166,10 +166,15 @@ public enum DictationRerun {
 
     /// The recognizer's results for the audio at `url`, in order: the recognizer live dictation uses for `locale`
     /// (`RecognizerLocales.backend(for:)`), with `vocabulary` as its contextual strings, fed the file as 0.1 s frames.
-    public static func recognize(_ url: URL, locale: String, vocabulary: [String]) async throws -> [String] {
+    /// An explicit `backend` pins a batch to the recognizer selected before its first record.
+    public static func recognize(_ url: URL, locale: String, vocabulary: [String],
+                                 backend: SpeechBackend? = nil) async throws -> [String] {
+        try Task.checkCancellation()
         let frames = try DictationAudioFile.frames(of: url)
-        let backend = await AppleSpeechEngine.recognizerLocales().backend(for: locale)
-        let session = try await AppleSpeechSession.make(locale: locale, backend: backend,
+        let selected: SpeechBackend
+        if let backend { selected = backend } else { selected = await AppleSpeechEngine.recognizerLocales().backend(for: locale) }
+        try Task.checkCancellation()
+        let session = try await AppleSpeechSession.make(locale: locale, backend: selected,
                                                         contextualStrings: vocabulary) { _ in }
         do {
             for frame in frames {
@@ -188,11 +193,12 @@ public enum DictationRerun {
     /// A dictation for a terminal (`DictationRecord.terminal`, or for older records `SpokenCode.isTerminal`) gets its
     /// code tokens without backticks, as live dictation types them.
     public static func run(_ record: DictationRecord, audio url: URL, pipeline: DictationTextPipeline,
-                           aiNote: String? = nil) async throws -> DictationRerunReport {
+                           aiNote: String? = nil, backend: SpeechBackend? = nil) async throws -> DictationRerunReport {
         var pipeline = pipeline
         if record.terminal == true || SpokenCode.isTerminal(appName: record.app) { pipeline.coder?.backticks = false }
-        let segments = try await recognize(url, locale: pipeline.language, vocabulary: pipeline.vocabulary)
+        let segments = try await recognize(url, locale: pipeline.language, vocabulary: pipeline.vocabulary, backend: backend)
         let output = await pipeline.run(segments: segments)
+        try Task.checkCancellation()
         return DictationRerunReport(record: record, output: output, pipeline: pipeline, aiNote: aiNote)
     }
 

@@ -46,12 +46,24 @@ public enum AppleSpeechEngine {
 
     /// Both recognizers' supported languages, from which dictation's recognizer for a language is chosen
     /// (`RecognizerLocales.backend(for:)`). Empty responses retain known languages for this process, so a later
-    /// request, including Run Again, uses the same supported backend as live dictation.
+    /// request, including Run Again, uses the same supported backend as live dictation. Each platform query waits
+    /// at most five seconds; a timeout is an empty response that a later request retries.
     public static func recognizerLocales() async -> RecognizerLocales {
-        async let speech = capabilities(backend: .speech)
-        async let dictation = capabilities(backend: .dictation)
-        let discovered = RecognizerLocales(speech: await speech.supportedLocales, dictation: await dictation.supportedLocales)
+        async let speech = boundedLocales { await SpeechTranscriber.supportedLocales.map(\.identifier) }
+        async let dictation = boundedLocales { await DictationTranscriber.supportedLocales.map(\.identifier) }
+        let discovered = RecognizerLocales(speech: await speech, dictation: await dictation)
+        guard !Task.isCancelled else { return .unknown }
         return localeCache.remember(discovered)
+    }
+
+    /// Stops waiting even when a platform inventory query ignores cancellation; a late result never enters the cache.
+    static func boundedLocales(timeout: Duration = .seconds(5),
+                               query: @escaping @Sendable () async -> [String]) async -> [String] {
+        guard !Task.isCancelled else { return [] }
+        switch await TranscriptFixer.firstOf(timeout, query) {
+        case .value(let locales): return locales
+        case .timedOut, .failed: return []
+        }
     }
 
     public static func installAssets(locale: String, backend: SpeechBackend) async throws {

@@ -161,8 +161,13 @@ closest to the macOS preferred languages over both lists, taken from `SpeechTran
 list whenever it has that language.
 
 The app retains each recognizer's last populated language list and retries a missing
-backend's list on a later language load. Picker groups are rebuilt from those cached lists;
-an asset check is discarded if its language or recognizer has changed while it ran.
+backend's list on a later language load. Picker groups are rebuilt from those cached lists.
+each backend's supported-language query waits at most five seconds, with a timeout treated
+as a missing list to retry. An asset check is discarded if its language or recognizer has
+changed while it ran.
+The same configuration check covers failed enable attempts and install completion:
+a stale enable result retries the current choice, and a stale install result refreshes
+the current choice's asset state while retaining any deferred setup intent.
 Known language lists are shared within the process between live dictation and Run Again,
 so a temporarily empty response cannot make replay choose a different recognizer. When
 a recovered list changes the default language, an active dictation keeps its original
@@ -1002,8 +1007,11 @@ corrections file (Application Support/Holos/corrections.json), the word list (wo
 and the app's saved settings
 (its defaults domain `ca.orlenko.holos.app`: `dictationLocale`, `removeFillers`,
 `aiFixMisheard`); it writes nothing. Without a saved language it takes the app's default
-(`RecognizerLocales.preferredDictation`). The recognizer needs the language's speech model
-installed for the process running it (`voiceislocal setup --locale ru-RU --backend dictation`
+(`RecognizerLocales.preferredDictation`).
+The command selects one recognizer backend for the invocation, including every record in
+an `--all` batch, so a later inventory recovery cannot change recognition settings mid-batch.
+The recognizer needs the language's speech model installed for the process running it
+(`voiceislocal setup --locale ru-RU --backend dictation`
 for a language only `DictationTranscriber` has).
 
 ### First-launch setup

@@ -25,6 +25,7 @@ Dictation without the UI: one microphone utterance at a time, and Run Again over
 - Settings read at the start of an utterance (locale, the recognizer it needs from `recognizers`, vocabulary, seam
   terms) do not change an utterance in progress. The recognizer comes from `RecognizerLocales.backend(for:)`
   (HolosCore), in live dictation and Run Again alike (docs/design.md "Dictation language and recognizer").
+- A CLI Run Again invocation fixes one recognizer backend for every record it replays, including an entire batch.
 - Apple Intelligence's fix (`OnDeviceFix.unavailableReason(language:)`) runs for English and French only.
 - Run Again writes nothing into any app and copies nothing.
 

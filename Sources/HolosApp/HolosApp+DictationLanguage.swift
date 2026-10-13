@@ -6,6 +6,15 @@ import HolosSpeech
 /// offers both of Apple's recognizers' languages and uses the recognizer its language needs; meetings offer
 /// `SpeechTranscriber`'s only.
 extension HolosAppDelegate {
+    /// The dictation language, chosen in Settings; until then, the supported one closest to the user's
+    /// languages (`RecognizerLocales.preferredDictation`). An active dictation keeps its own language (invariant 5).
+    /// Actions that use the language await `loadLanguages` before accepting the provisional `standard` default.
+    var locale: String { activeDictationLanguage ?? resolvedLocale ?? DictationLanguage.standard }
+    var languageName: String { DictationLanguage.name(of: locale) }
+
+    /// Not while a dictation, install, or enable is in progress: a change applies from the next dictation.
+    var canChangeLanguage: Bool { !isBusy && !enabling && !installingAssets }
+
     /// The dictation language, or nil while there is no saved choice and the supported languages have not loaded.
     var resolvedLocale: String? {
         DictationLanguage.resolvedForSystem(saved: UserDefaults.standard.string(forKey: "dictationLocale"),
@@ -69,10 +78,15 @@ extension HolosAppDelegate {
             let locale = self.locale, backend = self.dictationBackend
             let state = (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: backend)) ?? "unknown"
             // Invariant 3: a later language load may also change the recognizer of this same locale.
-            guard self.locale == locale, self.dictationBackend == backend else { return }
+            guard self.matchesDictationConfiguration(locale: locale, backend: backend) else { return }
             self.assetState = state
             self.updateSettings()
         }
+    }
+
+    /// Invariant 3: every asynchronous asset result, including an error or install completion, belongs to this pair.
+    func matchesDictationConfiguration(locale: String, backend: SpeechBackend) -> Bool {
+        self.locale == locale && dictationBackend == backend
     }
 
     /// Applies a recovered default between utterances, preserving a language chosen explicitly in Settings.
