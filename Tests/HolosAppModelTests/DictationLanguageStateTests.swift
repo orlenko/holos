@@ -45,7 +45,8 @@ import Testing
     #expect(reads == 1)
 }
 
-@Test(.timeLimit(.minutes(1))) @MainActor func aLateObsoleteRequestCannotClearTheRecoveredRequest() async throws {
+@Test(.timeLimit(.minutes(1)), arguments: [false, true]) @MainActor
+func aLateObsoleteRequestCannotClearTheRecoveredRequest(invalidated: Bool) async throws {
     let state = DictationLanguageState()
     var oldHeld: CheckedContinuation<String, Never>?
     var newHeld: CheckedContinuation<String, Never>?
@@ -60,8 +61,10 @@ import Testing
     }
     var oldStarts = oldStarted.stream.makeAsyncIterator()
     _ = await oldStarts.next()
+    if invalidated { state.invalidateAssetChecks() }
+    let backend: SpeechBackend = invalidated ? .dictation : .speech
     let recovered = Task {
-        try await state.checkAssets(locale: "en-CA", backend: .speech) {
+        try await state.checkAssets(locale: "en-CA", backend: backend) {
             newReads += 1
             return await withCheckedContinuation { newHeld = $0; newStarted.continuation.yield(()) }
         }
@@ -75,7 +78,7 @@ import Testing
     } catch { #expect(error is CancellationError) }
     let join = Task {
         joined.continuation.yield(())
-        return try await state.checkAssets(locale: "en-CA", backend: .speech) {
+        return try await state.checkAssets(locale: "en-CA", backend: backend) {
             newReads += 1
             return "unexpected duplicate"
         }

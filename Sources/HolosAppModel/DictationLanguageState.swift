@@ -48,6 +48,14 @@ public final class DictationLanguageState {
         refresh = Refresh(id: id, task: task)
     }
 
+    /// Installation changes the meaning of a same-configuration check, so its earlier readers are obsolete.
+    public func invalidateAssetChecks() {
+        refresh?.task.cancel()
+        refresh = nil
+        check?.task.cancel()
+        check = nil
+    }
+
     public func checkAssets(locale: String, backend: SpeechBackend,
                             read: @escaping @MainActor @Sendable () async throws -> String) async throws -> String {
         try Task.checkCancellation()

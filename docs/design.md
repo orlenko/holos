@@ -168,6 +168,8 @@ changed while it ran.
 `DictationLanguageState` derives picker groups from the snapshot and coalesces an entire
 asset refresh, including its language load. Enable and Settings share an in-flight status
 request for the same locale/backend; an obsolete request cannot clear a newer one.
+Starting and finishing an install invalidates earlier checks, including checks for the
+same configuration, before the install's result or a fresh check publishes readiness.
 Deferred setup resumes from confirmed installed, supported or downloading states; a failed
 check remains unknown and waits for another check.
 Asset checks wait at most fifteen seconds, and an install at most fifteen minutes; a timeout

@@ -109,6 +109,28 @@ extension HolosAppDelegate {
         }
     }
 
+    func prepareDictationModelInstall() {
+        dictationLanguageState.invalidateAssetChecks()
+        updateSettings()
+    }
+
+    func finishDictationModelInstall(locale: String, backend: SpeechBackend, name: String) {
+        dictationLanguageState.invalidateAssetChecks()
+        guard matchesDictationConfiguration(locale: locale, backend: backend) else { return refreshAssetState() }
+        assetState = "installed"
+        show("Speech model for \(name) ready; enable dictation when ready")
+        resumeDeferredDictationSetup()
+    }
+
+    func finishDictationModelInstallFailure(_ error: Error, locale: String, backend: SpeechBackend) {
+        dictationLanguageState.invalidateAssetChecks()
+        if Task.isCancelled || error is CancellationError { return }
+        guard matchesDictationConfiguration(locale: locale, backend: backend) else { return refreshAssetState() }
+        enableWhenSpeechModelInstalled = false
+        refreshAssetState()
+        show("Asset setup failed: \(error.localizedDescription)")
+    }
+
     /// Invariant 3: every asynchronous asset result, including an error or install completion, belongs to this pair.
     func matchesDictationConfiguration(locale: String, backend: SpeechBackend) -> Bool {
         self.locale == locale && dictationBackend == backend

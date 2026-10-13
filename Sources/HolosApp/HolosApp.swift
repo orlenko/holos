@@ -1572,7 +1572,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     func installAssets() {
         guard !installingAssets, !isBusy, !enabled, !enabling else { return }
         installingAssets = true  // also keeps the language from changing until the install ends
-        updateSettings()
+        prepareDictationModelInstall()
         assetTask = Task { [weak self] in
             guard let self else { return }
             // Without a saved choice the language is the default one, known once the languages are loaded: installing
@@ -1589,19 +1589,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 try await AppleSpeechEngine.installAssets(locale: locale, backend: backend)
                 self.installingAssets = false
                 if Task.isCancelled { return }
-                if !self.matchesDictationConfiguration(locale: locale, backend: backend) { self.refreshAssetState(); return }
-                self.assetState = "installed"
-                self.show("Speech model for \(name) ready; enable dictation when ready")
-                // The Setup Assistant finished while this downloaded (in this run or before a quit or its reopen).
-                self.resumeDeferredDictationSetup()
+                self.finishDictationModelInstall(locale: locale, backend: backend, name: name)
             } catch {
                 self.installingAssets = false
-                // Cancelled by the quit (the assistant's reopen included): the saved intent stays for the next launch.
-                if Task.isCancelled || error is CancellationError { return }
-                if !self.matchesDictationConfiguration(locale: locale, backend: backend) { self.refreshAssetState(); return }
-                self.enableWhenSpeechModelInstalled = false
-                self.refreshAssetState()
-                self.show("Asset setup failed: \(error.localizedDescription)")
+                self.finishDictationModelInstallFailure(error, locale: locale, backend: backend)
             }
         }
     }
