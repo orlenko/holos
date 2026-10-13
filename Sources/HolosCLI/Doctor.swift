@@ -34,8 +34,8 @@ struct Doctor: AsyncParsableCommand {
             foundationModel: String(describing: model.availability),
             contextSize: model.isAvailable ? model.contextSize : nil,
             voiceCount: NativeSpeechRenderer.voices().count, speech: speech, dictation: dictation, locale: locale,
-            speechAssetStatus: (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .speech)) ?? "unsupported",
-            dictationAssetStatus: (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .dictation)) ?? "unsupported",
+            speechAssetStatus: await AppleSpeechEngine.assetStatusOrUnknown(locale: locale, backend: .speech),
+            dictationAssetStatus: await AppleSpeechEngine.assetStatusOrUnknown(locale: locale, backend: .dictation),
             sessionsDirectory: HolosPaths.sessions.path,
             speakerModels: speakerModels.doctorValue, deepTranscriptionModel: whisperModel,
             naturalVoices: Dictionary(uniqueKeysWithValues: NaturalVoicePack.allCases.map {

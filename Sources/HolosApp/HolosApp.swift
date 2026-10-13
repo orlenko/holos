@@ -199,18 +199,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// The assistant's Reopen Voice is Local: a helper reopens the app once this process has exited. Cleared when
     /// the quit is cancelled, so a later quit never reopens.
     var reopenAfterQuit = false
-    /// The dictation language's speech model state; set by the asset checks and `loadLanguages`.
-    var assetState: String?
+    /// The language snapshot, derived pickers and coalesced asset requests (invariants 1–3).
+    let dictationLanguageState = DictationLanguageState()
     private var shortcut: HotkeyChoice = .rightOption
-    /// The languages each of Apple's recognizers supports; nil until a load finished. A missing backend is retried
-    /// while each backend's known languages are retained (invariant 2). Set only by
-    /// `loadLanguages` (HolosApp+DictationLanguage.swift), as are the two groupings and `languagesTask`.
-    var recognizerLocales: RecognizerLocales?
-    /// The dictation languages (both recognizers), grouped for a picker (`DictationLanguage.groups`).
-    var localeGroups: [[String]] = []
-    /// The meeting languages (`SpeechTranscriber`'s only), grouped the same way.
-    var meetingLocaleGroups: [[String]] = []
-    var languagesTask: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         applyAppearance()  // before any window opens
@@ -450,7 +441,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self.controller.locale = locale
                 self.controller.recognizers = self.recognizerLocales ?? .unknown
                 self.controller.contextualStrings = self.dictationVocabulary(language: locale)
-                let state = try await AppleSpeechEngine.assetStatus(locale: locale, backend: backend)
+                let state = try await self.checkDictationAssets(locale: locale, backend: backend)
                 guard !Task.isCancelled, generation == self.enableGeneration else { return }
                 guard self.matchesDictationConfiguration(locale: locale, backend: backend) else {
                     self.enabling = false
@@ -462,6 +453,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                     self.enabling = false
                     self.show("Install the speech model for \(self.languageName) in Voice is Local Settings first.")
                     self.showSetupUnlessAssistant()
+                    self.resumeDeferredDictationSetup()
                     return
                 }
                 let monitor = GlobalHotkeyMonitor(shortcut: self.shortcut) { [weak self] action in self?.handle(action) }
@@ -649,6 +641,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             // Cancelled or disabled: usually nothing to keep, but Copy Original may hold what was heard when Apple
             // Intelligence's fix already changed written text.
             retainResult()
+            synchronizeDictationLanguage()  // invariant 5: cancellation applies recovery before the next key press
         case .preparing:
             message = "Preparing — wait before speaking"
             if showPreview {

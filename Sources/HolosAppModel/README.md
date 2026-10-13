@@ -12,6 +12,8 @@ executable.
   Setup's enable decision waits for an active model installation even when a recovered language's model is installed.
 - Dictation results: `ResultRetention` and `DictationResult` (what Copy Result and Copy Original offer),
   `DeclinedCorrectionQueue` (swaps learning declined, kept until the user adds or skips each one).
+- `DictationLanguageState`: the app's language snapshot, derived picker groups and coalesced asset checks;
+  the app injects the readers, and enable and Settings share a request for the same configuration.
 - `LicenseNotice` (the About panel's license notice and source links).
 
 **Must not own:** AppKit views or windows (`HolosApp`), controllers (`HolosMeeting`, `HolosDictation`), anything

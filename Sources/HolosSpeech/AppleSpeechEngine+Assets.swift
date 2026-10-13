@@ -1,6 +1,11 @@
 import HolosCore
 
 extension AppleSpeechEngine {
+    /// A failed readiness check is unknown, not proof that the configured language is unsupported.
+    public static func assetStatusOrUnknown(locale: String, backend: SpeechBackend) async -> String {
+        (try? await assetStatus(locale: locale, backend: backend)) ?? "unknown"
+    }
+
     /// Bounds platform asset requests while preserving their errors. Late completion publishes no caller state.
     static func boundedAssetCall<Value: Sendable>(timeout: Duration,
                                                  operation: @escaping @Sendable () async throws -> Value) async throws -> Value {

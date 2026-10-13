@@ -32,8 +32,7 @@ extension HolosAppDelegate {
     /// Checks `locale`'s speech model for the start panel; the panel refreshes with the answer.
     func checkMeetingSpeechModel(_ locale: String) {
         Task { [weak self] in
-            // The check throws only for a language the transcriber does not support (as `voiceislocal doctor` reads it).
-            let state = (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .speech)) ?? "unsupported"
+            let state = await AppleSpeechEngine.assetStatusOrUnknown(locale: locale, backend: .speech)
             guard let self else { return }
             self.meeting.speechModels[locale] = state
             self.meeting.startPanel?.refresh()

@@ -162,9 +162,14 @@ list whenever it has that language.
 
 The app retains each recognizer's last populated language list and retries a missing
 backend's list on a later language load. Picker groups are rebuilt from those cached lists.
-each backend's supported-language query waits at most five seconds, with a timeout treated
+Each backend's supported-language query waits at most five seconds, with a timeout treated
 as a missing list to retry. An asset check is discarded if its language or recognizer has
 changed while it ran.
+`DictationLanguageState` derives picker groups from the snapshot and coalesces an entire
+asset refresh, including its language load. Enable and Settings share an in-flight status
+request for the same locale/backend; an obsolete request cannot clear a newer one.
+Deferred setup resumes from confirmed installed, supported or downloading states; a failed
+check remains unknown and waits for another check.
 Asset checks wait at most fifteen seconds, and an install at most fifteen minutes; a timeout
 ends the app's wait with an error and cancels the request. Doctor recommends an installation
 command only when a supported-language list confirms the backend, including `--backend dictation`
@@ -176,6 +181,8 @@ Every validated asset refresh can fulfill that intent when the current model and
 are ready. Finish defers enabling while an older install is running, even when the recovered
 language's model is already installed; the pending intent clears once enabling succeeds.
 If the recovered choice still needs a model, the pending setup installs that model instead.
+An enable that confirms a missing model resumes the pending install even if a concurrent
+refresh completed while enabling. Cancellation applies recovered settings as it reaches idle.
 Known language lists are shared within the process between live dictation and Run Again,
 so a temporarily empty response cannot make replay choose a different recognizer. When
 a recovered list changes the default language, an active dictation keeps its original
@@ -185,8 +192,10 @@ utterances before dictation is enabled again.
 `DictationController` reads the language and picks its recognizer when each utterance
 starts (`begin`), so a change applies from the next one. The speech model that Settings and
 the Setup Assistant check and install is the chosen recognizer's for that language, and Run
-Again recognizes with the recognizer the current language needs. History records each
-dictation's language, not its recognizer, which follows from the language. The contextual
+Again recognizes with the recognizer the current language needs.
+App Run Again awaits the app's language snapshot and pins its locale/backend for that
+request, so replay cannot select a backend whose recovery the app has not applied.
+History records each dictation's language, not its recognizer, which follows from the language. The contextual
 strings (word list and learned corrections) go to either recognizer through
 `AnalysisContext`, best effort as before. The language-specific text steps stay limited to
 English and French: joining at pauses ("Pauses inside a sentence"), filler removal, spoken
@@ -199,6 +208,8 @@ Meetings keep `SpeechTranscriber` and its languages: the start panel lists only 
 with no meeting language chosen it takes the dictation language when `SpeechTranscriber` has
 it, else the closest one it has (`RecognizerLocales.meetingLanguage`).
 The fallback matches the speech list directly and waits while that list is unknown.
+Failed asset checks are shown as unknown rather than unsupported, so Install remains
+available for another attempt in the meeting start panel and dictation setup.
 
 #### Spoken paths and commands
 
