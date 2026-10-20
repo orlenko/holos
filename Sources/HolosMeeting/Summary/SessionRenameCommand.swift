@@ -189,9 +189,11 @@ public enum SessionRenameCommand {
 
     public static func run(_ request: Request) async -> Outcome {
         let session = request.session
+        var sessionID = request.expectedID
         do {
             let identity = try SessionFolderIdentity(at: session)
             let id = try SessionArchive.readManifest(at: session).id
+            sessionID = id
             try identity.verify(for: session)
             if let expected = request.expectedID, expected.caseInsensitiveCompare(id) != .orderedSame {
                 return Outcome(sessionID: id, status: .failed,
@@ -208,8 +210,11 @@ public enum SessionRenameCommand {
                 await mirrorName(request, identity: identity, id: id)
             }
             return result
+        } catch let error as SessionArchive.SpeakerLockBusy {
+            return Outcome(sessionID: sessionID, status: .busy,
+                           message: error.localizedDescription, exitCode: 1)
         } catch {
-            return Outcome(sessionID: request.expectedID, status: .failed,
+            return Outcome(sessionID: sessionID, status: .failed,
                            message: "The meeting was not renamed: \(error.localizedDescription)", exitCode: 1)
         }
     }

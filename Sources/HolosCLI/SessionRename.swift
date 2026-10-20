@@ -7,19 +7,19 @@ extension Session {
     /// `voiceislocal session rename` (docs/meeting/titles-summaries.md §4.17).
     struct Rename: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Rename a finished session, or give it back its generated title.",
+            abstract: "Rename a session, or give it back its generated title.",
             discussion: """
                 The name is kept as yours: the Meetings list, Review and the transcript files show it, and no title \
                 Apple Intelligence writes replaces it. With --generated (or an empty name) the session shows the \
                 title Apple Intelligence wrote again, or its default name until there is one. A name is one line of \
                 at most \(MeetingNaming.maximumUserNameCharacters) characters (a longer one is cut, at a space when \
                 it can be). The transcript files are rewritten so the Markdown heading follows; nothing is \
-                summarized again. Refused while the session is recording or being saved, while another Voice is \
-                Local command is working on it, while a final transcript or summary of it is being made, for a \
-                session that was interrupted or not finished properly (recover it first), and when its transcript \
-                cannot be read. Exits 0 when renamed (or it already had that name), 3 when renamed but the \
-                transcript files could not be rewritten (run the same rename again to rewrite them), and 1 \
-                otherwise, with nothing changed (the reason is printed).
+                summarized again. Renaming is available during recording, saving, and background processing, \
+                including interrupted sessions. Unreadable naming metadata prevents saving the name; brief \
+                contention with another naming or publication operation asks you to try again. Exits 0 when saved \
+                or unchanged, 3 when saved with an export or durability warning (retry the same rename to update \
+                transcript files), and 1 when naming metadata could not be committed. Export failures do not undo \
+                the saved name.
                 """)
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var path: String

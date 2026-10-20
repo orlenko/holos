@@ -12,7 +12,8 @@ import Synchronization
 /// Invariants:
 /// 1. Only a successful publication advances the saved status and its sequence.
 /// 2. Only `finish` publishes `exited`; after success no later update publishes.
-/// 3. Each publication uses the canonical name when readable metadata belongs to this session.
+/// 3. After initialization, each publication uses the canonical name when readable metadata belongs to this session.
+/// 4. The final canonical-name read and exited publication share the speaker lock.
 public actor StatusWriter {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
     /// A final write is tried this many times, `finishBackoff` × the attempt number apart.
@@ -115,8 +116,18 @@ public actor StatusWriter {
 
     /// Writes `next` with the next sequence and the current time; `status` becomes it only once it is written.
     private func write(_ next: RecorderStatus) throws {
+        let session = url.deletingLastPathComponent()
+        if next.phase == .exited {
+            try SessionArchive.withSpeakerLock(at: session) { try publish(next, session: session) }
+        } else {
+            try publish(next, session: session)
+        }
+    }
+
+    /// Final name reads and publication share the naming lock; subsequent renames happen after completion.
+    private func publish(_ next: RecorderStatus, session: URL) throws {
         var next = next
-        if let name = try? SessionNamingStore.name(session: url.deletingLastPathComponent(), sessionID: next.sessionID) {
+        if let name = try? SessionNamingStore.name(session: session, sessionID: next.sessionID) {
             next.name = name
         }
         next.sequence = status.sequence + 1

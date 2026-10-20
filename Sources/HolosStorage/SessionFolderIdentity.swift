@@ -23,6 +23,11 @@ public struct SessionFolderIdentity: Sendable {
 }
 
 extension SessionArchive {
+    /// Transient contention for the short naming/publication lock, distinct from unreadable metadata.
+    public struct SpeakerLockBusy: LocalizedError, Sendable {
+        public var errorDescription: String? { "This meeting is saving a change; try again in a moment." }
+    }
+
     /// Holds the existing speaker lock in the intended folder and verifies its path after acquiring the lock.
     /// Metadata and exports share this short lock; transcription does not hold it during inference.
     /// Caller checks `identity` again before every publication made by path. Not re-entrant.
@@ -35,7 +40,7 @@ extension SessionArchive {
         defer { Darwin.close(folder) }
         guard let descriptor = try SessionLockFile.acquire(SessionLockFile.speakers, inFolder: folder,
                                                            timeout: timeout) else {
-            throw HolosError.unavailable("This meeting is saving a change; try again in a moment.")
+            throw SpeakerLockBusy()
         }
         defer { SessionLockFile.unlockAndClose(descriptor) }
         try identity.verify(for: session)

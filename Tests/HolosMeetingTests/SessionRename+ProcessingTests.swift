@@ -5,6 +5,21 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
+@Test(.timeLimit(.minutes(1))) func namingLockContentionReturnsBusyWithTheKnownSessionID() async throws {
+    let temp = try TemporaryDirectory("rename-lock-busy")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: nil)
+    let id = try SessionArchive.readManifest(at: session).id
+    try await SessionArchive.withSpeakerLockAsync(at: session) {
+        let outcome = await SessionRenameCommand.run(.init(session: session, name: "Generated blocked title"))
+        #expect(outcome.status == .busy)
+        #expect(outcome.sessionID == id)
+        #expect(outcome.exitCode == 1)
+        #expect(!outcome.renamed)
+        #expect(SessionCatalog.summary(session: session).name != "Generated blocked title")
+    }
+}
+
 @Test func anInterruptedRecordingWithoutSettingsCanBeNamed() async throws {
     let temp = try TemporaryDirectory("rename-interrupted-start")
     defer { temp.remove() }

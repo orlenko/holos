@@ -92,6 +92,23 @@ private func wordFixOutcome(_ record: PostProcessingRecord) -> StageOutcome? {
 
 // MARK: - After a recording
 
+@Test func wordFixPromptsUseTheCanonicalTitleWhileTheManifestCopyIsStale() async throws {
+    let temp = try TemporaryDirectory("word-fix-title")
+    defer { temp.remove() }
+    let (session, _) = try await wordFixSession(in: temp.url)
+    let manifest = try SessionArchive.readManifest(at: session)
+    var meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
+    meeting.name = "Generated canonical title"
+    meeting.nameSource = .user
+    try AtomicFile.writeJSON(meeting, to: SessionPaths.meetingInfo(session))
+    let model = WordFixModel()
+    _ = try await wordFixProcessor(wordFixDependencies(model: .available(model.model)))
+        .run(session: session, lease: nil)
+    #expect(!model.titles.value.isEmpty)
+    #expect(Set(model.titles.value) == ["Generated canonical title"])
+    #expect(try SessionArchive.readManifest(at: session).name == manifest.name)
+}
+
 @Test(.timeLimit(.minutes(1)))
 func misheardWordsAreFixedInANewRevisionBeforeSpeakersAreLabelled() async throws {
     let temp = try TemporaryDirectory("word-fixes", permissions: 0o700)

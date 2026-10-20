@@ -88,9 +88,12 @@ copy. Failure of this optional update does not fail the rename or make current e
 Catalog, Review, exports, voice-sample labels and CLI display readers use canonical metadata.
 The recorder's status heartbeat and final status also use the canonical name when readable,
 so the menu bar and completion messages follow renames without modifying recording identity.
+Final status reads the name and publishes under the speaker lock. Transcription prompts and
+evaluation processing/output also resolve canonical naming; resumed experiments retain their saved prompts.
 
 Exit 0 means saved or unchanged; exit 3 means saved with an export/durability warning; exit 1
-means naming metadata could not be committed. JSON includes `name`, `nameSource`, `title`,
+means naming metadata could not be committed (`busy` for transient speaker-lock contention).
+JSON includes `name`, `nameSource`, `title`,
 `renamed` and `exportsUpdated`. In the
 app (`MeetingRowView`), Advanced › Rename… or ⌘R in the list puts an editor in place of the
 title and badges, with the title shown selected; Return or leaving the field saves, Escape

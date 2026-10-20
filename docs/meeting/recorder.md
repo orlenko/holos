@@ -50,6 +50,7 @@ Holos.app/Contents/MacOS/holos record start
 Each status publication reads the canonical name from meeting.json when readable metadata belongs
 to this session. Renaming during capture or processing therefore reaches the status heartbeat and
 the final completion message without changing recorder identity.
+The final name read and exited-status publication hold the speaker lock together.
 
 `RecorderChannel` (PR2a, `Sources/HolosMeeting/RecorderChannel.swift`):
 

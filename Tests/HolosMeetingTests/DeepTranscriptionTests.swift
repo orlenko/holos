@@ -135,6 +135,22 @@ private func deepStage(_ record: PostProcessingRecord) -> StageOutcome? {
 
 // MARK: - Prompt
 
+@Test func deepPromptsUseTheCanonicalTitleWhileTheManifestCopyIsStale() async throws {
+    let temp = try TemporaryDirectory("deep-title")
+    defer { temp.remove() }
+    let (session, _) = try await deepSession(in: temp.url)
+    let manifest = try SessionArchive.readManifest(at: session)
+    var meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
+    meeting.name = "Generated canonical title"
+    meeting.nameSource = .user
+    try AtomicFile.writeJSON(meeting, to: SessionPaths.meetingInfo(session))
+    let transcriber = ScriptedTranscriber(script: scriptedHearing)
+    _ = try await deepRun(session, deepDependencies(transcriber))
+    #expect(!transcriber.requests.value.isEmpty)
+    #expect(transcriber.requests.value.allSatisfy { $0.prompt.hasPrefix("Generated canonical title.") })
+    #expect(try SessionArchive.readManifest(at: session).name == manifest.name)
+}
+
 @Test func promptCandidatesPutTheMeetingsVocabularyFirst() {
     let candidates = DeepTranscriptionPrompt.candidates(
         vocabulary: ["strick", "Not in the list", "JBLM"], wordList: ["Davin", "JBLM", "Strick", "  Husky   bus "],
