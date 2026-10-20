@@ -221,7 +221,8 @@ public enum SessionRenameCommand {
         guard manifest.id == id else { throw HolosError.invalidInput("This folder holds another meeting.") }
         // A recorder creates its full settings after the manifest. Do not replace that initialization with inferred settings.
         if manifest.status == ArchiveStatus.recording,
-           try AtomicFile.readIfPresent(SessionPaths.meetingInfo(session), maxBytes: 1 << 20) == nil {
+           try AtomicFile.readIfPresent(SessionPaths.meetingInfo(session), maxBytes: 1 << 20) == nil,
+           try SessionArchive.isActive(at: session) {
             return Outcome(sessionID: id, status: .busy, message: "The meeting is starting; try again in a moment.", exitCode: 1)
         }
         let meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)

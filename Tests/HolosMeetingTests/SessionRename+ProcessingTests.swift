@@ -5,6 +5,19 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
+@Test func anInterruptedRecordingWithoutSettingsCanBeNamed() async throws {
+    let temp = try TemporaryDirectory("rename-interrupted-start")
+    defer { temp.remove() }
+    let archive = try SessionArchive.create(root: temp.url, name: "Generated initial title", source: .microphone,
+                                           locale: "en-CA", backend: .speech)
+    await archive.releaseLock()
+    let outcome = await SessionRenameCommand.run(.init(session: archive.directory, name: "Generated saved title"))
+    #expect(outcome.exitCode == 0)
+    #expect(outcome.renamed)
+    #expect(SessionCatalog.summary(session: archive.directory).displayTitle == "Generated saved title")
+    #expect(try SessionArchive.readManifest(at: archive.directory).status == ArchiveStatus.recording)
+}
+
 @Test func finalTranscriptPublicationKeepsARenameMadeDuringProcessing() async throws {
     let temp = try TemporaryDirectory("rename-final-transcript")
     defer { temp.remove() }
