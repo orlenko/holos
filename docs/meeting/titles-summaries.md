@@ -54,81 +54,44 @@ inferred, is already `default`, which it can only be beside a made-up name since
 together; otherwise, whatever the name looks like, made from the meeting's own data: an import's
 file name without its extension, else "Meeting yyyy-MM-dd HH:mm" from when it started, in local
 time).
-meeting.json is patched as a JSON object, so fields a newer build added within schema 1 are kept;
-a meeting without one gets one with its inferred settings; one that cannot be read (damaged,
-newer) refuses the rename. Under the processing lease and the writer lock (`openForMaintenance`),
-the commit comes first: meeting.json's `name` and `nameSource` in one atomic write (`writeNaming`).
-When it fails, nothing changed (exit 1) and nothing needs undoing; one that fails after its file is
-in place (its folder not synced; read back as the target) counts as committed. Then the manifest's
-name is written as a copy (status kept), and the `renamed` event (`nameSource`) is journaled; a copy
-that cannot be written is not rolled back: the rename stands, exit 3, and the copy is left stale.
-A meeting whose manifest name differs from meeting.json's (`SessionSummary.nameCopyIsStale`) reads
-as out of date, so Update Transcript Files (Finish Rename without a transcript) runs the meeting's
-rename now, which finds it unchanged, writes the copy and rewrites the files. No partial state needs
-guessing: the meeting is either renamed (meeting.json) or not. The message of an exit 3 names the
-repair the meeting's menu offers (Finish Rename for a meeting without a transcript). A rename that fails after the preparation rewrote the files under the old name
-exits 3 too and says so (they changed, and files edited by hand were moved aside). The JSON result
-says whether the name changed (`renamed`): the app's alert for exit 3 says the meeting was renamed
-but its files still show the old title (Update Transcript Files) only then, and otherwise that it
-was not renamed (`MeetingRenameRun.alert`). A summary.json a newer build wrote refuses the rename,
-as other newer files do (the rewritten files would lose it and the generated title), and so does one
-that cannot be read now (`unreadable`, tried again later); only a missing or damaged one counts as
-none. The catalog keeps the reason (`summaryProblem`, `MeetingSummaryStore.readChecked`) and Rename
-is off for it, with the reason as the tooltip. A preparation that stops after its first write
-(the pending record, a file moved aside or replaced) exits 3, saying the files were partly
-rewritten under the old name; only one that stops before any write exits 1 (each write counts
-from its check, since a publication can land and then fail on the folder sync). The folder is
-checked once more before the `renamed` event is journaled; a replaced one gets no event (exit 3). A
-meeting without a transcript and transcript files is renamed whatever its export record and its
-summary.json say (neither is read), in the policy and the command alike (the files are not touched); a stale copy of its name is offered
-as Finish Rename (`MeetingRenameRun.repairTitle`). The summary
-the rename read and checked at its start is the one the rewrites write (`regenerateLocked`'s
-`summaryRecord`), not read again. The app passes the meeting it means (`--expect-id`); a folder
-whose manifest names another is refused before anything is written, and a result about another
-meeting is not applied. A rewrite that carries the summary clears its `exportsPending` (the
-summary's own files left to write) through the summary store, under the speaker lock, so the summary
-schedule does not start a run to rewrite them again; the app clears a Review's mark
-(`PendingExports`) after a rename only when its count is the one read before the rename started.
-Then the transcript files are rewritten under the speaker lock with
-the people store's names, Remember voices and the user's own name read once (the key a current
-summary is checked with; read from the people store under its lock, inside the speaker lock, when
-each rewrite runs and held until the files are written, as `session summarize` does at its save,
-so Remember voices turned off or a person renamed meanwhile reaches the files), so the Markdown
-heading follows and the summary stays, without the
-model; transcript files without a usable record of what was generated (no `exports/.generated.json`,
-or a damaged one, `SessionExports.hasUsableRecord`: one that does not decode, or whose entries are not
-the transcript file names with a 64-digit lowercase SHA-256, or that does not cover all three
-formats in `pending` when it has one (a write in progress records them all there), else in `files`, `GeneratedRecord.isValid`, which every
-regeneration reads the same way; any of the Markdown, JSON and text files) are
-first rewritten under the old name, so they
-are not taken for edited files and moved aside, and when that fails (or the record cannot be read
-now, or a newer build wrote it) nothing is changed (`failed`, or `unreadable`). Everything the rename
-decides from (the manifest, meeting.json, the name asked for, whether it is already so) is read
-after the processing lease is taken, so another rename that ends while this one waits for the lease
-is seen; all of it runs in the lease's use (`ProcessingLease.withUse`, the device and inode check
-every processing command makes) and checks the manifest's ID is the one asked for, and the folder is
-checked again before each step that writes (the preparation, the name, its source, each rewrite of
-the files, and within a rewrite before the exports folder is made sure of, each file moved aside as
-edited, the pending record, each file and the final record; and again right before the commit, and
-before Update Transcript Files writes the manifest's copy, once the archive is open:
-`SessionExports.regenerateLocked`'s `check`, `ProcessingLease.verify`), so a folder moved or replaced meanwhile gets nothing more written (`busy` before the
-name; exit 3 once the name is written); the recorder's liveness is read before it (the rename's own lease would read as one). A current
-transcript that is there but cannot be read refuses the rename before anything is written, rather
-than leaving the files with the old title: one a newer build wrote, or a damaged one, `failed`
-(update, or Recover); anything else `unreadable`, tried again later. Refused (`busy`, exit 1) while
-the meeting records or saves (liveness `capturing` or `processing`), while the deep transcription
-lock names it (a final transcript or a summary of it; another meeting's job does not count), and
-while another process holds the lease. Only a meeting finished by the predicate summaries and final
-transcripts use (`MeetingSummarySchedule.isFinished` of the catalog's state: saved, recovered,
-audio only, transcript incomplete) is renamed: one still saving is `busy`; an interrupted one
-(a `recording` manifest, or a `processing` one whose recorder is gone) is refused until Recover, and
-so are incomplete, failed and damaged ones (`failed`). A rename to the name (and source) the
-meeting already has (the source compared as read, stored or inferred; the user's name asked for
-again, exactly or as it cleans to, keeps its source, also one a newer build wrote or none) writes
-no name and no source but still rewrites the transcript files (`unchanged`), so one
-whose files could not be rewritten is finished by asking for it again (files that already show the
-title get the same bytes). Exit 0 `renamed` or `unchanged`, 3 when the transcript files could not
-be rewritten, 1 otherwise, with `name`, `nameSource`, `title` and `exportsUpdated` in the JSON. In the
+meeting.json is patched as a JSON object, preserving additional fields within schema 1.
+Naming is available during recording, saving, final transcription, echo removal and summaries.
+It needs readable naming metadata and the short speaker lock, independent of the recording's
+writer lock and processing lease. A recording whose settings are still being initialized asks
+the caller to retry after initialization. A missing meeting.json on a saved meeting receives
+inferred settings; damaged, unreadable, newer or mismatched naming metadata prevents the write.
+
+The canonical name and source commit in one atomic write (`SessionNamingStore.writeLocked`).
+A write that fails before publication changes neither; one that publishes but cannot confirm
+its directory sync is reported as saved with a durability warning. No rollback is needed.
+The folder's device and inode are captured before waiting and verified after taking the lock,
+before the naming commit and before every export publication (`SessionFolderIdentity`,
+`withVerifiedSpeakerLockAsync`). A replacement folder, even with the same session ID, receives
+no further writes. The app passes `--expect-id`; another meeting at that path is refused.
+Decisions use metadata reread inside the speaker lock, so an earlier rename is seen.
+
+Available transcript files are rewritten under the same speaker lock, with the people store
+read under its lock (speakers → profiles). A transcript, summary, profile or export failure
+leaves the canonical name saved and reports a warning; a meeting without a transcript or
+transcript files needs no export update. Newer or unreadable summary data is left intact.
+An unchanged name still retries export publication. The summary checked for the rewrite is
+passed to `regenerateLocked`; a rewrite including it clears its `exportsPending`.
+The app clears Review's `PendingExports` mark only when its generation matches the one read
+before the command. Hand-edited files are preserved by the export writer; an unverified
+legacy file may also be preserved when its previous title cannot be established.
+
+After releasing the speaker lock, the command optionally updates manifest.json's compatibility
+copy and journals a `renamed` event. It skips active writers and processing-lease contention.
+The copy operation takes processing → writer → speaker locks, verifies the folder again and
+rereads the latest canonical name, so an intervening rename cannot be overwritten by an older
+copy. Failure of this optional update does not fail the rename or make current exports stale.
+Catalog, Review, exports, voice-sample labels and CLI display readers use canonical metadata.
+The recorder's status heartbeat and final status also use the canonical name when readable,
+so the menu bar and completion messages follow renames without modifying recording identity.
+
+Exit 0 means saved or unchanged; exit 3 means saved with an export/durability warning; exit 1
+means naming metadata could not be committed. JSON includes `name`, `nameSource`, `title`,
+`renamed` and `exportsUpdated`. In the
 app (`MeetingRowView`), Advanced › Rename… or ⌘R in the list puts an editor in place of the
 title and badges, with the title shown selected; Return or leaving the field saves, Escape
 cancels, and the rows are not rebuilt meanwhile (the 2 s refresh waits). Double-click opens
@@ -148,7 +111,7 @@ overwrite in place with its time set back is seen), whoever wrote them
 the meeting has a transcript (a rewrite that failed before its first file), when the record of what was
 generated is missing, damaged, from a newer build or left mid-write (`pending`), when any of the
 three files is missing or not the one the record says was written, or when transcript.md is not
-headed by the title the meeting shows, or transcript.json does not record the manifest's name (a
+headed by the title the meeting shows, or transcript.json does not record the canonical name (a
 rename that changed the name but not the title shown) or the current transcript's ID (a final
 transcript or recovery that saved a new transcript and stopped before the rewrite) (`MeetingNaming.title`, escaped as the export writes it,
 `TranscriptExporter.markdownHeading`). Then the meeting's status line says so (not while a command
@@ -163,21 +126,12 @@ it; the count only grows, also across a clear, so no later mark reuses one read 
 An unedited save in the editor never runs it. The app runs the rename as `voiceislocal session
 rename … --json` (`MeetingRenameRun.arguments`: the name after `--`, so one starting with "-" is a
 name), a child in its own session like the other maintenance commands, so quitting the app never
-cuts it between its writes; the meeting is registered as in use meanwhile (`beginUsing`,
-"Renaming…"), so no command or background job starts on it, and a meeting in use is refused with
-an alert. A quit before the rename ends leaves files that read as out of date after the next launch,
-so Update Transcript Files is offered. Rename is off,
-with the reason as its tooltip (`MeetingActionPolicy.renameRefusal`), wherever the command refuses
-without trying: a meeting not finished, one a summary or final transcript of which runs in any
-process (`jobInProgress`, from the background-job lock, also a job that has not written who it is
-yet, which holds every meeting as the command counts it: one started in Terminal holds it without
-holding the meeting until it saves), one whose exports/.generated.json a newer build wrote or that cannot be read now
-(`exportsProblem`, `SessionExports.recordProblem`; a missing or damaged one is not a problem), one without a current transcript whose transcript files exist (any of the
-three, `SessionExports.hasTranscriptFiles`, as the command checks them; they could not
-follow the name: the command refuses it too, "transcript missing; recover it first"), one whose
-meeting.json the catalog could not read
-(`metadataProblem`: damaged, of another session, from a newer build, unreadable now), or one whose
-current transcript it could not read (`transcriptProblem`).
+cuts it between its writes. A rename does not register or clear the meeting's in-use entry,
+and does not stop or block its background job. A quit before exports finish leaves files that
+read as out of date on the next launch, with Update Transcript Files offered. Rename is off
+only when the manifest or naming metadata cannot be read (`metadataProblem`), with the reason
+as its tooltip (`MeetingActionPolicy.renameRefusal`). Transcript and export problems do not
+disable naming.
 The new title shows at once in the list and the search, Review's window title
 (`ReviewWindow.meetingTitle`, also the name Save As… suggests) and the live transcript's header
 once the meeting is saved; the app's alerts name meetings by the title shown. An open Review window
@@ -385,39 +339,12 @@ writing nothing when the model is unavailable or fails or another command holds 
 meeting without transcript, speaker names reaching the prompt, records of another session or a
 newer build; the schedule's order, waits, attempts, requests and battery rule; the scan),
 `MeetingListFormatTests` (groups, the detail line, durations, people, badges, the displayed
-title, search), `SessionRenameTests` (names cleaned and cut, special characters, the default name
-given back (also for a user's name that looks like a default one), what the editor asks for (a
-long older name left as it was is not rewritten), when Rename is offered; the command: the name and
-`nameSource` saved with other meeting.json fields kept, the heading and summary in the files,
-the generated title back, older transcript files not moved aside, and nothing changed when they
-cannot be prepared or their record is damaged, a rename whose files failed finished by asking again,
-the state read under the lease after another rename, a JSON file alone prepared, one title rule for
-the list and the heading (a summary of an earlier transcript, or made with other names), a meeting.json write that fails putting the old
-name back, titles changed elsewhere noticed by the list, a meeting without transcript, refusals while held by a command, a summary or
-final transcript of it, or a recorder, an interrupted recording (also after capture stopped), a meeting.json the catalog could not read
-turning Rename off, the generated title offered only from a current summary, Review's title read as
-the list's when the transcript is damaged, the same name keeping a source a newer build wrote, export records with malformed entries counted as
-damaged, also an empty or partial one, a newer export record and transcript files without a
-transcript (a JSON file alone too) turning Rename off, a folder replaced once the lease is taken
-left alone and each write checking the folder again, a job of the meeting running elsewhere turning
-Rename off, people read under their lock when the files are written, a name that cannot be put back
-exiting 3, a name saved but not confirmed exiting 3, the derived out-of-date check (a heading of
-another title, a JSON file not the one recorded, a damaged or mid-write record, current files, the
-cache), Update Transcript Files rewriting for the title shown, files behind the speaker labels known,
-each file write checking the folder, the name and source committed in one write (a failed one changing nothing), a
-stale manifest copy repaired by Update Transcript Files and Finish Rename, a meeting never renamed using
-the manifest's name, a published commit treated as partial, a rewrite with the summary clearing its
-pending files, a pending map that
-must be complete, a transcript without files out of date, a check before moving an edited file aside,
-a job not yet named holding every meeting, an unreadable export record turning Rename off, the
-name in transcript.json checked, files of an earlier transcript out of date, the
-alert telling renamed from not renamed, a newer summary.json refusing, a mark set again during a check
-kept, a preparation stopped after its first write exiting 3, a cleared mark never reusing a count, an
-unreadable summary.json refusing and turning Rename off, a failed first write that may have landed
-reported, the event only on the locked folder, a transcript-free
-meeting renamed whatever its export record, the checked summary
-written, the expected meeting refused when another, a preparation reported when the rename then fails, a
-transcript from a newer build, damaged, or unreadable now, an unreadable meeting.json).
+title, search), `SessionRenameTests` (name cleaning, source selection, atomic canonical commit,
+recording and processing locks preserved, concurrent naming, folder replacement checks,
+export failures separated from naming, canonical readers and stale-file detection),
+`SessionFolderIdentityTests` (metadata fields preserved, replacement identity rejected and
+shared-lock release), `StatusWriterTests` (canonical names in recording and final status),
+and `MeetingsPaneActionsTests` (the rename shortcut while transcription runs).
 
 **Follow-ups.** The summary in Review. If Apple's model proves too weak on long or noisy meetings, a local
 Qwen3.5 4B/9B through MLX (evaluated for span judging; its weights are not in the app).

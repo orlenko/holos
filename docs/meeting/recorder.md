@@ -40,12 +40,16 @@ Holos.app/Contents/MacOS/holos record start
 
 | File | Writer | Reader | Rule |
 |---|---|---|---|
-| `meeting.json` | recorder at start | post-processor, app | written once, before capture starts |
+| `meeting.json` | recorder at start; rename command | post-processor, app | settings initialized before capture; canonical name/source updated under the speaker lock |
 | `vocabulary.json` | recorder at start (copy of `--vocabulary-file`, which it then deletes) | recorder, replay, rebuild, post-processing | written once |
 | `status.json` | recorder `StatusWriter` actor | app, `holos record status` | atomic rewrite on every change and as a heartbeat every 1 s from launch until exit; `sequence` increments; kept after exit with `phase: exited` |
 | `control/<UUID>.json` | app or CLI via `RecorderChannel.send` | recorder `ControlInbox` | published by rename from `control/.<UUID>.tmp`; polled every 100 ms while capture runs and every 1 s after it stops; applied at most once; `controlHandled` event; file deleted; `ControlAck` added to `status.json`; leftovers deleted at exit |
 | `stop.request` | legacy `holos record stop` | recorder | still honoured as a stop request |
 | `control.json` | — | — | no longer written (PR2a); `status.json` carries pid and start time |
+
+Each status publication reads the canonical name from meeting.json when readable metadata belongs
+to this session. Renaming during capture or processing therefore reaches the status heartbeat and
+the final completion message without changing recorder identity.
 
 `RecorderChannel` (PR2a, `Sources/HolosMeeting/RecorderChannel.swift`):
 

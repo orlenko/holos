@@ -8,6 +8,38 @@ import Testing
 
 @MainActor
 struct MeetingsPaneActionsTests {
+    @Test func renameShortcutSavesWhileTheMeetingIsTranscribing() throws {
+        let temp = try TemporaryDirectory("meeting-rename-processing")
+        defer { temp.remove() }
+        let (window, pane) = try LiveMeetingViewTests.meetings(size: .init(width: 1000, height: 700), root: temp.url)
+        let summary = SessionSummary(id: "generated-id", directory: temp.url, name: "Generated recording",
+                                     createdAt: .now, source: .system, state: .processing,
+                                     manifestStatus: "processing", liveness: .processing)
+        pane.show([summary], people: [:], freeBytes: nil)
+        pane.update(running: [summary.id: "Transcribing…"])
+        let table = try #require(MainWindowNarrowTests.allViews(pane.view).compactMap { $0 as? KeyTableView }.first)
+        table.selectRowIndexes(IndexSet(integer: try #require(pane.rowIndex(of: summary.id))), byExtendingSelection: false)
+        var saved: MeetingRenameRequest?
+        pane.runRename = { selected, request in
+            #expect(selected.id == summary.id)
+            saved = request
+        }
+        let key = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "r",
+            charactersIgnoringModifiers: "r", isARepeat: false, keyCode: 15))
+        table.keyDown(with: key)
+        let row = try #require(table.view(atColumn: 0, row: table.selectedRow, makeIfNecessary: true) as? MeetingRowView)
+        let editor = try #require(MainWindowNarrowTests.allViews(row).compactMap { $0 as? NSTextField }
+            .first { $0.isEditable && !$0.isHidden })
+        editor.stringValue = "Generated updated title"
+        #expect(row.control(editor, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        #expect(saved == .user("Generated updated title"))
+        let menu = NSMenu()
+        pane.fill(menu, summary: summary)
+        #expect(menu.items.first { $0.title == "Advanced" }?.submenu?.items
+            .first { $0.title == "Rename…" }?.isEnabled == true)
+    }
+
     @Test func startRecordingUsesTheInjectedMenuActionAndFollowsRecorderAvailability() throws {
         let temp = try TemporaryDirectory("meeting-start-action")
         defer { temp.remove() }

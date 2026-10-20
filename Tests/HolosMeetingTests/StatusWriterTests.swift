@@ -71,6 +71,28 @@ private func statusSession() throws -> (TemporaryDirectory, URL, String) {
     try await writer.finish(exit: RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .requested))
 }
 
+@Test func statusAndCompletionUseTheCanonicalNameDuringRecording() async throws {
+    let (temp, session, id) = try statusSession()
+    defer { temp.remove() }
+    let writer = try StatusWriter(session: session, initial: initialStatus(id), heartbeat: .seconds(60))
+    let meeting = MeetingInfo(sessionID: id, mode: .inPerson, othersInRoom: false,
+                              nameSource: .user, name: "Generated new title")
+    try AtomicFile.writeJSON(meeting, to: SessionPaths.meetingInfo(session))
+    try await writer.update { $0.phase = .recording }
+    #expect(try RecorderChannel.readStatus(session: session)?.name == "Generated new title")
+    var other = meeting
+    other.sessionID = "another-generated-id"
+    other.name = "Another meeting"
+    try AtomicFile.writeJSON(other, to: SessionPaths.meetingInfo(session))
+    try await writer.update { $0.phase = .transcribing }
+    #expect(try RecorderChannel.readStatus(session: session)?.name == "Generated new title")
+    try AtomicFile.writeJSON(meeting, to: SessionPaths.meetingInfo(session))
+    try await writer.finish(exit: RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .requested))
+    let final = try #require(try RecorderChannel.readStatus(session: session))
+    #expect(final.name == "Generated new title")
+    #expect(MeetingReducer.summary(final).hasPrefix("Saved Generated new title"))
+}
+
 /// An atomic write that fails for phase `exited` while `failing` says so (a count of failures left; `.max` fails
 /// always), and counts the failures.
 private func exitedWriteFailing(_ failing: SharedValue<Int>, failures: SharedValue<Int>) -> StatusWriter.FileWrite {

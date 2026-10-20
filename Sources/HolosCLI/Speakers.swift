@@ -471,7 +471,7 @@ enum SpeakerCommand {
     private static func header(_ loaded: LoadedSpeakers) -> String {
         let view = loaded.view
         let manifest = loaded.snapshot.manifest
-        var parts = ["\(manifest.name) (\(manifest.id.prefix(8))…)"]
+        var parts = ["\(loaded.snapshot.sessionName) (\(manifest.id.prefix(8))…)"]
         var run = "run \(view.runID.prefix(8))"
         if let engine = loaded.snapshot.run?.engine { run += " (\(engine.engine) \(engine.engineVersion))" }
         parts.append(run)
@@ -614,7 +614,7 @@ struct SpeakerListing: Encodable {
 
     init(_ loaded: LoadedSpeakers, includeTurns: Bool) {
         let view = loaded.view
-        session = SessionInfo(id: loaded.snapshot.manifest.id, name: loaded.snapshot.manifest.name)
+        session = SessionInfo(id: loaded.snapshot.manifest.id, name: loaded.snapshot.sessionName)
         runID = view.runID
         transcriptID = view.transcriptID
         transcriptChanged = loaded.snapshot.transcriptChanged

@@ -374,10 +374,12 @@ enum PeopleCommand {
         if let uuid = UUID(uuidString: trimmed) {
             let id = uuid.uuidString
             let url = SessionPaths.folder(for: id, in: HolosPaths.sessions)
-            return (id, try? SessionArchive.readManifest(at: url).name)
+            let manifest = try? SessionArchive.readManifest(at: url)
+            return (id, manifest.map { MeetingNaming.currentName(session: url, manifest: $0) })
         }
-        let manifest = try SessionArchive.readManifest(at: try SessionLocator.resolve(trimmed))
-        return (manifest.id, manifest.name)
+        let url = try SessionLocator.resolve(trimmed)
+        let manifest = try SessionArchive.readManifest(at: url)
+        return (manifest.id, MeetingNaming.currentName(session: url, manifest: manifest))
     }
 
     /// On stderr, when the calibration saved in `before` (read before a change) has been reset since

@@ -257,8 +257,7 @@ public enum MeetingNaming {
 
     /// A meeting's name: meeting.json's (`MeetingInfo.name`, written with its `nameSource` in one write by a rename,
     /// the one place a rename commits), else, for a meeting never renamed (or one meeting.json cannot be read for), the
-    /// manifest's. The manifest's name is a copy a rename updates after meeting.json; when they differ, the meeting's
-    /// files read as out of date and Update Transcript Files (Finish Rename) writes the copy again.
+    /// manifest's. The manifest's name is an optional compatibility copy; a difference does not require repair.
     public static func name(manifestName: String, meeting: MeetingInfo?) -> String {
         guard let name = meeting?.name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return manifestName
@@ -311,6 +310,11 @@ public enum MeetingNaming {
             return stem.isEmpty ? "Imported meeting" : stem
         }
         return MeetingStartSettings.defaultName(now: createdAt, timeZone: timeZone)
+    }
+
+    /// The canonical name, with the manifest retained as a compatibility fallback.
+    public static func currentName(session: URL, manifest: SessionManifest) -> String {
+        name(manifestName: manifest.name, meeting: try? SessionFiles.meetingInfo(session: session, manifest: manifest))
     }
 
     /// The title a meeting shows now (`title`), read from its folder: its name (`name(manifestName:meeting:)`),

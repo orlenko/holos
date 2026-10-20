@@ -94,19 +94,19 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     /// Where `name` came from (`MeetingNaming.source`: meeting.json's, else inferred from the name).
     public var nameSource: MeetingNameSource
     /// The manifest's name: a copy of `name` (`MeetingNaming.name`) a rename updates after meeting.json; different
-    /// from it when that second write did not happen (`nameCopyIsStale`).
+    /// from it while another writer prevents this optional compatibility update (`nameCopyIsStale`).
     public var manifestName: String
     /// Why meeting.json cannot be read (damaged, of another session, written by a newer build, unreadable now); nil
     /// when it can, or when there is none (a meeting saved before it existed). Rename refuses such a meeting.
     public var metadataProblem: String?
     /// Why the transcript files cannot be rewritten now (`SessionExports.recordProblem`): exports/.generated.json was
-    /// written by a newer build, or cannot be read. Nil otherwise. Rename refuses such a meeting.
+    /// written by a newer build, or cannot be read. Naming remains available; export updates may warn.
     public var exportsProblem: String?
     /// A summary or final transcript of this meeting running in any process (`SessionCatalog.jobInProgress`), or nil.
-    /// Rename refuses such a meeting.
+    /// Naming remains available while this job runs.
     public var jobInProgress: String?
     /// Why summary.json cannot be used now: written by a newer build, or not readable (permissions, not a regular
-    /// file, an I/O error). Nil when it can, is missing or damaged. Rename refuses such a meeting.
+    /// file, an I/O error). Nil when it can, is missing or damaged. Naming remains available.
     public var summaryProblem: String?
     /// summary.json, when it can be read: possibly of an earlier transcript (`summaryIsCurrent` says), whose summary
     /// text is still shown until the new one is made, but not its title (`displayTitle`).
@@ -128,8 +128,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         MeetingNaming.title(name: name, source: nameSource, summary: generatedSummary, transcriptID: transcriptID)
     }
 
-    /// The manifest's copy of the name was not updated after a rename committed it to meeting.json: the meeting's
-    /// files read as out of date, so Update Transcript Files (Finish Rename) writes the copy, and the files, again.
+    /// The optional compatibility copy differs from canonical metadata; this alone does not make exports stale.
     public var nameCopyIsStale: Bool { manifestName != name }
 
     /// The generated title the meeting can show (`MeetingNaming.title`'s rule): a summary of the current transcript's;

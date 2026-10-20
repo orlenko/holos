@@ -32,13 +32,13 @@ struct Session: AsyncParsableCommand {
         mutating func run() throws {
             if try SessionArchive.isActive(at: fileURL(path)) {
                 let manifest = try SessionArchive.readManifest(at: fileURL(path))
-                Console.output("\(manifest.name) — \(manifest.status); writer active, \(manifest.chunks.count) finalized chunks.")
+                Console.output("\(MeetingNaming.currentName(session: fileURL(path), manifest: manifest)) — \(manifest.status); writer active, \(manifest.chunks.count) finalized chunks.")
                 Console.output("Run the full integrity check after processing stops.")
                 return
             }
             let report = try SessionArchive.inspectRecovery(at: fileURL(path))
             if let manifest = report.manifest {
-                Console.output("\(manifest.name) (\(manifest.id)) — \(manifest.status)")
+                Console.output("\(MeetingNaming.currentName(session: fileURL(path), manifest: manifest)) (\(manifest.id)) — \(manifest.status)")
                 Console.output("\(manifest.chunks.count) finalized chunks")
                 if try AudioDeletedRecord.isDeleted(session: fileURL(path), sessionID: manifest.id) {
                     Console.output("The audio was deleted (voiceislocal session delete --audio-only); its chunks are "

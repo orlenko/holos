@@ -606,8 +606,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         // Once saved, the title the Meetings list shows (a rename, or the generated title); while it records, the
         // name it was started with.
         let finished = phase == .saved || phase == .interrupted || phase == .failed
-        let name = (finished ? summary?.displayTitle : nil) ?? status?.name
-            ?? (follows ? meeting.controller?.reducer.meetingName : nil) ?? summary?.displayTitle ?? "Meeting"
+        let name = summary?.displayTitle ?? status?.name
+            ?? (follows ? meeting.controller?.reducer.meetingName : nil) ?? "Meeting"
         let detail: String
         switch phase {
         case .starting:
@@ -1115,16 +1115,12 @@ extension HolosAppDelegate: NSMenuDelegate {
     // MARK: - Rename (§4.17)
 
     /// Runs a rename from Meetings as `voiceislocal session rename` (`MeetingRenameRun`), a child in its own session
-    /// like the other maintenance commands, so quitting never cuts it between its writes. The meeting is registered as
-    /// in use meanwhile ("Renaming…"; one already in use is turned down with an alert). Nothing is remembered about it:
+    /// like the other maintenance commands, so quitting never cuts it between its writes. Naming does not reserve
+    /// the meeting or interfere with a recorder or processing job. Nothing is remembered about it:
     /// whether its transcript files are out of date afterwards is read from the files (the Meetings list's
     /// `TranscriptFilesCache`), so a quit before it ends, or a rename in Terminal, shows the same way.
     func runRename(_ summary: SessionSummary, _ request: MeetingRenameRequest) {
-        guard let controller = meeting.controller, let commands = meeting.commands else { return }
-        guard controller.beginUsing(summary.id, for: "Renaming…") else {
-            showSessionInUse(summary, doing: controller.sessionsInUse[summary.id])
-            return
-        }
+        guard let commands = meeting.commands else { return }
         // A Review's failed rewrite marked before the rename started is the one its rewrite makes up for; a newer one
         // (a review that failed meanwhile) is kept.
         let pendingGeneration = PendingExports().generation(summary.id)
@@ -1136,7 +1132,6 @@ extension HolosAppDelegate: NSMenuDelegate {
                 self?.renameEnded(summary, result, pendingGeneration: pendingGeneration)
             }
         } catch {
-            controller.endUsing(summary.id)
             meeting.meetingsPane?.renameEnded(summary, outcome: nil, failure: error.localizedDescription)
         }
     }
@@ -1151,7 +1146,6 @@ extension HolosAppDelegate: NSMenuDelegate {
             ?? "The rename command ended with code \(run.code)."
         // The files were rewritten from the saved speaker labels: a Review's earlier failed rewrite is made up for.
         if outcome?.exportsUpdated == true { PendingExports().clear(summary.id, ifGeneration: pendingGeneration) }
-        meeting.controller?.endUsing(summary.id)
         refreshReviewTitle(summary.id)
         meeting.meetingsPane?.renameEnded(summary, outcome: outcome, failure: failure)
     }

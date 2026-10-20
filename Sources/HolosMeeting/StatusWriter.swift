@@ -8,6 +8,11 @@ import Synchronization
 /// `sequence`, and sets `updatedAt`; a heartbeat rewrites the file every second from launch until `finish`, so the
 /// status stays fresh through transcription and post-processing. After a successful `finish` the file says `exited`
 /// and later updates are ignored.
+///
+/// Invariants:
+/// 1. Only a successful publication advances the saved status and its sequence.
+/// 2. Only `finish` publishes `exited`; after success no later update publishes.
+/// 3. Each publication uses the canonical name when readable metadata belongs to this session.
 public actor StatusWriter {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
     /// A final write is tried this many times, `finishBackoff` × the attempt number apart.
@@ -111,6 +116,9 @@ public actor StatusWriter {
     /// Writes `next` with the next sequence and the current time; `status` becomes it only once it is written.
     private func write(_ next: RecorderStatus) throws {
         var next = next
+        if let name = try? SessionNamingStore.name(session: url.deletingLastPathComponent(), sessionID: next.sessionID) {
+            next.name = name
+        }
         next.sequence = status.sequence + 1
         next.updatedAt = Date()
         try fileWrite(next, url)
