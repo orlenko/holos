@@ -80,6 +80,10 @@ public final class MeetingPeopleCache: Sendable {
 
 /// `SessionExports.filesState` per meeting, read again only when a transcript file or its record changed (by size and
 /// modification time) or the title shown did; the Meetings list asks for every finished meeting every 2 s.
+///
+/// Invariants:
+/// 1. Entries are accessed only under the mutex.
+/// 2. A cached result is reused only while both file identity stamps and canonical naming match.
 public final class TranscriptFilesCache: Sendable {
     private struct Entry {
         var stamp: String
@@ -92,8 +96,6 @@ public final class TranscriptFilesCache: Sendable {
     public init() {}
 
     public func state(of summary: SessionSummary) -> SessionExports.FilesState {
-        // The manifest's copy of the name not updated after a rename: out of date whatever the files hold.
-        if summary.nameCopyIsStale { return .stale }
         let session = summary.directory
         // The echo analysis too: a mask saved or replaced makes the files out of date (§5.11).
         let stamp = (SessionExports.formats.map { SessionPaths.export($0.rawValue, in: session) }

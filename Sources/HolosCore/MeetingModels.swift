@@ -207,7 +207,7 @@ public struct MeetingInfo: Codable, Sendable, Equatable {
     /// `MeetingNaming.source` infers from the name.
     public var nameSource: MeetingNameSource?
     /// The meeting's name, written by a rename together with `nameSource` in one write (the rename's commit point,
-    /// docs/meeting/titles-summaries.md §4.17); the manifest's name is a copy updated after it. Nil until a rename: the
+    /// docs/meeting/titles-summaries.md §4.17); the manifest's name is an optional compatibility copy. Nil until a rename: the
     /// manifest's name is the meeting's.
     public var name: String?
 

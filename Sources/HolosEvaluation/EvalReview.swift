@@ -1,5 +1,6 @@
 import Foundation
 import HolosCore
+import HolosMeeting
 import HolosStorage
 
 /// Writes the review page and its audio (`voiceislocal eval review`).
@@ -52,7 +53,7 @@ public enum EvalReview {
                 try? FileManager.default.removeItem(at: render)
             }
         }
-        let data = EvalReviewPage.pageData(report: report, run: run, sessionName: manifest.name)
+        let data = EvalReviewPage.pageData(report: report, run: run, sessionName: MeetingNaming.currentName(session: session, manifest: manifest))
         let page = folder.appendingPathComponent("review.html")
         try EvalStore.writeData(Data(try EvalReviewPage.html(data).utf8), to: page)
         return page

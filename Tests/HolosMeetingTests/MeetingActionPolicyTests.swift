@@ -92,16 +92,16 @@ private func actionSummary(state: SessionState = .complete, manifestStatus: Stri
 @Test func meetingActionsAreOffWhileTheMeetingIsInUseOrLive() {
     let summary = actionSummary(state: .interrupted, speakers: .none, derivedBytes: 10)
     let all = MeetingActionPolicy.enabled(summary, inUse: false, hasExport: true)
-    // Interrupted: Recover first, so no Rename.
-    #expect(all == [.recover, .showInFinder, .openTranscript, .saveTranscript, .deleteAudio, .deleteMeeting, .cleanUp])
+    // Recovery and naming are independent.
+    #expect(all == [.recover, .showInFinder, .openTranscript, .saveTranscript, .deleteAudio, .deleteMeeting, .cleanUp, .rename])
     // The app works on it (a command, Clean Up, Save Transcript As…, the automatic relabel).
-    #expect(MeetingActionPolicy.enabled(summary, inUse: true, hasExport: true) == [.showInFinder, .openTranscript])
+    #expect(MeetingActionPolicy.enabled(summary, inUse: true, hasExport: true) == [.showInFinder, .openTranscript, .rename])
     // Another process holds it: nothing that takes the lease.
     for liveness in [RecorderLiveness.capturing, .processing, .maintenance] {
         var live = summary
         live.liveness = liveness
         #expect(MeetingActionPolicy.enabled(live, inUse: false, hasExport: false)
-            == [.showInFinder, .saveTranscript], "\(liveness)")
+            == [.showInFinder, .saveTranscript, .rename], "\(liveness)")
     }
     var labelling = actionSummary(speakers: .running)
     labelling.liveness = .dead

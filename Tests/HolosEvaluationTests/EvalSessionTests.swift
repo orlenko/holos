@@ -154,7 +154,13 @@ private func evalAllText(_ folder: URL) -> String {
     let temp = try TemporaryDirectory("eval")
     defer { temp.remove() }
     let session = try await SessionFixtures.makeSession(in: temp.url, audioSeconds: ["mic": 12], transcript: nil)
+    let manifest = try SessionArchive.readManifest(at: session)
+    var meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
+    meeting.name = "Generated evaluation title"
+    meeting.nameSource = .user
+    try AtomicFile.writeJSON(meeting, to: SessionPaths.meetingInfo(session))
     let prepared = try CloudEvaluation.prepare(session: session, options: evalOptions(), vocabulary: evalNoVocabulary)
+    #expect(prepared.sessionName == "Generated evaluation title")
     #expect(prepared.record.tracks.map(\.track) == ["mic"])
     #expect(prepared.record.tracks[0].segments.count == 3)
     #expect(prepared.pendingCount == 3)

@@ -448,7 +448,7 @@ public enum EvalLocal {
             let transcriber = try await deepTranscription.makeTranscriber()
             if record.prompt == nil {
                 let built = try await DeepTranscriptionPrompt.build(
-                    meetingName: record.vocabularySource == "none" ? nil : manifest.name, candidates: record.vocabulary,
+                    meetingName: record.vocabularySource == "none" ? nil : MeetingNaming.currentName(session: session, manifest: manifest), candidates: record.vocabulary,
                     tokenCount: { try await transcriber.promptTokenCount($0) })
                 record.prompt = built.text
                 progress("Prompt: \(built.terms.count) of \(record.vocabulary.count) vocabulary terms, "
@@ -567,7 +567,7 @@ public enum EvalLocal {
         var transcript = try assemble(record: record, parts: parts, session: session, manifest: manifest,
                                       scorer: dependencies.makeScorer())
         if record.textSteps.contains(PostProcessingStage.wordFixes.rawValue) {
-            transcript = try await applyingWordFixes(to: transcript, title: manifest.name,
+            transcript = try await applyingWordFixes(to: transcript, title: MeetingNaming.currentName(session: session, manifest: manifest),
                                                      dependencies: wordFixes, progress: progress)
         }
         try Task.checkCancellation()

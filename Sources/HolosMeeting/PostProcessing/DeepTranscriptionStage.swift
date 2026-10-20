@@ -188,7 +188,7 @@ public enum DeepTranscriptionStage {
         let prompt: DeepTranscriptionPrompt.Prompt
         do {
             prompt = try await DeepTranscriptionPrompt.build(
-                meetingName: request.manifest.name,
+                meetingName: MeetingNaming.currentName(session: request.session, manifest: request.manifest),
                 candidates: DeepTranscriptionPrompt.candidates(vocabulary: vocabulary, wordList: wordList,
                                                                names: dependencies.names()),
                 tokenCount: { try await transcriber.promptTokenCount($0) })

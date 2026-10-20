@@ -1013,7 +1013,7 @@ public enum VoiceProfileService {
                     }
                     let sample = VoiceprintSample(
                         id: plan.existing?.id ?? UUID().uuidString, sessionID: snapshot.manifest.id,
-                        sessionName: snapshot.manifest.name, speakerIDs: plan.speakerIDs,
+                        sessionName: snapshot.sessionName, speakerIDs: plan.speakerIDs,
                         speechSeconds: result.speechSeconds, embedding: result.vector, condition: result.condition,
                         weak: result.weak, droppedOutlierTurns: result.droppedOutlierTurns,
                         addedAt: plan.existing?.addedAt ?? Date(), generation: generation, inputDigest: plan.digest)

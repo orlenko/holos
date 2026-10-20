@@ -504,14 +504,13 @@ timeline and a larger local-model benchmark are follow-ups.
   edits the name in the row (Return saves, Escape cancels; empty, or
   Use Generated Title, gives back the generated title); `voiceislocal session rename <session>
   <name> | --generated [--json]` does the same. The name and its `nameSource` (`user`, or
-  `default` for the generated title) are committed to meeting.json in one write, under the processing
-  lease and the writer lock; the manifest's name is then updated as a copy, and the transcript files
-  are rewritten without the model. A stale copy or files read as out of date and are repaired by
-  Update Transcript Files (Finish Rename). Refused while
-  recording or saving, while another command holds the meeting, and while a final transcript or
-  summary of it runs. Unit-tested on fixture sessions (persisted, reverted, refusals, files,
-  special characters, long names); the row's editor rendered offscreen in light and dark; not
-  yet used in the running app. Inside the meeting, Rename opens a sheet on its host window.
+  `default` for the generated title) are committed atomically to meeting.json under the short
+  speaker lock, independently of recording and processing. Transcript-file updates follow;
+  failures leave the title saved with a warning. The manifest name is an optional compatibility
+  copy and does not require user repair. Fixture tests cover held processing and recording
+  locks, metadata/export failures, folder replacement and canonical status names. Native
+  offscreen tests cover the rename shortcut while transcribing. Running-app acceptance is pending.
+  Inside the meeting, Rename opens a sheet on its host window.
 - Main window (docs/design.md "Main window"): **Open Voice is Local** (⌘0) opens one
   window with a sidebar: History (⌘1), Corrections (⌘2), Meetings (⌘3), People (⌘4),
   Reading (⌘5), and Settings (⌘,), with a

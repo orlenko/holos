@@ -1446,7 +1446,7 @@ it), else the title Apple Intelligence wrote for the current transcript, else th
 ("Meeting 2026-10-03 14:00"); a generated title never replaces a name the user gave. The
 Markdown transcript file's heading follows the same rule.
 
-A finished meeting is renamed in its row: Advanced › Rename… (⌘R in the list) turns the
+A meeting is renamed in its row: Advanced › Rename… (⌘R in the list) turns the
 title into a text field spanning the line, with the title selected. Double-clicking any part
 of the row opens the meeting. Inside the meeting, the three-dot menu's Rename… opens a name
 sheet on the main window. In the list, Return saves it, Escape
@@ -1455,10 +1455,9 @@ characters (a longer one is cut as titles are, at a space when it can be); leavi
 empty gives the meeting back its generated title, and so does the menu's Use Generated Title,
 shown while a name the user gave hides one. The name shows at once in the list, the search,
 Review's window title and the live transcript's header, and the transcript files are rewritten
-so the Markdown heading follows (nothing is summarized again). Rename is off while the meeting
-records or saves, while a command, a final transcript or a summary works on it, and for a
-meeting that is not finished (interrupted, incomplete, failed or damaged: Recover first); a
-refusal, also for a transcript that cannot be read, says why in an alert and changes nothing.
+so the Markdown heading follows (nothing is summarized again). Renaming remains available during
+recording and processing. The title saves independently of transcript-file updates; an export
+problem leaves the title saved and reports a warning. Unreadable naming metadata prevents a rename.
 When a meeting's transcript files are out of date (another title in their heading, or a rewrite
 that did not finish, whoever wrote them), the meeting says so below the list and its menu offers
 Update Transcript Files, which rewrites them for the title shown. The open meeting screen's title follows

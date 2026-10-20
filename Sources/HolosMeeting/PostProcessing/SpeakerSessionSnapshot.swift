@@ -163,9 +163,11 @@ public struct SpeakerSessionSnapshot: Sendable {
         return snapshot
     }
 
+    public var sessionName: String { MeetingNaming.name(manifestName: manifest.name, meeting: meeting) }
+
     public func exportDocument(timeZone: TimeZone = .current) -> ExportDocument {
         let metadata = ExportMetadata(
-            sessionID: manifest.id, name: manifest.name, createdAt: manifest.createdAt,
+            sessionID: manifest.id, name: sessionName, createdAt: manifest.createdAt,
             durationSeconds: manifest.chunks.map(\.end).max() ?? 0, source: manifest.source, locale: manifest.locale,
             backend: manifest.backend, timeZone: timeZone)
         return ExportDocument(metadata: metadata, transcript: transcript, run: run, projection: projection,

@@ -329,7 +329,7 @@ import os
 
     // MARK: - Reading
 
-    public var sessionName: String { snapshot.manifest.name }
+    public var sessionName: String { snapshot.sessionName }
 
     /// Seconds from the session start to the end of the last saved chunk.
     public var durationSeconds: Double {

@@ -13,17 +13,15 @@ private func initialStatus(_ sessionID: String) -> RecorderStatus {
                    startedAt: Date(), updatedAt: Date(), source: .microphone)
 }
 
-private func statusSession() throws -> (TemporaryDirectory, URL, String) {
+private func statusSession() async throws -> (TemporaryDirectory, URL, String) {
     let temp = try TemporaryDirectory("status", permissions: 0o700)
-    let id = UUID().uuidString
-    let session = temp.url.appendingPathComponent("\(id).holos", isDirectory: true)
-    try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true,
-                                            attributes: [.posixPermissions: 0o700])
-    return (temp, session, id)
+    let session = try await SessionFixtures.makeSession(in: temp.url, name: "Council", audioSeconds: [:],
+                                                        transcript: nil)
+    return (temp, session, try SessionArchive.readManifest(at: session).id)
 }
 
 @Test(.timeLimit(.minutes(1))) func heartbeatKeepsStatusFresh() async throws {
-    let (temp, session, id) = try statusSession()
+    let (temp, session, id) = try await statusSession()
     defer { temp.remove() }
     let writer = try StatusWriter(session: session, initial: initialStatus(id), heartbeat: .seconds(1))
     let first = try #require(try RecorderChannel.readStatus(session: session))
@@ -45,7 +43,7 @@ private func statusSession() throws -> (TemporaryDirectory, URL, String) {
 }
 
 @Test func updatesAfterExitAreIgnored() async throws {
-    let (temp, session, id) = try statusSession()
+    let (temp, session, id) = try await statusSession()
     defer { temp.remove() }
     let writer = try StatusWriter(session: session, initial: initialStatus(id), heartbeat: .milliseconds(20))
     try await writer.update { $0.phase = .recording; $0.markers = 2 }
@@ -62,13 +60,53 @@ private func statusSession() throws -> (TemporaryDirectory, URL, String) {
 }
 
 @Test func onlyFinishWritesExited() async throws {
-    let (temp, session, id) = try statusSession()
+    let (temp, session, id) = try await statusSession()
     defer { temp.remove() }
     let writer = try StatusWriter(session: session, initial: initialStatus(id), heartbeat: .seconds(60))
     try await writer.update { $0.phase = .recording }
     try await writer.update { $0.phase = .exited }
     #expect(try RecorderChannel.readStatus(session: session)?.phase == .recording)
     try await writer.finish(exit: RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .requested))
+}
+
+@Test func statusAndCompletionUseTheCanonicalNameDuringRecording() async throws {
+    let (temp, session, id) = try await statusSession()
+    defer { temp.remove() }
+    let writer = try StatusWriter(session: session, initial: initialStatus(id), heartbeat: .seconds(60))
+    let meeting = MeetingInfo(sessionID: id, mode: .inPerson, othersInRoom: false,
+                              nameSource: .user, name: "Generated new title")
+    try AtomicFile.writeJSON(meeting, to: SessionPaths.meetingInfo(session))
+    try await writer.update { $0.phase = .recording }
+    #expect(try RecorderChannel.readStatus(session: session)?.name == "Generated new title")
+    var other = meeting
+    other.sessionID = "another-generated-id"
+    other.name = "Another meeting"
+    try AtomicFile.writeJSON(other, to: SessionPaths.meetingInfo(session))
+    try await writer.update { $0.phase = .transcribing }
+    #expect(try RecorderChannel.readStatus(session: session)?.name == "Generated new title")
+    try AtomicFile.writeJSON(meeting, to: SessionPaths.meetingInfo(session))
+    try await writer.finish(exit: RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .requested))
+    let final = try #require(try RecorderChannel.readStatus(session: session))
+    #expect(final.name == "Generated new title")
+    #expect(MeetingReducer.summary(final).hasPrefix("Saved Generated new title"))
+}
+
+@Test func finalStatusHoldsTheNamingLockThroughPublication() async throws {
+    let (temp, session, id) = try await statusSession()
+    defer { temp.remove() }
+    let writer = try StatusWriter(session: session, initial: initialStatus(id), heartbeat: .seconds(60), observer: nil,
+        write: { status, url in
+            if status.phase == .exited {
+                let error = #expect(throws: HolosError.self) {
+                    try SessionArchive.withSpeakerLock(at: session, timeout: .zero) {}
+                }
+                #expect(isUnavailable(error))
+            }
+            try AtomicFile.writeJSON(status, to: url)
+        })
+    try await writer.finish(exit: RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .requested))
+    try SessionArchive.withSpeakerLock(at: session, timeout: .zero) {}
+    #expect(try RecorderChannel.readStatus(session: session)?.phase == .exited)
 }
 
 /// An atomic write that fails for phase `exited` while `failing` says so (a count of failures left; `.max` fails
@@ -89,7 +127,7 @@ private func exitedWriteFailing(_ failing: SharedValue<Int>, failures: SharedVal
 
 /// A final write that fails twice is retried, and the writer is finished only once it lands.
 @Test(.timeLimit(.minutes(1))) func finishRetriesAFailedFinalWrite() async throws {
-    let (temp, session, id) = try statusSession()
+    let (temp, session, id) = try await statusSession()
     defer { temp.remove() }
     let failures = SharedValue(0)
     let writer = try StatusWriter(session: session, initial: initialStatus(id), heartbeat: .seconds(60), observer: nil,
@@ -105,7 +143,7 @@ private func exitedWriteFailing(_ failing: SharedValue<Int>, failures: SharedVal
 /// A final write that keeps failing leaves the writer retryable: the file keeps its last phase, the heartbeat keeps it
 /// fresh, updates still land, and a later `finish` writes exited.
 @Test(.timeLimit(.minutes(1))) func finishThatCannotWriteStaysRetryable() async throws {
-    let (temp, session, id) = try statusSession()
+    let (temp, session, id) = try await statusSession()
     defer { temp.remove() }
     let failing = SharedValue(Int.max)
     let failures = SharedValue(0)

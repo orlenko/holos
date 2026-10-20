@@ -482,8 +482,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                 }
                 cache.keep(only: Set(summaries.map(\.id)))
                 var stale: Set<String> = []
-                for summary in summaries where MeetingSummarySchedule.isFinished(summary.state)
-                    && (summary.transcriptID != nil || summary.nameCopyIsStale) {
+                for summary in summaries where MeetingSummarySchedule.isFinished(summary.state) {
                     if filesCache?.state(of: summary) == .stale { stale.insert(summary.id) }
                 }
                 filesCache?.keep(only: Set(summaries.map(\.id)))
@@ -854,10 +853,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             }
             // Not while a command works on it (a rename rewriting them).
             if staleFiles.contains(summary.id), running[summary.id] == nil {
-                parts.append(summary.transcriptID == nil
-                    ? "The meeting's rename did not finish; right-click it and choose Finish Rename."
-                    : "The transcript files are out of date (another title, or a rewrite that did not finish); "
-                        + "right-click the meeting and choose Update Transcript Files.")
+                parts.append("The transcript files are out of date; choose Update Transcript Files from Advanced.")
             }
             statusLabel.stringValue = parts.joined(separator: " ")
         } else {
@@ -1135,7 +1131,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     }
 
     /// Asks the app to run the rename (`runRename`: `voiceislocal session rename` as a detached child, the meeting
-    /// registered as in use meanwhile); `renameEnded` reports.
+    /// independent of any recording or processing job); `renameEnded` reports.
     private func rename(_ summary: SessionSummary, to request: MeetingRenameRequest) {
         runRename?(summary, request)
     }
@@ -1150,8 +1146,6 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
            let index = sessions.firstIndex(where: { $0.id == id }) {
             sessions[index].name = name
             sessions[index].nameSource = source
-            // The manifest's copy follows when the rename wrote it; the next read of the catalog says.
-            sessions[index].manifestName = name
             reloadKeepingSelection()
             refreshLiveHeader()
             onTitleChanged?(id)

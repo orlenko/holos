@@ -246,7 +246,7 @@ public enum CloudEvaluation {
             }
         }
         record.tracks = plans
-        return Prepared(session: session, sessionName: manifest.name, record: record, resumed: resumed,
+        return Prepared(session: session, sessionName: MeetingNaming.currentName(session: session, manifest: manifest), record: record, resumed: resumed,
                         pending: pending, renders: renders)
     }
 

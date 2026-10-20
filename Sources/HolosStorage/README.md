@@ -20,7 +20,9 @@ Durable files: the session folder (`<id>.holos`), its locks, and the global stor
   `SessionManifest.audioFingerprint(track:)`: a stable hash of a track's chunk list, which echo analysis and
   evaluation runs store to tell whether the audio changed.
 - Locks (`SessionLocks.swift`): `.writer.lock`, `ProcessingLease` on `.processing.lock`, `withSpeakerLock` /
-  `withSpeakerLockAsync` on `.speakers.lock`.
+  `withSpeakerLockAsync` on `.speakers.lock`. `SessionFolderIdentity` and `withVerifiedSpeakerLockAsync`
+  verify short metadata operations independently of a processing lease; `SessionNamingStore.writeLocked`
+  commits the canonical name/source pair, preserving additional metadata fields.
 - Stores: `SessionSpeakerStore` (runs, head, edit journal, voice data, recognition), `SpeakerProfileStore`
   (people database and forget journal), `DictationHistoryStore` / `DictationHistoryService`, `WordListStore`,
   `ScreenContextStore`, `SessionDeletion` (Delete Audio, Delete Meeting), `FreeSpaceProvider`.

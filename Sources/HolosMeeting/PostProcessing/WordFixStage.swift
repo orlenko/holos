@@ -170,7 +170,7 @@ public enum WordFixStage {
 
         let journal = recorder.journal
         let screen = try? ScreenContextStore.read(session: request.session, sessionID: request.manifest.id)
-        let computed = try await fix(base, title: request.manifest.name, corrections: corrections, terms: terms,
+        let computed = try await fix(base, title: MeetingNaming.currentName(session: request.session, manifest: request.manifest), corrections: corrections, terms: terms,
                                      dependencies: dependencies, preservingTermsFrom: request.priorFixed,
                                      screenContext: screen) { fraction in
             journal.progress(PostProcessingProgress(stage: .wordFixes, fraction: fraction,
