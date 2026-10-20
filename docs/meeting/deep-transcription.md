@@ -275,6 +275,10 @@ retries and the order between them (`BackgroundJobOrder`).
   or 3, or killed) says why in an alert: the messages of the stages its `--json` record says
   failed (and of the deep transcription stage when skipped), else its last error line
   (`DeepTranscriptionSchedule.failureText`); one the user cancelled says nothing.
+  The meeting row and open meeting screen show stage progress from `postprocess.json`. Deep
+  transcription measures audio seconds processed across both tracks against their total duration.
+  A percentage describes the displayed stage; per-track steps name the track. Stages without a
+  fraction show activity. The display gives no estimated time remaining.
 - *One pass at a time* (`DeepTranscriptionLock`). `session deep-transcribe` takes an exclusive
   `flock` on `<supportRoot>/deep-transcription.lock` for its whole life and writes `{pid,
   sessionID, force}` into it once it holds it; a second pass finds it held (it retries for 2 s,

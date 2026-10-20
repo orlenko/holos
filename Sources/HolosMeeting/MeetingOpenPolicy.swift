@@ -1,8 +1,7 @@
 import Foundation
 import HolosCore
 
-/// What opening a meeting in the Meetings section shows (double-click, Return, "Show Live Transcript", the menu bar's
-/// Show Live Transcript…; docs/design.md "Live transcript"). Pure.
+/// Opening a meeting uses one screen inside the main window (docs/design.md "Live transcript"). Pure.
 public enum MeetingOpenPolicy {
     public enum Target: String, Sendable, Equatable {
         /// The live transcript in the main window.
@@ -27,15 +26,13 @@ public enum MeetingOpenPolicy {
             && summary.speakerState != .running
     }
 
-    /// The live transcript while the meeting is live; otherwise what opened a finished meeting before: Review for a
-    /// labelled one, else the transcript preview when exports/transcript.md exists (`hasExport`).
+    /// Every meeting opens the same screen, which follows recording and adopts the saved transcript and review.
     public static func target(_ summary: SessionSummary, liveSessionID: String?, inUse: Bool,
                               hasExport: Bool) -> Target {
-        if isLive(summary, liveSessionID: liveSessionID) { return .live }
-        return finishedTarget(summary, inUse: inUse, hasExport: hasExport)
+        .live
     }
 
-    /// What a live transcript offers once its meeting is saved: the target of a meeting that is not live.
+    /// Which saved content is ready for the meeting screen.
     public static func finishedTarget(_ summary: SessionSummary, inUse: Bool, hasExport: Bool) -> Target {
         if canReview(summary, inUse: inUse) { return .review }
         return hasExport ? .transcript : .none
@@ -64,29 +61,15 @@ public enum MeetingOpenPolicy {
     /// The title of the menu item that opens `target`, naming what it opens; nil for `.none` (nothing opens).
     public static func openTitle(_ target: Target) -> String? {
         switch target {
-        case .live: "Open Live Transcript"
-        case .review: "Open Review"
-        case .transcript: "Open Transcript"
+        case .live, .review, .transcript: "Open"
         case .none: nil
         }
     }
 
-    /// The meeting menu's items that open something, each doing something different: first the item double-click
-    /// and Return use, titled by what it opens (`openTitle`; none when nothing opens); then Review… unless that item
-    /// already opens Review, and Show Transcript File (the preview) unless that item already shows it. Review… and
-    /// Show Transcript File are enabled as their buttons are (`canReview`, `hasExport`).
+    /// The list offers one Open action in every processing state.
     public static func menuItems(_ summary: SessionSummary, liveSessionID: String?, inUse: Bool,
                                  hasExport: Bool) -> [MenuItem] {
-        let target = target(summary, liveSessionID: liveSessionID, inUse: inUse, hasExport: hasExport)
-        var items: [MenuItem] = []
-        if let title = openTitle(target) { items.append(MenuItem(.open, title, isEnabled: true)) }
-        if target != .review {
-            items.append(MenuItem(.review, "Review…", isEnabled: canReview(summary, inUse: inUse)))
-        }
-        if target != .transcript {
-            items.append(MenuItem(.transcriptFile, "Show Transcript File", isEnabled: hasExport))
-        }
-        return items
+        [MenuItem(.open, "Open", isEnabled: true)]
     }
 
     /// The Meetings list: live meetings first, then the rest in the catalog's order (newest first).

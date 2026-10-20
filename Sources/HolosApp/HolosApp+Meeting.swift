@@ -702,8 +702,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         pane.onCancelSummary = { [weak self] id in self?.cancelMeetingSummary(id) }
         pane.summaryRequested = { [weak self] id in self?.meeting.summaries.jobs.requested.contains(id) ?? false }
         pane.summaryUnavailableReason = { [weak self] in self?.meetingSummaryUnavailableReason }
-        // A rename, here or in Terminal, or a new generated title shows in the meeting's Review window (the live
-        // transcript's header follows the list).
+        // The meeting screen follows title changes from the app and Terminal.
+        pane.onStartRecording = { [weak self] in self?.startMeetingRecording() }
         pane.onTitleChanged = { [weak self] id in self?.refreshReviewTitle(id) }
         pane.runRename = { [weak self] summary, request in self?.runRename(summary, request) }
         pane.performBulk = { [weak self] action, plan in self?.performBulkMeetingAction(action, plan) }
@@ -1160,18 +1160,18 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// a "Name Speakers" offer for it. The labels load off the main actor first. When the meeting cannot be reviewed,
     /// an alert says why, and with `fallBackToMeetings` Meetings opens with the meeting selected.
     func openReview(sessionID: String, directory: URL, name: String, fallBackToMeetings: Bool = false) {
-        // A deep transcription pass on the meeting goes first; Review opens when this app's pass ends.
+        showMeetingsWindow(selecting: sessionID)
+        meeting.meetingsPane?.showLive(sessionID: sessionID, directory: directory)
+        // Final transcription and summaries finish before editable review opens.
         if reviewWaitsForDeepTranscription(sessionID: sessionID, directory: directory, name: name) { return }
-        // So does a summary being made of it (§4.17).
         if reviewWaitsForSummary(sessionID: sessionID, directory: directory, name: name) { return }
         if let window = meeting.reviewWindows[sessionID], !window.isClosing {
-            window.show()
+            presentMeetingReview(window)
             meeting.controller?.reviewOpened(sessionID: sessionID)
             return
         }
         guard meeting.openingReviews[sessionID] == nil else { return }
         let maintenance = meeting.maintenance
-        // A window of this meeting that was just closed finishes saving before the new one reads the labels.
         let closing = meeting.reviewWindows[sessionID]
         let endedBefore = meeting.maintenanceEnded[sessionID, default: 0]
         meeting.openingReviews[sessionID] = Task { [weak self] () -> ReviewWindow? in
@@ -1202,7 +1202,7 @@ extension HolosAppDelegate: NSMenuDelegate {
                     window.reloadAll()
                 }
                 guard !window.isClosing else { return nil }
-                window.show()
+                self.presentMeetingReview(window)
                 self.meeting.controller?.reviewOpened(sessionID: sessionID)
                 return window
             case .failure(let error):

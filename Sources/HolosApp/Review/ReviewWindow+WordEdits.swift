@@ -42,6 +42,6 @@ extension ReviewWindow: ReviewWordEditHost {
     }
 
     func closeWindow() {
-        window.close()
+        if surface.isEmbedded { startClosing() } else { window.close() }
     }
 }

@@ -283,8 +283,11 @@ public struct LiveFollow: Sendable, Equatable {
 /// transcript shows. Each read continues where the last one stopped, keeps a partial last line for the next read, and
 /// starts over if the journal got shorter (a repaired torn tail). Reading does not block on the recorder; meant to
 /// run off the main actor.
+/// Invariants:
+/// 1. Journal reads retain a bounded tail; saved-transcript reads retain the current immutable revision.
+/// 2. Returning to journal reads resets the saved snapshot and journal position, so the two never mix.
 public struct LiveTranscriptReader: Sendable {
-    /// At most this many finalized segments are kept (the newest).
+    /// At most this many finalized journal segments are kept (the newest).
     public static let maxSegments = 1_000
     /// At most this much is read at once, so a long meeting's first read stays bounded.
     static let maxRead = 32 << 20
@@ -301,6 +304,7 @@ public struct LiveTranscriptReader: Sendable {
     public private(set) var hints: [LiveHint] = []
     private var offset: UInt64 = 0
     private var partial = Data()
+    private var savedTranscriptID: String?
 
     public init(session: URL) {
         self.session = session
@@ -308,7 +312,10 @@ public struct LiveTranscriptReader: Sendable {
 
     /// Reads what was appended to the journal, and `live.json` when `includeVolatile` (while audio is captured);
     /// otherwise forgets the volatile words.
-    public mutating func read(includeVolatile: Bool) {
+    public mutating func read(includeVolatile: Bool, preferSaved: Bool = false) {
+        if !preferSaved, savedTranscriptID != nil {
+            savedTranscriptID = nil; finals = []; offset = 0; partial = Data(); revision += 1
+        }
         if mode == nil {
             mode = (try? AtomicFile.readJSON(MeetingInfo.self, from: SessionPaths.meetingInfo(session),
                                              maxBytes: 1 << 20))?.mode
@@ -317,7 +324,19 @@ public struct LiveTranscriptReader: Sendable {
         // so the journal read next has every word live.json no longer shows (`VolatileText`).
         volatile = includeVolatile ? (LiveTextFile.read(session: session)?.volatile ?? [:]) : [:]
         if let file = try? LiveHintStore.read(session: session) { hints = file.hints }
+        if preferSaved, readSavedTranscript() { return }
         readJournal()
+    }
+
+    private mutating func readSavedTranscript() -> Bool {
+        guard let id = try? SessionArchive.currentTranscriptID(at: session) else { return false }
+        hints = []
+        if id == savedTranscriptID { return true }
+        guard let transcript = try? SessionFiles.transcript(id: id, session: session) else { return false }
+        finals = transcript.segments
+        savedTranscriptID = id
+        revision += 1
+        return true
     }
 
     private mutating func readJournal() {

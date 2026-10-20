@@ -10,7 +10,7 @@ recorder ↔ app protocol.
   `ExitRetry` and `ExitStatusWait`, is the one place that writes `exited` and lets go of the locks still held then;
   `EpochPlan` and `EpochMonitor` have their own files),
   `RecorderMachine` (its pure state machine), `ControlInbox` (`control/<uuid>.json` requests), `StatusWriter`
-  (`status.json`), `LiveTrack` / `LiveTranscript` / `LiveText` / `LiveHints`, `DiskPolicy`, `TrackReplayer`,
+  (`status.json`), `LiveTrack` / `LiveTranscript` / `LiveText` / `LiveHints`, `MeetingProcessingProgress` (the active stage snapshot), `DiskPolicy`, `TrackReplayer`,
   seams `MeetingCapture`, `LiveSpeechSession`, `SessionClock`, `RecorderStopSource`.
 - App-side control: `MeetingController` (`@MainActor`) with the pure `MeetingReducer`; `RecorderChannel` (reads
   status, sends requests); `RecorderLauncher` (`ChildProcessLauncher`, `InProcessLauncher`; both take their options

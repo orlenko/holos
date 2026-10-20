@@ -50,9 +50,9 @@ final class ReviewKeyWindow: NSWindow {
     }
 
     /// Refuses `event` when invariant 1 says so.
-    private func refuses(_ event: NSEvent) -> Bool {
+    func refuses(_ event: NSEvent, responder: NSResponder? = nil) -> Bool {
         guard event.type == .keyDown, fieldClosedForJoin != nil, fieldClosedWhile(),
-              (firstResponder as? NSTextView)?.isEditable != true,
+              ((responder ?? firstResponder) as? NSTextView)?.isEditable != true,
               Self.refusedWhileFieldClosed(flags: event.modifierFlags, special: event.specialKey) else { return false }
         refuse()
         return true

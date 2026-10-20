@@ -12,7 +12,7 @@ import Testing
 /// own; speakers are "S1", "S2" (nil: the unknown speaker). Made-up words only.
 @MainActor
 struct ReviewWindowJoinTests {
-    private struct Spec {
+    struct Spec {
         var speaker: String?
         var start: Double
         var words: [String]
@@ -21,8 +21,8 @@ struct ReviewWindowJoinTests {
 
     /// A finished call whose head run has exactly the turns of `specs` (T1, T2, … in time order), each word half a
     /// second long, and its review window, laid out.
-    private func open(_ specs: [Spec]) async throws -> (ReviewWindow, URL) {
-        let root = FileManager.default.temporaryDirectory
+    func open(_ specs: [Spec], root suppliedRoot: URL? = nil) async throws -> (ReviewWindow, URL) {
+        let root = suppliedRoot ?? FileManager.default.temporaryDirectory
             .appendingPathComponent("review-join-\(UUID().uuidString)", isDirectory: true)
         let segments = specs.map { spec in
             var text = ""
@@ -161,7 +161,7 @@ struct ReviewWindowJoinTests {
             if calls.next() == 1 { for await _ in stream {} }
         }
         var refused = 0
-        window.window.refuse = { refused += 1 }
+        window.surface.ownedWindow.refuse = { refused += 1 }
         window.setEditMode(true)
         press(window, row: 1, word: 0, caret: 0, #selector(NSResponder.deleteBackward(_:)))
         _ = await until { calls.peek() == 1 }
@@ -189,7 +189,7 @@ struct ReviewWindowJoinTests {
         release.finish()
         #expect(await until { journal(session).count == 1 && window.turnList.wordEdit != nil })
         #expect(window.turnList.editField.stringValue == "cedar")
-        #expect(window.window.fieldClosedForJoin == nil)
+        #expect(window.surface.ownedWindow.fieldClosedForJoin == nil)
         window.turnList.cancelWordEdit()
         try await closeAndRemove(window, session)
     }
@@ -199,9 +199,9 @@ struct ReviewWindowJoinTests {
         let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
                                                 Spec(speaker: "S2", start: 2, words: ["cedar", "dune"])])
         let (release, refused) = await joinWithHeldSave(window)
-        #expect(window.window.fieldClosedForJoin != nil)
+        #expect(window.surface.ownedWindow.fieldClosedForJoin != nil)
         #expect(window.handleKey(try commandZ(window)))
-        #expect(window.window.fieldClosedForJoin == nil)
+        #expect(window.surface.ownedWindow.fieldClosedForJoin == nil)
         window.window.sendEvent(try key(window, "j", code: 38))
         #expect(refused() == 0)
         release.finish()
@@ -223,7 +223,7 @@ struct ReviewWindowJoinTests {
         await window.review.reload()
         let (release, _) = await joinWithHeldSave(window)
         #expect(window.paragraphJoins.isEmpty, "The refresh at the join dropped it.")
-        #expect(window.window.fieldClosedForJoin == nil)
+        #expect(window.surface.ownedWindow.fieldClosedForJoin == nil)
         release.finish()
         #expect(await until { window.review.snapshot.journal.edits.count == 3 })
         try await closeAndRemove(window, session)

@@ -1,4 +1,5 @@
 import AppKit
+import HolosAppModel
 import HolosCore
 import HolosMeeting
 import HolosSpeakers
@@ -6,22 +7,15 @@ import HolosStorage
 import Quartz
 import UniformTypeIdentifiers
 
-/// The saved meetings (docs/meeting/app-controls.md §5.8, docs/meeting/retention-deletion.md §4.13; docs/design.md "Meetings list"): a list of rich rows grouped
-/// by day (Today, Yesterday, This Week, then by month), each with the meeting's title (the user's name, else the title
-/// Apple Intelligence wrote, else the default name), when it was and how long, the people its speaker labels name, a
-/// one- or two-line summary, and badges for what needs saying (Recording, Final transcript queued, Interrupted, …).
-/// A search field filters by title, summary and people. The actions on the selected meeting are buttons below the list
-/// and the row's menu. Recover, Label Speakers, and the deletions run `voiceislocal` commands through the app delegate,
-/// which also opens Review (docs/meeting/review-window.md §5.10); the rest (Show in Finder, the Quick Look preview, Save Transcript As…, Clean
-/// Up, Rename) happen here. The meeting being recorded or saved comes first, marked "● Recording". Double-click (or
-/// Return) opens what `MeetingOpenPolicy` says: the live transcript (`LiveMeetingViewController`, shown in place of the
-/// list until ‹ Meetings or Escape) for that meeting, Review for a labelled one, the preview otherwise; ⌫ (or ⌘⌫) is
-/// Delete Meeting…. Rename… (the menu, ⌘R, or a double-click on the title's text) edits the name in the row: Return
-/// saves it as the user's (an empty name gives back the generated title), Escape cancels (`SessionRenameCommand`,
-/// docs/meeting/titles-summaries.md §4.17). Several meetings can be selected (⇧-click, ⌘-click, ⌘A, ⇧↑/↓; never a day header): the line under the
-/// buttons sums them up, Delete Meeting…, Delete Audio… and Show in Finder act on all of them (`MeetingBulkPlan`;
-/// `performBulk`), and the other actions are off. The selection is kept by meeting ID across refreshes. The main
-/// window's Meetings section; it refreshes every 2 s while on screen, reading the listing off the main actor.
+/// The main window's meeting list and inline meeting screen (docs/design.md "Meetings list").
+/// Rows group by day and show title, people, summary, state, and processing progress. Open and Delete are primary;
+/// the Advanced menu holds exports, recovery, processing, Finder, and Rename (⌘R).
+///
+/// Invariants:
+/// 1. Double-click and Return open the same inline meeting screen in every processing state.
+/// 2. Leaving an embedded review passes through its save gate before detaching the screen.
+/// 3. Catalog refreshes preserve selection by meeting ID and publish progress with the rows.
+/// 4. Catalog and processing-record reads run off the main actor.
 @MainActor
 final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
     @preconcurrency QLPreviewPanelDataSource, QLPreviewPanelDelegate, MainSectionContent {
@@ -45,7 +39,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// The app's meeting state (`MeetingController.state`).
     private var meetingState: MeetingState = .idle
     /// The live transcript shown in place of the list, if any.
-    private var live: LiveMeetingViewController?
+    private(set) var live: LiveMeetingViewController?
     private let listView = NSView()
     private let search = NSSearchField()
     private let table = KeyTableView()
@@ -64,7 +58,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     private let peopleCache = MeetingPeopleCache()
     /// Whether each meeting's transcript files are out of date (`SessionExports.filesState`), read again only when a
     /// file or the title changed; and the meetings whose files are (Update Transcript Files).
-    private let filesCache = TranscriptFilesCache()
+    let listState = MeetingListState()
+    private var filesCache: TranscriptFilesCache { listState.filesCache }
     private var staleFiles: Set<String> = []
     /// Maintenance commands running, by session ID.
     private var running: [String: String] = [:]
@@ -184,24 +179,18 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
         // Rows that wrap, so the section fits the window at its narrowest (beside a call's window).
         let row = WrappingRowView(views: [
-            button("Live Transcript", #selector(showLiveTranscript)),
-            button("Review…", #selector(review)),
-            button("Recover…", #selector(recover)), button("Label Speakers", #selector(labelSpeakers)),
-            button("Show in Finder", #selector(showInFinder)), button("Open Transcript", #selector(openTranscript)),
-            button("Save Transcript As…", #selector(saveTranscript)),
+            button("Start Recording…", #selector(startRecording)),
+            button("Open", #selector(openSelection)), button("Delete Meeting…", #selector(deleteMeeting)),
+            button("Advanced…", #selector(showAdvanced)),
         ])
-        let second = WrappingRowView(views: [
-            button("Delete Audio…", #selector(deleteAudio)), button("Delete Meeting…", #selector(deleteMeeting)),
-            button("Clean Up", #selector(cleanUp)),
-        ])
-        actionRows = [row, second]
+        actionRows = [row]
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 12)
         statusLabel.lineBreakMode = .byTruncatingTail
         footer.textColor = .secondaryLabelColor
         footer.font = .systemFont(ofSize: 12)
 
-        let stack = NSStackView(views: [search, scroll, row, second, statusLabel, footer])
+        let stack = NSStackView(views: [search, scroll, row, statusLabel, footer])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
@@ -218,7 +207,6 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
             row.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            second.widthAnchor.constraint(equalTo: stack.widthAnchor),
             statusLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
             emptyLabel.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
@@ -259,9 +247,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// way to the list first, so the selection is seen (`MeetingOpenPolicy.keepsLiveView`).
     func select(sessionID: String?) {
         if let sessionID, let live, !MeetingOpenPolicy.keepsLiveView(showing: live.sessionID, goingTo: sessionID) {
-            removeLive()
-            listView.isHidden = false
-            view.window?.makeFirstResponder(table)
+            showList()
+            guard self.live == nil else { return }
         }
         pendingSelection = sessionID
         refresh()
@@ -270,6 +257,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     func sectionDidShow() {
         onScreen = true
         live?.start()
+        live?.embeddedReview?.reloadAll()
         refresh()
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
@@ -305,6 +293,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             LiveMeetingPhase.of(sessionID: id, state: meetingState, summary: sessions.first { $0.id == id })
         }
         meetingState = state
+        updateButtons()
         if liveSessionID != previous {
             // A meeting starts or ends: the list's order and its "● Recording" mark change.
             refresh()
@@ -325,14 +314,15 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             view.window?.makeFirstResponder(live.preferredFirstResponder)
             return
         }
-        removeLive()
+        if live != nil { showList(); guard live == nil else { return } }
         let controller = LiveMeetingViewController(
             sessionID: sessionID, directory: directory,
-            onBack: { [weak self] in self?.showList() },
-            onOpenFinished: { [weak self] in self?.openFinished(sessionID) },
+            onBack: { [weak self] in self?.live?.contentState.closeMainWindow = false; self?.showList() },
+            onOpenFinished: { [weak self] in self?.showLive(sessionID: sessionID, directory: directory) },
             onLearnText: learnLiveText,
             onRecordingCommand: { [weak self] command in self?.onRecordingCommand?(command, sessionID) })
         live = controller
+        controller.contentState.more.makeMenu = { [weak self] in self?.advancedMenu(sessionID: sessionID) }
         addChild(controller)
         listView.isHidden = true
         Self.fill(view, with: controller.view)
@@ -341,9 +331,31 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         view.window?.makeFirstResponder(controller.preferredFirstResponder)
     }
 
+    var activeMeetingID: String? { live?.sessionID }
+    var activeMeeting: SessionSummary? { sessions.first { $0.id == live?.sessionID } }
+    var canPresentReview: Bool { onScreen && view.window?.isVisible == true }
+    var canStartRecording: Bool { onStartRecording != nil && liveSessionID == nil }
+
+    func installReview(_ review: ReviewWindow) -> Bool {
+        guard let live, live.sessionID == review.sessionID else { return false }
+        if live.embeddedReview === review { return true }
+        let previous = live.view
+        guard live.embedReview(review, onClose: { [weak self] in self?.reviewSurfaceClosed() }) else {
+            live.contentState.requestedReview = false; return false
+        }
+        previous.removeFromSuperview()
+        listView.isHidden = true
+        Self.fill(view, with: live.view)
+        return true
+    }
+
     /// Back to the list, with the meeting the live transcript showed selected.
     func showList() {
         guard let shown = live else { return }
+        if let review = shown.embeddedReview, !review.isClosing {
+            if review.windowShouldClose(review.window) { review.startClosing() }
+            return
+        }
         removeLive()
         listView.isHidden = false
         select(sessionID: shown.sessionID)
@@ -364,38 +376,12 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         guard let live else { return }
         let summary = sessions.first { $0.id == live.sessionID }
         let header = liveHeader(live.sessionID, summary)
-        let action: String? = summary.flatMap { summary in
-            switch MeetingOpenPolicy.finishedTarget(summary, inUse: running[summary.id] != nil,
-                                                    hasExport: hasExport(summary)) {
-            case .review: "Open Review"
-            case .transcript: "Open Transcript"
-            case .live, .none: nil
-            }
+        live.update(header: header, finishedAction: nil)
+        live.contentState.progress.show(listState.progress[live.sessionID])
+        if onScreen, !live.contentState.requestedReview, let summary, canReview(summary) {
+            live.contentState.requestedReview = true
+            openReview(summary)
         }
-        live.update(header: header, finishedAction: action)
-    }
-
-    /// The live transcript's "Open Review" / "Open Transcript" once its meeting is saved.
-    private func openFinished(_ sessionID: String) {
-        guard let summary = sessions.first(where: { $0.id == sessionID }) else {
-            NSSound.beep()
-            return
-        }
-        switch MeetingOpenPolicy.finishedTarget(summary, inUse: running[summary.id] != nil,
-                                                hasExport: hasExport(summary)) {
-        case .review: openReview(summary)
-        case .transcript: preview(summary)
-        case .live, .none: NSSound.beep()
-        }
-    }
-
-    @objc private func showLiveTranscript() {
-        guard let summary = selectedSession else { return }
-        guard MeetingOpenPolicy.isLive(summary, liveSessionID: liveSessionID) else {
-            NSSound.beep()
-            return
-        }
-        showLive(sessionID: summary.id, directory: summary.directory)
     }
 
     /// The meetings the app is working on (`MeetingController.sessionsInUse`).
@@ -485,7 +471,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             })
             let filesCache = self?.filesCache
             let listed = await Task.detached {
-                () -> ([SessionSummary], [String: [String]], Int64?, Set<String>, Set<String>) in
+                () -> ([SessionSummary], [String: [String]], Int64?, Set<String>, Set<String>, [String: PostProcessingProgress]) in
                 let summaries = await SessionCatalog.checkingLanguageModels(SessionCatalog.list(root: root))
                 let store = SpeakerProfileStore()
                 let names = VoiceProfileService.profileNames(store: store)
@@ -506,11 +492,17 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                     reviewPending.contains($0.id) && SessionExports.filesMatchLabels(
                         session: $0.directory, profileNames: names, applyRecognition: recognition, selfName: selfName)
                 }.map(\.id))
-                return (summaries, people, try? VolumeFreeSpace().availableBytes(at: root), stale, reviewMadeUp)
+                let progress = Dictionary(uniqueKeysWithValues: summaries.filter {
+                    $0.state == .processing || $0.jobInProgress != nil
+                }.compactMap { summary in
+                    MeetingProcessingProgress.read(session: summary.directory).map { (summary.id, $0) }
+                })
+                return (summaries, people, try? VolumeFreeSpace().availableBytes(at: root), stale, reviewMadeUp, progress)
             }.value
             guard let self else { return }
             self.loading = false
             self.staleFiles = listed.3
+            self.listState.progress = listed.5
             for id in listed.4 where self.running[id] == nil {
                 PendingExports().clear(id, ifGeneration: reviewGenerations[id] ?? 0)
             }
@@ -624,7 +616,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     }
 
     /// The selected meetings, in list order.
-    private var selectedSessions: [SessionSummary] { table.selectedRowIndexes.compactMap(session(at:)) }
+    private var selectedSessions: [SessionSummary] { activeMeeting.map { [$0] } ?? table.selectedRowIndexes.compactMap(session(at:)) }
 
     /// The session IDs of the selected meetings, in list order (tests read the selection through this).
     var selectedSessionIDs: [String] { selectedSessions.map(\.id) }
@@ -633,7 +625,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     /// The selected meeting when exactly one is: what the single-meeting actions use.
     private var selectedSession: SessionSummary? {
-        table.selectedRowIndexes.count == 1 ? session(at: table.selectedRow) : nil
+        activeMeeting ?? (table.selectedRowIndexes.count == 1 ? session(at: table.selectedRow) : nil)
     }
 
     /// Voice is Local works on the meeting (`running`): a command, or it waits in a deletion of several.
@@ -693,7 +685,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                 detail: MeetingListFormat.detailLine(summary, people: names, now: Date()),
                 summary: summaryText(summary),
                 badges: badges(summary, livePhase: phase),
-                toolTip: toolTip(summary, isLive: isLive)))
+                toolTip: toolTip(summary, isLive: isLive), progress: listState.progress[summary.id]))
             return cell
         }
     }
@@ -708,7 +700,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// What a command (or a deletion of several meetings), a final transcript, the summary, or the echo catch-up is
     /// doing to the meeting now.
     private func working(_ summary: SessionSummary) -> String? {
-        running[summary.id] ?? deepStates[summary.id] ?? (summarizing == summary.id ? "Writing summary…" : nil)
+        if let progress = listState.progress[summary.id] { return MeetingProgressPresentation(progress).title + "…" }
+        return running[summary.id] ?? deepStates[summary.id] ?? (summarizing == summary.id ? "Writing summary…" : nil)
             ?? echoStates[summary.id]
     }
 
@@ -731,7 +724,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         if isLive {
             lines.append("Double-click or press Return to watch the live transcript.")
         } else if enabledActions(summary).contains(.rename) {
-            lines.append("Double-click the title or press ⌘R to rename the meeting.")
+            lines.append("Double-click or press Return to open. Press ⌘R to rename.")
         }
         if let message = summary.labelMessage, summary.speakerState != .labelled { lines.append(message) }
         return lines.joined(separator: "\n")
@@ -801,12 +794,6 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         Self.isRegularFile(SessionPaths.export("md", in: summary.directory))
     }
 
-    /// What opening `summary` shows (`MeetingOpenPolicy`).
-    private func openTarget(_ summary: SessionSummary) -> MeetingOpenPolicy.Target {
-        MeetingOpenPolicy.target(summary, liveSessionID: liveSessionID, inUse: running[summary.id] != nil,
-                                 hasExport: hasExport(summary))
-    }
-
     /// The selected meeting, when `action` is enabled for it; else nil, and a keyboard use beeps.
     private func selection(for action: MeetingActionPolicy.Action) -> SessionSummary? {
         guard let summary = selectedSession else {
@@ -823,12 +810,12 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     }
 
     /// The buttons follow `MeetingActionPolicy`, the rules of the commands behind them.
-    private func updateButtons() {
+    func updateButtons() {
         let selected = selectedSessions
         let summary = selectedSession
-        buttons["Review…"]?.isEnabled = summary.map(canReview) ?? false
-        buttons["Live Transcript"]?.isEnabled = summary.map { MeetingOpenPolicy.isLive($0, liveSessionID: liveSessionID) }
-            ?? false
+        buttons["Open"]?.isEnabled = summary != nil
+        buttons["Start Recording…"]?.isEnabled = canStartRecording
+        buttons["Advanced…"]?.isEnabled = !selected.isEmpty
         if selected.count > 1 {
             // Several: Show in Finder and the deletions act on all of them; the rest is for one meeting.
             let offered = bulkActions(selected)
@@ -908,41 +895,27 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         MeetingOpenPolicy.canReview(summary, inUse: running[summary.id] != nil)
     }
 
-    @objc private func review() {
-        guard let summary = selectedSession else { return }
-        guard canReview(summary) else {
-            NSSound.beep()
-            return
-        }
-        openReview(summary)
-    }
-
-    /// Double-click: on the title's text, Rename (when it can be renamed); elsewhere, as Return.
+    /// Double-click and Return both open the meeting; Rename is an explicit advanced action.
     @objc private func openSelected() {
         let row = table.clickedRow
-        guard let summary = session(at: row) else { return }
-        if enabledActions(summary).contains(.rename), let event = NSApp.currentEvent,
-           let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) as? MeetingRowView,
-           cell.titleTextContains(event.locationInWindow) {
-            beginRename(summary)
-            return
-        }
+        guard session(at: row) != nil else { return }
         openSelection()
     }
 
-    /// Return, or a double-click (`MeetingOpenPolicy`): the live transcript of the meeting being recorded or saved,
-    /// Review for a labelled meeting, else the transcript preview (when Open Transcript is enabled; otherwise a beep,
-    /// as for any action that is off).
+    @objc private func showAdvanced(_ sender: NSButton) {
+        let menu = NSMenu()
+        fill(menu, clickedRow: table.selectedRow)
+        let advanced = menu.items.first { $0.title == "Advanced" }?.submenu ?? menu
+        advanced.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY), in: sender)
+    }
+
+    /// Open, Return, and double-click share one meeting screen.
     @objc private func openSelection() {
         guard let summary = selectedSession else {
             if table.selectedRowIndexes.count > 1 { NSSound.beep() }
             return
         }
-        switch openTarget(summary) {
-        case .live: showLive(sessionID: summary.id, directory: summary.directory)
-        case .review: openReview(summary)
-        case .transcript, .none: openTranscript()
-        }
+        showLive(sessionID: summary.id, directory: summary.directory)
     }
 
     @objc private func recover() { act(.recover, .recover) }
@@ -1112,9 +1085,9 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         beginRename(summary)
     }
 
-    /// The editor in the meeting's row, with the title it shows selected. Return saves (an empty name: the generated
-    /// title), Escape cancels.
+    /// Rename uses the visible meeting's sheet or the list row; an empty name restores the generated title.
     private func beginRename(_ summary: SessionSummary) {
+        if live != nil { renameOnMeetingScreen(summary); return }
         guard renaming == nil, let index = rowIndex(of: summary.id) else { return }
         if table.selectedRowIndexes != IndexSet(integer: index) {
             table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
@@ -1283,15 +1256,8 @@ final class PreviewingWindow: NSWindow {
 // MARK: - The meeting's menu
 
 extension MeetingsPane: NSMenuDelegate {
-    /// The row clicked, which becomes the selection: the item double-click and Return use, named for what it opens
-    /// (Open Live Transcript, Open Review, or Open Transcript), then Review… and Show Transcript File unless that item
-    /// already does the same (`MeetingOpenPolicy.menuItems`), Show in Finder, Save Transcript As…; while the app
-    /// records the meeting, Pause / Resume Recording and Stop and Save… (the menu bar's); Rename… (⌘R),
-    /// while the user's name hides a generated title Use Generated Title, and after a rename whose transcript files
-    /// could not be rewritten Update Transcript Files;
-    /// Summarize Again; Make Final Transcript Now (also for a meeting queued automatically, which
-    /// it upgrades), and Cancel Final Transcript while it is queued or running; Recover…, Label Speakers, Delete
-    /// Audio…, Delete Meeting…. Each is enabled as its button is.
+    /// The row menu keeps Open and Delete Meeting visible. Export, rename, file access, recording controls,
+    /// transcription, summaries, recovery, and audio deletion live in Advanced, with their command policies.
     ///
     /// A right-click on a row of a selection of several acts on all of them (the Finder's rule,
     /// `MeetingSelection.menuTargets`): Show in Finder, Delete Audio…, Delete Meetings…. On a row outside the selection
@@ -1301,8 +1267,8 @@ extension MeetingsPane: NSMenuDelegate {
     }
 
     /// The menu for a right-click on `clickedRow` (tests call it with the row they click).
-    func fill(_ menu: NSMenu, clickedRow: Int) {
-        menu.removeAllItems()
+    func fill(_ rootMenu: NSMenu, clickedRow: Int) {
+        rootMenu.removeAllItems()
         let targets = MeetingSelection.menuTargets(clicked: clickedRow, selected: table.selectedRowIndexes,
                                                    rows: rowIDs)
         guard !targets.isEmpty else { return }
@@ -1310,10 +1276,26 @@ extension MeetingsPane: NSMenuDelegate {
             table.selectRowIndexes(targets, byExtendingSelection: false)
         }
         guard targets.count == 1, let summary = session(at: clickedRow) else {
-            fillBulk(menu)
+            fillBulk(rootMenu)
             return
         }
+        fill(rootMenu, summary: summary)
+    }
+
+    func fill(_ rootMenu: NSMenu, summary: SessionSummary) {
         let enabled = enabledActions(summary)
+        let open = NSMenuItem(title: "Open", action: #selector(openSelection), keyEquivalent: "")
+        open.target = self
+        rootMenu.addItem(open)
+        let delete = NSMenuItem(title: "Delete Meeting…", action: #selector(deleteMeeting), keyEquivalent: "")
+        delete.target = self
+        delete.isEnabled = enabled.contains(.deleteMeeting)
+        rootMenu.addItem(delete)
+        let advanced = NSMenuItem(title: "Advanced", action: nil, keyEquivalent: "")
+        let menu = NSMenu(title: "Advanced")
+        advanced.submenu = menu
+        rootMenu.addItem(.separator())
+        rootMenu.addItem(advanced)
         @discardableResult
         func add(_ title: String, _ action: Selector, _ isEnabled: Bool) -> NSMenuItem {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
@@ -1323,20 +1305,10 @@ extension MeetingsPane: NSMenuDelegate {
             return item
         }
         let isLive = MeetingOpenPolicy.isLive(summary, liveSessionID: liveSessionID)
-        for open in MeetingOpenPolicy.menuItems(summary, liveSessionID: liveSessionID, inUse: running[summary.id] != nil,
-                                                hasExport: hasExport(summary)) {
-            switch open.action {
-            case .open:
-                // What double-click and Return open. No ↩ key equivalent: a context menu's items stay attached to the
-                // table, so an unmodified Return here would open the meeting from the search field or the rename
-                // editor too; the table handles Return itself (`table.onReturn`).
-                add(open.title, #selector(openSelection), open.isEnabled)
-            case .review: add(open.title, #selector(review), open.isEnabled)
-            case .transcriptFile: add(open.title, #selector(openTranscript), open.isEnabled)
-            }
-        }
+        add("Show Transcript File", #selector(openTranscript), hasExport(summary))
         add("Show in Finder", #selector(showInFinder), enabled.contains(.showInFinder))
         add("Save Transcript As…", #selector(saveTranscript), enabled.contains(.saveTranscript))
+        add("Clean Up", #selector(cleanUp), enabled.contains(.cleanUp))
         addRecordingItems(for: summary, isLive: isLive, to: menu)
 
         menu.addItem(.separator())
@@ -1347,7 +1319,7 @@ extension MeetingsPane: NSMenuDelegate {
         rename.toolTip = MeetingActionPolicy.renameRefusal(
             summary, hasExport: SessionExports.hasTranscriptFiles(session: summary.directory))
             ?? ("Gives the meeting a name of your own, which no title Apple Intelligence writes replaces. "
-                + "You can also double-click its title.")
+                + "Keyboard shortcut: ⌘R.")
         menu.addItem(rename)
         // Offered while the user's name hides a generated title.
         if summary.nameSource.isUser, let generated = summary.currentGeneratedTitle {
@@ -1422,7 +1394,6 @@ extension MeetingsPane: NSMenuDelegate {
         add("Recover…", #selector(recover), enabled.contains(.recover))
         add("Label Speakers", #selector(labelSpeakers), enabled.contains(.labelSpeakers))
         add("Delete Audio…", #selector(deleteAudio), enabled.contains(.deleteAudio))
-        add("Delete Meeting…", #selector(deleteMeeting), enabled.contains(.deleteMeeting))
     }
 
     /// The menu of a selection of several meetings: what acts on all of them, enabled as the buttons are.
@@ -1430,17 +1401,21 @@ extension MeetingsPane: NSMenuDelegate {
         let selected = selectedSessions
         let enabled = bulkActions(selected)
         let count = selected.count
+        let advanced = NSMenu(title: "Advanced")
         for (title, action, policy) in [
             ("Show \(count) in Finder", #selector(showInFinder), MeetingActionPolicy.Action.showInFinder),
             ("Delete Audio of \(count) Meetings…", #selector(deleteAudio), .deleteAudio),
             ("Delete \(count) Meetings…", #selector(deleteMeeting), .deleteMeeting),
         ] {
-            if policy == .deleteAudio { menu.addItem(.separator()) }
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             item.isEnabled = enabled.contains(policy)
-            menu.addItem(item)
+            if policy == .deleteMeeting { menu.addItem(item) } else { advanced.addItem(item) }
         }
+        let more = NSMenuItem(title: "Advanced", action: nil, keyEquivalent: "")
+        more.submenu = advanced
+        menu.addItem(.separator())
+        menu.addItem(more)
     }
 
     /// The meeting the app records: Pause or Resume Recording and Stop and Save… (Stop Recording while it starts),
@@ -1540,13 +1515,14 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
         var summary: String?
         var badges: [MeetingListFormat.Badge]
         var toolTip: String
+        var progress: PostProcessingProgress? = nil
     }
 
     private let title = NSTextField(labelWithString: "")
     private let editor = NSTextField(string: "")
     private let detail = NSTextField(labelWithString: "")
     private let summary = NSTextField(wrappingLabelWithString: "")
-    private let badges = NSStackView()
+    private let badges = MeetingRowIndicators()
     /// While renaming: what Return (or leaving the editor) and Escape do. Each is called once per rename.
     private var onCommit: ((String) -> Void)?
     private var onCancel: (() -> Void)?
@@ -1646,6 +1622,7 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
             view.emphasized = backgroundStyle == .emphasized
             badges.addArrangedSubview(view)
         }
+        badges.showProgress(content.progress)
         toolTip = content.toolTip
         var label = content.title + ". " + content.detail
         if !content.badges.isEmpty { label += ". " + content.badges.map(\.text).joined(separator: ", ") }

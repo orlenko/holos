@@ -9,6 +9,10 @@ import HolosSpeakers
 /// Uncertain rows look like any other: Next Uncertain finds them, and VoiceOver hears it on their pop-up. While the
 /// meeting plays, the paragraph and word playing are tinted. Several rows can be selected with ⇧ and ⌘; whatever acts
 /// on rows (assigning a speaker, the selection's turns) acts on every turn of them.
+///
+/// Invariants:
+/// 1. Row heights use the same width-dependent text geometry as their cells.
+/// 2. Word editing carries the revision and word moves of the displayed projection.
 @MainActor
 final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// A timestamp or a word was clicked: play from this session time.
@@ -136,7 +140,7 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("turn"))
         column.resizingMask = .autoresizingMask
         column.width = 700
-        column.minWidth = TurnCellView.textX + 120
+        column.minWidth = 280
         table.addTableColumn(column)
         table.headerView = nil
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
@@ -310,9 +314,10 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         guard row < paragraphs.count else { return 28 }
         let width = textWidth
-        if width != heightWidth {
+        let columnWidth = table.tableColumns.first?.width ?? bounds.width
+        if columnWidth != heightWidth {
             heights.removeAll()
-            heightWidth = width
+            heightWidth = columnWidth
         }
         let paragraph = paragraphs[row]
         let spans = paragraph.spans
@@ -324,7 +329,7 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         }
         // Measured as the row's text view lays it out (`TurnCellView.layout`).
         let measured = TurnTextView.height(of: shown, width: TurnCellView.textViewWidth(forTextWidth: width))
-        let height = max(28, ceil(measured) + 10)
+        let height = max(28, ceil(measured) + TurnCellView.textOrigin(for: columnWidth).y + 5)
         heights[paragraph.id] = (spans, shown, height)
         return height
     }
@@ -467,14 +472,27 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         repositionWordEdit()
     }
 
+    override func layout() {
+        super.layout()
+        guard let column = table.tableColumns.first, scroll.contentSize.width > 0 else { return }
+        let width = max(column.minWidth, scroll.contentSize.width)
+        guard abs(column.width - width) > 0.5 else { return }
+        column.width = width
+        table.setFrameSize(NSSize(width: width, height: table.frame.height))
+        table.sizeLastColumnToFit()
+        refreshHeights()
+        repositionWordEdit()
+    }
+
     private func refreshHeights() {
         heightsStale = false
-        guard textWidth != heightWidth, !paragraphs.isEmpty else { return }
+        guard (table.tableColumns.first?.width ?? bounds.width) != heightWidth, !paragraphs.isEmpty else { return }
         table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<paragraphs.count))
     }
 
     private var textWidth: CGFloat {
-        (table.tableColumns.first?.width ?? bounds.width) - TurnCellView.textX - 4
+        let width = table.tableColumns.first?.width ?? bounds.width
+        return width - TurnCellView.textOrigin(for: width).x - 4
     }
 
     // MARK: - Actions

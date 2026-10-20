@@ -30,10 +30,8 @@ extension ReviewWindow {
         speakersButton.imagePosition = .imageLeading
         speakersButton.target = self
         speakersButton.action = #selector(toggleSpeakers(_:))
-        let toolbar = NSStackView(views: [speakersButton, nextUncertainButton, assignPopUp, splitButton, speakersPopUp,
+        let toolbar = WrappingRowView(views: [speakersButton, nextUncertainButton, assignPopUp, splitButton, speakersPopUp,
                                           editButton, NSView(), screenTextButton, searchField, exportPopUp])
-        toolbar.spacing = 8
-        toolbar.alignment = .centerY
 
         // A meeting opens with the speakers pane as it was left (`ReviewSpeakersPaneMemory`).
         panes.setSpeakersHidden(ReviewSpeakersPaneMemory().isHidden(sessionID: sessionID), animated: false)
@@ -47,8 +45,8 @@ extension ReviewWindow {
         statusLabel.font = .systemFont(ofSize: 12)
         statusLabel.alignment = .right
         statusLabel.lineBreakMode = .byTruncatingHead
-        let footer = NSStackView(views: [learnBox, NSView(), statusLabel])
-        footer.alignment = .centerY
+        learnBox.cell?.wraps = true
+        let footer = WrappingRowView(views: [learnBox, statusLabel])
         notices.orientation = .vertical
         notices.alignment = .leading
         notices.spacing = 4
@@ -62,10 +60,10 @@ extension ReviewWindow {
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
         // The panes take the height; the bars keep theirs.
-        for bar in [toolbar, footer, notices] { bar.setHuggingPriority(.defaultHigh, for: .vertical) }
+        for bar in [toolbar, footer, notices] { bar.setContentHuggingPriority(.defaultHigh, for: .vertical) }
         editBanner.setContentHuggingPriority(.defaultHigh, for: .vertical)
         playbackBar.setContentHuggingPriority(.defaultHigh, for: .vertical)
-        split.heightAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
+        split.heightAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
         let content = NSView()
         content.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -101,7 +99,7 @@ extension ReviewWindow {
         scrubber.toolTip = "Drag to move through the meeting (← and → move 5 seconds, ⌘← and ⌘→ a turn)"
         scrubber.setAccessibilityLabel("Playback position")
         scrubber.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        scrubber.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
+        scrubber.widthAnchor.constraint(equalToConstant: 160).isActive = true
         for rate in ReviewPlaybackSpeed.rates {
             speedPopUp.addItem(withTitle: ReviewPlaybackSpeed.title(rate))
             speedPopUp.lastItem?.representedObject = rate
@@ -117,10 +115,7 @@ extension ReviewWindow {
         speakingWidth.priority = .defaultLow
         speakingWidth.isActive = true
 
-        let row = NSStackView(views: [playButton, timeLabel, scrubber, speedPopUp, speakingLabel])
-        row.spacing = 12
-        row.alignment = .centerY
-        row.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 10)
+        let row = WrappingRowView(views: [playButton, timeLabel, scrubber, speedPopUp, speakingLabel], spacing: 12)
         row.translatesAutoresizingMaskIntoConstraints = false
         let bar = PlaybackBarView()
         bar.setAccessibilityElement(true)
@@ -129,10 +124,10 @@ extension ReviewWindow {
         bar.addSubview(row)
         // The controls give the bar its height.
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: bar.leadingAnchor),
-            row.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
-            row.topAnchor.constraint(equalTo: bar.topAnchor),
-            row.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
+            row.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 8),
+            row.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            row.topAnchor.constraint(equalTo: bar.topAnchor, constant: 6),
+            row.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -6),
         ])
         return bar
     }

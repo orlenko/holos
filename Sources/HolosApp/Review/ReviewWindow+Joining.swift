@@ -85,7 +85,7 @@ extension ReviewWindow {
             return
         }
         // Asked from the field: it is closed until the speaker change saves, and typing is refused meanwhile.
-        let keyWindow = window
+        let keyWindow = surface.ownedWindow
         let closed = request.fromField ? keyWindow.closeFieldForJoin() : nil
         keyWindow.fieldClosedWhile = { [weak self] in self?.turnList.editingWords == true }
         refresh()
@@ -116,7 +116,7 @@ extension ReviewWindow {
     /// saving opens no field, so its closed field stops refusing typing at once.
     func dropJoins() {
         joinsCleared += 1
-        window.reopenFieldAfterJoin(window.fieldClosedForJoin)
+        surface.ownedWindow.reopenFieldAfterJoin(surface.ownedWindow.fieldClosedForJoin)
         paragraphBreaks.clearJoins()
     }
 

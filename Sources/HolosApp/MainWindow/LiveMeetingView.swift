@@ -27,8 +27,13 @@ struct LiveTextLearning {
 /// (`LiveTranscript`). It follows the newest words while the user is at the bottom; scrolling up stops that and shows
 /// "Jump to Live" (`LiveFollow`). Reads the session four times a second while on screen, off the main actor. While the
 /// app records the meeting, the header has Pause / Resume and Stop and Save… beside its state (the menu bar's rules
-/// and path, `MeetingRecordingControls`); once the meeting is saved, what opens a finished meeting (Review or the
-/// transcript). The ‹ Meetings button (Escape) goes back to the list.
+/// and path, `MeetingRecordingControls`). The screen adopts the saved transcript and review as they become ready.
+/// The ‹ Meetings button (Escape) goes back to the list.
+///
+/// Invariants:
+/// 1. Transcript reads run off the main actor and only one read is in flight.
+/// 2. An embedded review owns the visible words; no live read replaces its content.
+/// 3. Back and window closing use the review's save gate before removing its content.
 @MainActor
 final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     static let refreshInterval: Duration = .milliseconds(250)
@@ -43,7 +48,11 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     private let onLearnText: (LiveHints.CorrectionLearningState, String, String) -> LiveTextLearning
     /// Stop and Save…, Pause, Resume (the app delegate checks them against the meeting's state again).
     private let onRecordingCommand: (MeetingRecordingCommand) -> Void
-    private var reader: LiveTranscriptReader
+    let contentState: MeetingContentState
+    private var reader: LiveTranscriptReader {
+        get { contentState.reader }
+        set { contentState.reader = newValue }
+    }
     private var header = LiveMeetingHeader(name: "", phase: .starting, detail: "")
     private var paragraphs: [LiveParagraph] = []
     private var follow = LiveFollow()
@@ -53,10 +62,10 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     private var updating = false
     private var targets: [TargetRange] = []
 
-    private let backButton = NSButton()
-    private let titleLabel = NSTextField(labelWithString: "")
+    let backButton = NSButton()
+    let titleLabel = NSTextField(labelWithString: "")
     private let statusDot = NSImageView()
-    private let statusLabel = NSTextField(labelWithString: "")
+    let statusLabel = NSTextField(labelWithString: "")
     private let finishedButton = NSButton()
     private let pauseButton = NSButton()
     private let stopButton = NSButton()
@@ -80,7 +89,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         self.onOpenFinished = onOpenFinished
         self.onLearnText = onLearnText
         self.onRecordingCommand = onRecordingCommand
-        reader = LiveTranscriptReader(session: directory)
+        contentState = MeetingContentState(directory: directory)
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -142,7 +151,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         recordingControls.setViews([pauseButton, stopButton], in: .leading)
         recordingControls.spacing = 6
         recordingControls.isHidden = true
-        let bar = NSStackView(views: [backButton, titleLabel, spacer, status, recordingControls, finishedButton])
+        let bar = NSStackView(views: [backButton, titleLabel, spacer, status, contentState.progress, recordingControls, finishedButton, contentState.more])
         bar.spacing = 10
         bar.alignment = .centerY
         bar.translatesAutoresizingMaskIntoConstraints = false
@@ -244,7 +253,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         apply(header)
     }
 
-    var preferredFirstResponder: NSView { textView }
+    var preferredFirstResponder: NSView { embeddedReview?.turnList.table ?? textView }
 
     /// The transcript text shown now (tests).
     var shownText: String { textView.string }
@@ -308,6 +317,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
 
     /// Starts reading the session (the section came on screen with this view).
     func start() {
+        guard embeddedReview == nil else { return }
         refresh()
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
@@ -326,14 +336,15 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
 
     /// Reads what changed, off the main actor, and shows it.
     private func refresh() {
-        guard !reading else { return }
+        guard !reading, embeddedReview == nil else { return }
         reading = true
         let current = reader
         let includeVolatile = header.phase.includesVolatileText
+        let preferSaved = header.phase == .saved
         Task { [weak self] in
             let (updated, built) = await Task.detached { () -> (LiveTranscriptReader, [LiveParagraph]?) in
                 var next = current
-                next.read(includeVolatile: includeVolatile)
+                next.read(includeVolatile: includeVolatile, preferSaved: preferSaved)
                 guard next.revision != current.revision || next.volatile != current.volatile
                     || next.hints != current.hints
                     || next.mode != current.mode else { return (next, nil) }
@@ -343,6 +354,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
             }.value
             guard let self else { return }
             self.reading = false
+            guard self.embeddedReview == nil else { return }
             self.reader = updated
             if let built { self.show(built) }
         }

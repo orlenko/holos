@@ -1149,14 +1149,15 @@ struct TurnListWordEditTests {
         list.table.handleWordClick(row: 0, word: 13, through: 13, extend: false)
         #expect(list.wordEdit?.words.map(\.text) == ["word11"])
         let before = list.editField.frame
-        // Narrower: the row's text wraps onto more lines, and "word11" goes down.
+        // Narrower: text moves below the timestamp and speaker; the edit follows its word's new position.
         list.window?.setContentSize(NSSize(width: 480, height: 600))
         list.layoutSubtreeIfNeeded()
         let cell = try TurnListViewTests.cell(list, row: 0)
         let word = try #require(cell.bodyText.rect(ofWord: 13))
         let origin = list.table.convert(word.origin, from: cell.bodyText)
         #expect(list.table.tableColumns[0].width < 500)
-        #expect(cell.bodyText.frame.width < 200)
+        #expect(cell.bodyText.frame.minY >= 30)
+        #expect(cell.bodyText.frame.maxX <= cell.bounds.width)
         #expect(list.editField.frame.origin.y != before.origin.y)
         #expect(abs(list.editField.frame.minX - (origin.x - 4)) < 0.5 && abs(list.editField.frame.minY - (origin.y - 3)) < 0.5)
     }

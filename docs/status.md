@@ -493,10 +493,15 @@ timeline and a larger local-model benchmark are follow-ups.
   the transcripts, with recognition errors in names and jargon carried over.
 - Meetings list (docs/design.md "Meetings list"): rich rows grouped by Today, Yesterday, This
   Week and month, with the title, start, length, people, the summary, and badges instead of
-  columns; a search field filters by title, summary and people; the row's menu has every action.
-  Rendered offscreen with invented meetings in light and dark; not yet seen in the running app.
-- Renaming a meeting (docs/meeting/titles-summaries.md §4.17): Rename… in the row's menu, ⌘R, or a
-  double-click on the title edits the name in the row (Return saves, Escape cancels; empty, or
+  columns; a search field filters by title, summary and people. Open and Delete are primary;
+  Start Recording… opens the menu bar's start panel; Advanced contains exports and maintenance
+  actions. Open, Return, and double-click enter
+  the same meeting screen inside the main window. Recording, processing, saved transcript,
+  and editable review share that screen. Native offscreen layout and navigation tests cover
+  wide and narrow windows, including saving a typed correction through Back. Running-app
+  acceptance of the unified screen remains pending.
+- Renaming a meeting (docs/meeting/titles-summaries.md §4.17): Advanced › Rename… (⌘R in the list)
+  edits the name in the row (Return saves, Escape cancels; empty, or
   Use Generated Title, gives back the generated title); `voiceislocal session rename <session>
   <name> | --generated [--json]` does the same. The name and its `nameSource` (`user`, or
   `default` for the generated title) are committed to meeting.json in one write, under the processing
@@ -506,7 +511,7 @@ timeline and a larger local-model benchmark are follow-ups.
   recording or saving, while another command holds the meeting, and while a final transcript or
   summary of it runs. Unit-tested on fixture sessions (persisted, reverted, refusals, files,
   special characters, long names); the row's editor rendered offscreen in light and dark; not
-  yet used in the running app.
+  yet used in the running app. Inside the meeting, Rename opens a sheet on its host window.
 - Main window (docs/design.md "Main window"): **Open Voice is Local** (⌘0) opens one
   window with a sidebar: History (⌘1), Corrections (⌘2), Meetings (⌘3), People (⌘4),
   Reading (⌘5), and Settings (⌘,), with a
@@ -530,23 +535,14 @@ timeline and a larger local-model benchmark are follow-ups.
   `HolosAppTests` (the first tests of the app target) lay out Settings in the real main window
   at five sizes and check that the content fills the window and the page and its cards show. Smooth
   scrolling, focus moves, and VoiceOver announcements are still unverified.
-- Live transcript in the main window (docs/design.md "Live transcript"): the meeting being
-  recorded is the first row of Meetings ("● Recording"), and opening it (double-click,
-  Return, Live Transcript, or the menu bar's Show Live Transcript…) shows its words in place
-  of the list as they are spoken: volatile words in a secondary colour until final (the
-  recorder writes them to `live.json` at most every 200 ms), the microphone's echo of the
-  call hidden with post-processing's echo rule, following the newest words until the user
-  scrolls up ("Jump to Live"). After the stop it shows the saving progress, then offers
-  Open Review or Open Transcript. The separate Live Transcript window is gone. Unit-tested
-  (volatile to final, echo hiding, following, what opens) and rendered offscreen in light
-  and dark. In the first real meeting (2026-10-06) it stayed blank although the recorder
-  journaled its words live: the hairline under the header had no height of its own and, in
-  a tall window, took all the height and left the transcript none (as in Settings before).
-  Fixed; `LiveMeetingViewTests` opens a recording's live transcript in the real main window
-  at five sizes, feeds it a journal shaped like that meeting's, and checks the words are read
-  and the transcript has the height. Every separator line in the app is now made by
-  `NSBox.hairline()` (1 pt high), and `HairlineTests` fails on a separator box made any
-  other way. Not yet seen again in a real meeting.
+- Meeting transcript in the main window (docs/design.md "Live transcript"): Open shows
+  finalized and volatile recording words, follows the newest words until the reader scrolls
+  up, and offers Jump to Live. The screen adopts the saved transcript revision and editable
+  review when ready. The list and open screen display actual processing progress: audio
+  seconds processed across both tracks for transcription, track-labelled progress for other
+  steps, and activity when no fraction is available. Percentages describe the current stage.
+  Saved-revision reading, progress presentation, opening policy, word editing, and native
+  layout are covered by automated tests. Running-app acceptance remains pending.
 - Reading section (docs/design.md "Reading section"): the main window's Reading (⌘5) makes
   the `voiceislocal read` file in the app. A New reading card takes an `https://` link or a
   document (typed, pasted with ⌘V, dropped anywhere on the section, or chosen; several files
@@ -659,6 +655,9 @@ the recorded microphone, which can still contain the call's echo during simultan
 Playback without a current mask combines the recorded tracks.
 
 ## Validation completed and pending
+
+A manual meeting check reports a Russian phrase correctly separated within an English meeting.
+This is one successful mixed-language observation; representative accuracy remains unverified.
 
 `docs/speech-validation.md` records a local fixture run for both native recognizer
 backends, plus the scope of that check. The test suites cover software-level

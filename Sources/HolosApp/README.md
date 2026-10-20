@@ -14,7 +14,7 @@ wiring between them and the library controllers (docs/design.md "Main window").
   Reading, Settings, live meeting view). `ReadingLibrary+Formatting` holds the Reading pane's duration and position
   texts. `ReadingVoicePopup` and `ReadingVoiceBrowser` share the searchable, language-filtered voice picker between
   Reading and Settings.
-- `Review/`: `ReviewWindow` (+Layout, +Joining, +WordEdits; its close types in `ReviewClosing`), its word edits'
+- `Review/`: `ReviewSurface` hosts review inside the main meeting screen and routes its close and keyboard handling; `ReviewWindow` (+Layout, +Joining, +WordEdits; its close types in `ReviewClosing`), its word edits'
   saves, refusals and close by hand in `ReviewWordEditCoordinator` (no AppKit; the window is its
   `ReviewWordEditHost`), `TurnListView` (+WordEditing, +Splitting, +Joining) with its `TurnTableView`,
   `TurnTextView`, `TurnScrollView` and `AssignMenu`, `SpeakerSidebarView`, `ReviewPlayer`, `ScreenTextPanel`. The

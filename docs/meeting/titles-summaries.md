@@ -129,10 +129,11 @@ no name and no source but still rewrites the transcript files (`unchanged`), so 
 whose files could not be rewritten is finished by asking for it again (files that already show the
 title get the same bytes). Exit 0 `renamed` or `unchanged`, 3 when the transcript files could not
 be rewritten, 1 otherwise, with `name`, `nameSource`, `title` and `exportsUpdated` in the JSON. In the
-app (`MeetingRowView`), Rename… in the row's menu, ⌘R in the list, or a double-click on the
-title's text (elsewhere on the row a double-click still opens) puts an editor in place of the
+app (`MeetingRowView`), Advanced › Rename… or ⌘R in the list puts an editor in place of the
 title and badges, with the title shown selected; Return or leaving the field saves, Escape
-cancels, and the rows are not rebuilt meanwhile (the 2 s refresh waits). Saving the title shown
+cancels, and the rows are not rebuilt meanwhile (the 2 s refresh waits). Double-click opens
+the meeting from any part of its row. Inside the meeting, the three-dot menu's Rename… uses
+a sheet on the main window, with Save and Cancel. Saving the title shown
 unchanged (compared as typed, before any cleaning, so a longer name saved before names were cut is
 never rewritten by opening the editor, and a generated or default title left as it was never
 becomes the user's), or the user's own name again, does nothing (`MeetingRenameRequest`); it is
