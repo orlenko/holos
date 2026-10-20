@@ -206,65 +206,32 @@ private func summary(_ id: String, state: SessionState = .complete, runID: Strin
                    manifestStatus: "complete", speakerState: speakers, runID: runID, liveness: .exited)
 }
 
-@Test func openingAMeetingShowsWhatFitsIt() {
-    let live = summary("A", state: .recording, runID: nil, speakers: .none)
-    #expect(MeetingOpenPolicy.target(live, liveSessionID: "A", inUse: false, hasExport: false) == .live)
-    // Recorded by the voiceislocal tool: the app does not follow it, but it is live.
-    #expect(MeetingOpenPolicy.target(live, liveSessionID: nil, inUse: false, hasExport: false) == .live)
-    // Saving after the stop: still the live transcript.
-    let saving = summary("B", state: .processing, runID: nil, speakers: .running)
-    #expect(MeetingOpenPolicy.target(saving, liveSessionID: "B", inUse: false, hasExport: false) == .live)
-    #expect(MeetingOpenPolicy.target(saving, liveSessionID: nil, inUse: false, hasExport: true) == .transcript)
-    let labelled = summary("C")
-    #expect(MeetingOpenPolicy.target(labelled, liveSessionID: "A", inUse: false, hasExport: true) == .review)
-    #expect(MeetingOpenPolicy.target(labelled, liveSessionID: nil, inUse: true, hasExport: true) == .transcript,
-            "A command working on it keeps Review closed.")
-    let unlabelled = summary("D", runID: nil, speakers: .notLabelled)
-    #expect(MeetingOpenPolicy.target(unlabelled, liveSessionID: nil, inUse: false, hasExport: true) == .transcript)
-    #expect(MeetingOpenPolicy.target(unlabelled, liveSessionID: nil, inUse: false, hasExport: false) == .none)
-    #expect(MeetingOpenPolicy.finishedTarget(labelled, inUse: false, hasExport: true) == .review)
+@Test func everyMeetingOpensTheSameScreenAndOffersOneOpenAction() {
+    let meetings = [summary("A", state: .recording, runID: nil, speakers: .none),
+                    summary("B", state: .processing, runID: nil, speakers: .running),
+                    summary("C"), summary("D", runID: nil, speakers: .notLabelled)]
+    for meeting in meetings {
+        for export in [false, true] {
+            for inUse in [false, true] {
+                #expect(MeetingOpenPolicy.target(meeting, liveSessionID: nil, inUse: inUse,
+                                                 hasExport: export) == .live)
+                #expect(MeetingOpenPolicy.menuItems(meeting, liveSessionID: nil, inUse: inUse,
+                                                    hasExport: export) == [.init(.open, "Open", isEnabled: true)])
+            }
+        }
+    }
+    #expect(MeetingOpenPolicy.finishedTarget(summary("C"), inUse: false, hasExport: true) == .review)
+    #expect(!MeetingOpenPolicy.canReview(summary("C"), inUse: true))
 }
 
-private func menu(_ summary: SessionSummary, liveSessionID: String? = nil, inUse: Bool = false,
-                  hasExport: Bool) -> [String] {
-    MeetingOpenPolicy.menuItems(summary, liveSessionID: liveSessionID, inUse: inUse, hasExport: hasExport).map {
-        $0.title + ($0.isEnabled ? "" : " (off)")
-    }
-}
-
-@Test func theMenuNamesWhatEachItemOpensAndNeverRepeatsOne() {
-    // A labelled, finished meeting: Open opens Review, so there is no second Review item; the preview stays reachable.
-    let labelled = summary("C")
-    #expect(menu(labelled, hasExport: true) == ["Open Review", "Show Transcript File"])
-    #expect(menu(labelled, hasExport: false) == ["Open Review", "Show Transcript File (off)"])
-    // The same meeting while a command works on it: Review is closed, so Open shows the preview and Review… is off.
-    #expect(menu(labelled, inUse: true, hasExport: true) == ["Open Transcript", "Review… (off)"])
-    // Not labelled: the preview, or nothing to open.
-    let unlabelled = summary("D", runID: nil, speakers: .notLabelled)
-    #expect(menu(unlabelled, hasExport: true) == ["Open Transcript", "Review… (off)"])
-    #expect(menu(unlabelled, hasExport: false) == ["Review… (off)", "Show Transcript File (off)"])
-    // Recording or saving: the live transcript.
-    let live = summary("A", state: .recording, runID: nil, speakers: .none)
-    #expect(menu(live, liveSessionID: "A", hasExport: false)
-        == ["Open Live Transcript", "Review… (off)", "Show Transcript File (off)"])
-    // Followed while it saves, though the catalog already says complete and labelled: Review opens something else.
-    #expect(menu(labelled, liveSessionID: "C", hasExport: true)
-        == ["Open Live Transcript", "Review…", "Show Transcript File"])
-
-    // Every case: one item per action, titles all different, the first one (if any) is what double-click opens.
-    let cases: [(SessionSummary, String?, Bool, Bool)] = [
-        (labelled, nil, false, true), (labelled, nil, true, true), (unlabelled, nil, false, true),
-        (unlabelled, nil, false, false), (live, "A", false, false), (labelled, "C", false, true),
-    ]
-    for (meeting, liveID, inUse, export) in cases {
-        let items = MeetingOpenPolicy.menuItems(meeting, liveSessionID: liveID, inUse: inUse, hasExport: export)
-        #expect(Set(items.map(\.action)).count == items.count)
-        #expect(Set(items.map(\.title)).count == items.count)
-        let target = MeetingOpenPolicy.target(meeting, liveSessionID: liveID, inUse: inUse, hasExport: export)
-        #expect(items.first { $0.action == .open }?.title == MeetingOpenPolicy.openTitle(target))
-        #expect(items.contains { $0.action == .review } == (target != .review))
-        #expect(items.contains { $0.action == .transcriptFile } == (target != .transcript))
-    }
+@Test func editableReviewWaitsForAnExternalJobAndBecomesReadyWhenItEnds() {
+    var meeting = summary("generated")
+    #expect(MeetingOpenPolicy.canReview(meeting, inUse: false))
+    meeting.jobInProgress = "Generated processing job"
+    #expect(!MeetingOpenPolicy.canReview(meeting, inUse: false))
+    #expect(MeetingOpenPolicy.target(meeting, liveSessionID: nil, inUse: false, hasExport: true) == .live)
+    meeting.jobInProgress = nil
+    #expect(MeetingOpenPolicy.canReview(meeting, inUse: false))
 }
 
 @Test func liveMeetingsComeFirst() {

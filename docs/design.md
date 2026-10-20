@@ -403,9 +403,9 @@ search, scrolls to it, outlines it for a moment, and moves the focus to its cont
 control can take it (Full Keyboard Access); the sidebar marks its chapter, or, for Run Setup
 Assistant… (below the cards, in no chapter), the chapter at its place as scrolling there would
 mark it (Dictation history at the end of the page). Escape clears the search and returns to where the
-page was. VoiceOver hears how many settings match and where Return goes. The meeting's live transcript is part of
-Meetings (see "Live transcript"). The Setup Assistant, the meeting start panel, Review
-(Name Speakers), and the dictation preview stay separate windows.
+page was. VoiceOver hears how many settings match and where Return goes. The meeting's
+transcript and editable review are part of Meetings (see "Live transcript"). The Setup
+Assistant, meeting start panel, and dictation preview use separate windows.
 
 Launch and closing (`MainWindowLaunch`): the first launch opens the Setup Assistant (and
 the check after its reopen), and a launch with dictation off opens Settings, as before.
@@ -457,9 +457,10 @@ The meeting being recorded is the first row of Meetings, its name in bold and it
 "● Recording" in red ("● Paused", "Starting…", or "Saving…" while it is in those
 phases; `MeetingOpenPolicy.ordered`, `LiveMeetingPhase`). A meeting recorded by the
 `voiceislocal` tool in a terminal counts too. Opening a meeting (double-click, Return, or
-the Live Transcript button) follows `MeetingOpenPolicy`: the live transcript while the
-meeting records or saves, Review for a labelled meeting, else the transcript preview, as
-before. The menu bar's Show Live Transcript… opens the main window on it.
+the Open button) opens the meeting inside the main window. Recording, processing, and saved
+meetings share that entry point and the same Back to Meetings button. A meeting with usable
+speaker labels shows the editable review there; other meetings show their transcript and
+processing status. The menu bar's Show Live Transcript… opens the same meeting screen.
 
 The live transcript (`LiveMeetingViewController`) replaces the list inside Meetings: a
 header with ‹ Meetings (also Escape) back to the list (the meeting stays selected), the
@@ -529,12 +530,22 @@ words. The user speaking over the call, a short reply that repeats one or two wo
 microphone words ahead of the system's stay. The first one or two volatile words of an echo
 can show until the third makes it a run.
 
-When recording stops, the view stays on the meeting while it saves; once it is saved, the
-header offers what opening a finished meeting shows: **Open Review** (Return) for a
-labelled meeting, else **Open Transcript**. A meeting whose recorder stopped before it was
-saved shows "Interrupted" (orange) and points to Recover…; a failed or damaged one shows
-the catalog's state. Going to another meeting from the menu bar while a live transcript is
-open brings the list back with that meeting selected. Volatile words cannot be corrected;
+When recording stops, the screen stays on the meeting while it saves. It adopts the current
+saved transcript, then the editable review when speaker labels are ready and background jobs
+have released the meeting, without another
+Open action or a separate window. Back returns to the list with the meeting selected; an
+open word edit and pending edits pass through the review's save gate first. Navigation to
+another meeting waits for a successful save and follows only the latest destination; a
+refused save or navigation elsewhere cancels the request. Closing the main
+window uses the same gate; a refused save cancels that close request. A meeting whose recorder stopped before it was saved shows
+"Interrupted" (orange); recovery is in Advanced. A failed or damaged one shows its status.
+
+Processing progress appears in the meeting header and list. A progress bar and percentage
+use `postprocess.json`'s current stage fraction. Final transcription reports the share of
+audio transcribed; stages without a fraction show activity. These describe the current
+step, not an estimate of remaining time. Foreground speaker labelling also reports progress
+when the saved meeting is already complete. A temporarily unreadable saved transcript leaves
+the last readable revision visible. Volatile words cannot be corrected;
 their finalized run supplies the durable identity and timing first.
 
 ### Reading section
@@ -1435,9 +1446,10 @@ it), else the title Apple Intelligence wrote for the current transcript, else th
 ("Meeting 2026-10-03 14:00"); a generated title never replaces a name the user gave. The
 Markdown transcript file's heading follows the same rule.
 
-A finished meeting is renamed in its row: the menu's Rename… (⌘R in the list) or a
-double-click on the title's text (a double-click elsewhere on the row still opens it) turns the
-title into a text field spanning the line, with the title selected. Return saves it, Escape
+A finished meeting is renamed in its row: Advanced › Rename… (⌘R in the list) turns the
+title into a text field spanning the line, with the title selected. Double-clicking any part
+of the row opens the meeting. Inside the meeting, the three-dot menu's Rename… opens a name
+sheet on the main window. In the list, Return saves it, Escape
 cancels, and clicking elsewhere saves it, as in the Finder. The name is one line of at most 60
 characters (a longer one is cut as titles are, at a space when it can be); leaving the field
 empty gives the meeting back its generated title, and so does the menu's Use Generated Title,
@@ -1449,7 +1461,7 @@ meeting that is not finished (interrupted, incomplete, failed or damaged: Recove
 refusal, also for a transcript that cannot be read, says why in an alert and changes nothing.
 When a meeting's transcript files are out of date (another title in their heading, or a rewrite
 that did not finish, whoever wrote them), the meeting says so below the list and its menu offers
-Update Transcript Files, which rewrites them for the title shown. An open Review window's title follows
+Update Transcript Files, which rewrites them for the title shown. The open meeting screen's title follows
 renames and new generated titles. `voiceislocal session rename` does the same from Terminal.
 
 Titles and summaries are written on this Mac by
@@ -1461,15 +1473,16 @@ transcript files get the summary, key points and action items (Markdown and JSON
 `voiceislocal session summarize` makes them from Terminal. docs/meeting/titles-summaries.md §4.17 has the
 method, files and measurements.
 
-Every action stays: double-click or Return opens (the live transcript, Review, or the
-transcript preview), ⌫ is Delete Meeting…, the buttons below the list, and the row's menu. The menu
-starts with the item double-click and Return use, named for what it opens (Open Live Transcript,
-Open Review, or Open Transcript; no Return key equivalent, which would fire from other fields), then Review… and Show Transcript File (the preview)
-unless that first item already does the same (`MeetingOpenPolicy.menuItems`), so no two items do
-one thing. After them come Show in Finder, Save Transcript As…,
-Rename… and Use Generated Title, Summarize (Again), Make Final Transcript Now / Cancel Final Transcript, Recover…, Label
-Speakers, Delete Audio… and Delete Meeting…, each enabled as its button is. Right-clicking a
-row selects it.
+The Meetings page offers Start Recording… to open the same start panel as the menu bar.
+It is available while the recorder is idle or failed; recording, starting, and saving keep it off.
+The list offers Open, Delete Meeting…, and Advanced. Open, Return, and double-click all
+enter the same meeting screen inside the main window. The row context menu keeps Open
+and Delete Meeting… at the top; Advanced contains export, transcript-file preview, Finder,
+rename, summaries, final transcription, recovery, speaker labelling, and audio deletion.
+The meeting screen's three-dot button exposes these advanced actions too. Editable review
+keeps its playback, correction, speaker, and export controls inside that screen. Right-clicking
+a row selects it. A processing state changes which advanced actions are available, not how
+Open is named or where it navigates.
 
 Several meetings can be selected as in any Mac list: click, ⇧-click for a range, ⌘-click to add
 or remove one, ⌘A for all, ⇧↑/↓ to extend. Day headers are never selected; a range over one
@@ -1481,7 +1494,8 @@ however the refreshes in between saw them go. With several selected, the line un
 3 h 12 min · 1.2 GB") and VoiceOver announces the count. Show in Finder reveals all of them;
 Delete Meeting… (also ⌫ and ⌘⌫) and Delete Audio… act on every selected meeting that
 `MeetingActionPolicy` allows, the rule a single deletion follows; the actions for one meeting
-(open, Review…, Recover…, Label Speakers, Open and Save Transcript, Rename, Clean Up) are off.
+(Open, Recover…, Label Speakers, Save Transcript, Rename, Clean Up) are off. The bulk context
+menu keeps Delete Meetings… at the top and puts Finder and audio deletion in Advanced.
 One confirmation names the count and what goes ("Delete 5 meetings?": the folders, with their
 audio, transcripts, speaker data and screen captures, go to the Trash; Delete Audio: the audio
 and screen captures, for good), offers to forget the voice samples learned from them, and says

@@ -6,6 +6,10 @@ import HolosSpeakers
 /// wrapping in the rest of the row), matching `TurnListView`'s row heights. The paragraph playing has a tinted
 /// background and an accent bar on its leading edge. Nothing on the row marks an uncertain turn: the pop-up's
 /// VoiceOver label says "uncertain" or "overlap" and its tooltip why.
+///
+/// Invariants:
+/// 1. Text geometry and row-height measurement use the same width-dependent origin.
+/// 2. A reused row refreshes its speaker menu when its menu signature changes.
 @MainActor
 final class TurnCellView: NSTableCellView {
     static let timeWidth: CGFloat = 72
@@ -13,6 +17,9 @@ final class TurnCellView: NSTableCellView {
     static let gap: CGFloat = 6
     /// Where the text starts: right after the pop-up.
     static var textX: CGFloat { 4 + timeWidth + gap + popUpWidth + gap }
+    static func textOrigin(for width: CGFloat) -> NSPoint {
+        width < 520 ? NSPoint(x: 4, y: 30) : NSPoint(x: textX, y: 5)
+    }
     /// Space on each side of the text inside its column (what a wrapping label kept).
     static let textInset: CGFloat = 2
 
@@ -109,9 +116,10 @@ final class TurnCellView: NSTableCellView {
         let height = bounds.height
         timeButton.frame = NSRect(x: 4, y: 4, width: Self.timeWidth, height: 20)
         speakerPopUp.frame = NSRect(x: 4 + Self.timeWidth + Self.gap, y: 2, width: Self.popUpWidth, height: 22)
-        // The row is `measured + 10` tall (`TurnListView.tableView(_:heightOfRow:)`): 5 above the text, 5 below.
-        let width = Self.textViewWidth(forTextWidth: bounds.width - Self.textX - 4)
-        let frame = NSRect(x: Self.textX + Self.textInset, y: 5, width: width, height: max(18, height - 10))
+        let origin = Self.textOrigin(for: bounds.width)
+        let width = Self.textViewWidth(forTextWidth: bounds.width - origin.x - 4)
+        let frame = NSRect(x: origin.x + Self.textInset, y: origin.y, width: width,
+                           height: max(18, height - origin.y - 5))
         guard bodyText.frame != frame else { return }
         bodyText.frame = frame
         bodyText.window?.invalidateCursorRects(for: bodyText)

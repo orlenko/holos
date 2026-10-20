@@ -8,6 +8,16 @@ Sections keep their numbers from the meeting design; a bare `§N.M` names one of
 
 ### 5.10 PR9: Transcript review window (wave 5)
 
+**Presentation.** Review is the editable content of a saved meeting inside the main window.
+The meeting screen keeps its title and Back to Meetings header while recording, processing,
+and review content change beneath it. `ReviewSurface` routes sheets, first-responder access,
+and keyboard handling through the main window. Back and closing the main window use the
+existing word-edit save gate; leaving the screen saves and closes the review without closing
+its host window. The review toolbar and playback controls wrap in a narrow meeting screen.
+A narrow screen starts with the speakers pane collapsed; Show Speakers opens it.
+Below 520 points, a turn's text wraps below its timestamp and speaker rather than beside them.
+
+
 **Goal.** Name the speakers of a 3 h meeting in about 10 minutes: see speakers and
 turns, play audio, reassign, merge, split, confirm suggestions in bulk, find more
 speakers, undo, export.
@@ -333,7 +343,8 @@ shown, Otter-style.
   the previous one, Esc cancels. Closing the window (or quitting) with the field open saves
   what it holds, before the close learns from the edits. Closed by hand (its close button,
   ⌘W), the window stays open until that edit is saved, and stays open when it is not (a full
-  disk, a refusal): the field opens again with what was typed and the footer says why
+  disk, a refusal). A refused close cancels the pending request to close the main window,
+  so later navigation keeps the main window open. The field opens again with what was typed and the footer says why
   (`ReviewCloseGate`), so nothing typed is lost to a failed save. It waits the same way for
   edits handed over a moment before and still saving (Return, then ⌘W), and stays open when
   one of them is not saved. No field opens while it waits, so each edit not saved is kept;

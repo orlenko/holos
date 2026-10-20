@@ -10,12 +10,12 @@ import UniformTypeIdentifiers
 /// `ReviewSession` (HolosMeeting); this file only arranges views and routes actions to it. Every change shows at once
 /// and saves in the background; errors appear in the footer.
 ///
-/// Holos has no main menu, so the "Speakers" menu is a pull-down in the window's toolbar and the window handles its
+/// The "Speakers" menu is a pull-down in the toolbar and the review handles its
 /// own shortcuts: Space (or K) play/pause, ←/→ (or J/L) back and ahead 5 seconds, and ⌘←/⌘→ the previous and next
 /// turn, anywhere but while typing in a text field; 1–9 assign (in the turn list), ⌘' next uncertain, ⌘Z undo,
 /// ⌘F search, ⌘E edit mode (word clicks edit words), ⇧⌘E export, ⌥⌘S hide or show the speakers pane, and the usual
-/// editing keys in text fields. The app's View menu has Hide Speakers and Show Short Interjections for the key review
-/// window (`toggleSpeakers`, `toggleShortInterjections`, reached through the responder chain as the window's delegate).
+/// editing keys in text fields. The app's View menu has Hide Speakers and Show Short Interjections for the active review
+/// (`toggleSpeakers`, `toggleShortInterjections`, forwarded by the main window's delegate when embedded).
 ///
 /// The playback bar above the footer holds Play/Pause, the position, a scrubber, the speed, and who is speaking.
 /// Playing goes on through the meeting until paused; a click on a timestamp or on a word plays from there. While a
@@ -47,11 +47,12 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// The meeting's title as the Meetings list shows it (`MeetingNaming.currentTitle`): the window's title, and the
     /// name Save As… suggests. A rename in the list sets it.
     var meetingTitle: String {
-        didSet { window.title = "\(meetingTitle) — Review" }
+        didSet { surface.ownedWindow.title = "\(meetingTitle) — Review" }
     }
 
     /// Internal (as `turnList`) for tests that drive the window.
-    let window: ReviewKeyWindow
+    let surface: ReviewSurface
+    var window: NSWindow { surface.window }
     private let player = ReviewPlayer()
     private let sidebar = SpeakerSidebarView()
     let turnList = TurnListView()
@@ -165,16 +166,16 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         self.sessionID = sessionID
         self.review = review
         meetingTitle = title ?? review.sessionName
-        window = ReviewKeyWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+        surface = ReviewSurface(ReviewKeyWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
                                  styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered,
-                                 defer: true)
+                                 defer: true))
         super.init()
         window.title = "\(meetingTitle) — Review"
         window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 900, height: 560)
         window.delegate = self
-        window.keyHandler = { [weak self] event in self?.handleKey(event) ?? false }
-        window.playbackKeyHandler = { [weak self] event in self?.handlePlaybackKey(event) ?? false }
+        surface.ownedWindow.keyHandler = { [weak self] event in self?.handleKey(event) ?? false }
+        surface.ownedWindow.playbackKeyHandler = { [weak self] event in self?.handlePlaybackKey(event) ?? false }
         player.rate = ReviewPlaybackSpeed.load(from: .standard)
         window.contentView = makeContent()
         wire()
@@ -186,7 +187,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     }
 
     func show() {
-        if !positioned {
+        if !positioned && !surface.isEmbedded {
             window.center()
             positioned = true
         }
@@ -283,9 +284,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
 
     /// Closes the window without waiting: its open edit field's text is queued to be saved at once (`beginClosing`).
     func startClosing() {
-        // A minimized window is not visible but must be closed too, or it stays in the Dock.
-        if window.isVisible || window.isMiniaturized { window.close() }
         if closeTask == nil { beginClosing() }
+        surface.close()
     }
 
     // MARK: - Layout

@@ -60,6 +60,9 @@ enum MainSection: Int, CaseIterable {
 /// What a section's view controller can do for the window; every method is optional.
 @MainActor
 protocol MainSectionContent: AnyObject {
+    /// Closing the main window gives an open meeting a chance to finish saving typed edits.
+    func sectionShouldClose() -> Bool
+    func sectionWindowDidResignKey()
     /// The section is now on screen (selected while the window is visible, or the window opened on it).
     func sectionDidShow()
     /// The section left the screen (another was selected, or the window closed).
@@ -73,6 +76,8 @@ protocol MainSectionContent: AnyObject {
 }
 
 extension MainSectionContent {
+    func sectionShouldClose() -> Bool { true }
+    func sectionWindowDidResignKey() {}
     func sectionDidShow() {}
     func sectionDidHide() {}
     func sectionWindowDidBecomeKey() {}
@@ -93,8 +98,12 @@ struct MainStatus: Equatable {
 /// remembers its frame, the sidebar's width, and whether the sidebar is hidden; closing it keeps everything for the
 /// next opening. The sidebar can be hidden (View ▸ Hide Sidebar ⌃⌘S, the toolbar's sidebar button, or a drag of the
 /// divider), so the window can be narrow enough to sit beside a call's window.
+///
+/// Invariants:
+/// 1. Only the selected section receives window visibility and keyboard-focus notifications.
+/// 2. An embedded meeting's save gate decides whether the window may close, including from another section.
 @MainActor
-final class MainWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
+final class MainWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation {
     /// The narrowest the section content gets: the whole window's width with the sidebar hidden.
     static let contentMinimumWidth: CGFloat = 400
     static let sidebarMinimumWidth: CGFloat = 200
@@ -261,6 +270,11 @@ final class MainWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate 
 
     func close() { window.performClose(nil) }
 
+    var meetingReview: ReviewWindow? {
+        guard current == .meetings else { return nil }
+        return (sectionContent(.meetings) as? MeetingsPane)?.live?.embeddedReview
+    }
+
     private func sectionContent(_ section: MainSection) -> MainSectionContent? {
         sections[section] as? MainSectionContent
     }
@@ -324,6 +338,10 @@ final class MainWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate 
 
     // MARK: - NSWindowDelegate
 
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        sectionContent(.meetings)?.sectionShouldClose() ?? true
+    }
+
     func windowWillClose(_ notification: Notification) {
         if let current { sectionContent(current)?.sectionDidHide() }
         _ = QLPreviewPanelCloser.closeIfVisible()
@@ -334,6 +352,10 @@ final class MainWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate 
     func windowDidBecomeKey(_ notification: Notification) {
         if let current { sectionContent(current)?.sectionWindowDidBecomeKey() }
         onBecomeKey?(current)
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        if let current { sectionContent(current)?.sectionWindowDidResignKey() }
     }
 }
 

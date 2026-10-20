@@ -112,7 +112,11 @@ struct MeetingsMultiSelectTests {
         #expect(bulk.last?.1.targets.map(\.id) == ["A", "D"])
 
         // Delete Audio…: D has none left.
-        try fixture.button("Delete Audio…").performClick(nil)
+        let actions = NSMenu()
+        fixture.pane.fill(actions, clickedRow: fixture.row("A"))
+        let advanced = try #require(actions.items.first { $0.title == "Advanced" }?.submenu)
+        let deleteAudio = try #require(advanced.items.first { $0.title.hasPrefix("Delete Audio") })
+        advanced.performActionForItem(at: advanced.index(of: deleteAudio))
         let audio = try #require(bulk.last?.1)
         #expect(audio.action == .deleteAudio)
         #expect(audio.targets.map(\.id) == ["A"])
@@ -146,11 +150,10 @@ struct MeetingsMultiSelectTests {
         fixture.select(["A", "B", "C"])
         #expect(fixture.pane.statusText == "3 meetings selected · 1 h 30 min · 300 MB")
         #expect(fixture.pane.selectionAnnouncement == "3 meetings selected")
-        for title in ["Show in Finder", "Delete Meeting…", "Delete Audio…"] {
+        for title in ["Delete Meeting…", "Advanced…"] {
             #expect(try fixture.button(title).isEnabled, "\(title)")
         }
-        for title in ["Review…", "Live Transcript", "Recover…", "Label Speakers", "Open Transcript",
-                      "Save Transcript As…"] {
+        for title in ["Open"] {
             #expect(try !fixture.button(title).isEnabled, "\(title) is for one meeting")
         }
         fixture.select(["A"])
@@ -166,13 +169,15 @@ struct MeetingsMultiSelectTests {
         fixture.pane.fill(menu, clickedRow: fixture.row("B"))
         #expect(fixture.pane.selectedSessionIDs == ["A", "B", "C"])
         let titles = menu.items.filter { !$0.isSeparatorItem }.map(\.title)
-        #expect(titles == ["Show 3 in Finder", "Delete Audio of 3 Meetings…", "Delete 3 Meetings…"])
+        #expect(titles == ["Delete 3 Meetings…", "Advanced"])
+        #expect(menu.items.first { $0.title == "Advanced" }?.submenu?.items.map(\.title)
+            == ["Show 3 in Finder", "Delete Audio of 3 Meetings…"])
         let disabled = menu.items.filter { !$0.isSeparatorItem && !$0.isEnabled }
         #expect(disabled.isEmpty)
         // On another row: that row alone, with its own menu.
         fixture.pane.fill(menu, clickedRow: fixture.row("E"))
         #expect(fixture.pane.selectedSessionIDs == ["E"])
-        #expect(menu.items.contains { $0.title == "Rename…" })
+        #expect(menu.items.first { $0.title == "Advanced" }?.submenu?.items.contains { $0.title == "Rename…" } == true)
         #expect(menu.items.contains { $0.title == "Delete Meeting…" })
         // On a header: nothing.
         fixture.pane.fill(menu, clickedRow: try #require(fixture.headers.first))

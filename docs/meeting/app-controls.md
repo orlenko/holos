@@ -225,9 +225,11 @@ with the same rules and the same path (`MeetingRecordingControls`,
 `HolosAppDelegate.performMeetingRecordingCommand`; docs/design.md "Live transcript"); from
 the main window the question is a sheet on it.
 
-Idle menu: `Name Speakers — Council meeting…` at the top while offered (PR4 opens the
-Meetings window with that session selected; PR9 opens Review), then
-`Start Meeting Recording…`, the dictation items as today, and `Meetings…` above
+The Meetings page's Start Recording… button invokes the same start-panel action as the menu bar
+and is off while a meeting starts, records, or saves.
+
+The idle menu offers Name Speakers when available, Start Meeting Recording…, the dictation items,
+and Meetings… above
 `Setup…`. While finishing: `Saving Council meeting — labelling speakers 42%` (from
 `status.progress`).
 

@@ -50,9 +50,9 @@ struct LiveMeetingViewTests {
     static let sessionID = "6F0D7B4A-2C1E-4B8A-9F3D-1A2B3C4D5E6F"
 
     /// The main window on Meetings, laid out but never shown.
-    static func meetings(size: NSSize) throws -> (NSWindow, MeetingsPane) {
+    static func meetings(size: NSSize, root suppliedRoot: URL? = nil) throws -> (NSWindow, MeetingsPane) {
         NSApplication.shared.setActivationPolicy(.prohibited)
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("live-view-\(UUID().uuidString)")
+        let root = suppliedRoot ?? FileManager.default.temporaryDirectory.appendingPathComponent("live-view-\(UUID().uuidString)")
         let pane = MeetingsPane(root: root, perform: { _, _ in }, openReview: { _ in },
                                 beginUsing: { _, _ in true }, endUsing: { _ in },
                                 liveHeader: { _, _ in

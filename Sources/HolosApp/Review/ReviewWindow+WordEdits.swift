@@ -41,7 +41,11 @@ extension ReviewWindow: ReviewWordEditHost {
         refreshToolbar()
     }
 
+    func keepWindowOpen() {
+        surface.onCloseRefused?()
+    }
+
     func closeWindow() {
-        window.close()
+        if surface.isEmbedded { startClosing() } else { window.close() }
     }
 }
