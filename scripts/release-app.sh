@@ -146,6 +146,11 @@ if pgrep -f "$app_bundle/Contents/MacOS/" >/dev/null 2>&1; then
     fail "A copy of Voice is Local (or its recorder) is running from build/release/VoiceIsLocal.app. Quit it, then try again."
 fi
 
+release_build_plist=$(mktemp -t holos-release-info)
+trap 'rm -f "$release_build_plist"' EXIT HUP INT TERM
+cp "$app_plist_source" "$release_build_plist"
+sh scripts/stamp-build-info.sh "$release_build_plist" "$build_number"
+
 step "Building release products (version $version, build $build_number)"
 swift build -c release --product HolosApp
 swift build -c release --product voiceislocal
@@ -159,7 +164,7 @@ fi
 step "Assembling $app_bundle"
 rm -rf "$app_bundle" "$dmg_root" "$dmg" "$app_zip"
 mkdir -p "$app_bundle/Contents/MacOS" "$app_bundle/Contents/Resources"
-cp "$app_plist_source" "$app_bundle/Contents/Info.plist"
+cp "$release_build_plist" "$app_bundle/Contents/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$version" "$app_bundle/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$build_number" "$app_bundle/Contents/Info.plist"
 if [ -f "$icon_source" ]; then

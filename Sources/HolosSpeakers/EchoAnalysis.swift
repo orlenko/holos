@@ -45,8 +45,8 @@ public struct InMemoryEchoAudio: EchoAudioSource {
 ///    fitted through the confident windows, then refitted by least squares three times on those within 3 ms of it
 ///    (an outlying window cannot drag the first line away from the rest; the delay drifts by a few milliseconds an
 ///    hour: the two tracks' clocks differ).
-/// 2. Gate: echo is present only when at least 3 windows, and at least 30 % of the windows where the system plays,
-///    are confident and on the line, and the delay is at least 1 ms all meeting long (echo cannot reach the microphone
+/// 2. Gate: echo is present only when at least 3 windows, and at least 30 % of the confident windows,
+///    are on the line, and the delay is at least 1 ms all meeting long (echo cannot reach the microphone
 ///    before the system audio; a zero lag is the same signal on both tracks, not the room). Otherwise nothing is
 ///    masked: headphones, or no system audio.
 /// 3. Model: STFT of both tracks (1,024-sample Hann window, 256 hop, 150–4,000 Hz). Per 5 s block and per bin, the
@@ -61,7 +61,7 @@ public struct InMemoryEchoAudio: EchoAudioSource {
 /// 5. Word rule: `AcousticEchoMask.isEcho(start:end:)`.
 public enum EchoAnalysis {
     /// Bumped whenever the mask for the same audio changes; a stored mask of another version is computed again.
-    public static let version = 1
+    public static let version = 2
     public static let sampleRate = 16_000
 
     // MARK: - Parameters
@@ -317,13 +317,13 @@ public enum EchoAnalysis {
         return (0..<maximumSlopeWindows).map { windows[$0 * last / (maximumSlopeWindows - 1)] }
     }
 
-    /// The gate (step 2).
+    /// The gate (step 2): weak correlations cannot veto a coherent echo path found in other windows.
     static func isPresent(_ fit: DelayFit, duration: Double) -> Bool {
         guard let first = fit.milliseconds(at: 0), let last = fit.milliseconds(at: max(0, duration)) else {
             return false
         }
         return fit.agreeingWindows >= minimumAgreeingWindows
-            && Double(fit.agreeingWindows) >= echoPresentShare * Double(fit.windows)
+            && Double(fit.agreeingWindows) >= echoPresentShare * Double(fit.confidentWindows)
             && min(first, last) >= minimumDelayMilliseconds
             && max(first, last) <= latestLagSeconds * 1_000
     }

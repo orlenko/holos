@@ -26,13 +26,17 @@ if pgrep -f "$holos_app_bundle/Contents/MacOS/voiceislocal" >/dev/null 2>&1; the
     printf 'A %s meeting recorder is running from build/VoiceIsLocal.app. Stop the recording and let speaker labelling finish, then rebuild.\n' "$app_name" >&2
     exit 1
 fi
+holos_build_plist=$(mktemp -t holos-build-info)
+trap 'rm -f "$holos_build_plist"' EXIT HUP INT TERM
+cp Resources/App-Info.plist "$holos_build_plist"
+sh scripts/stamp-build-info.sh "$holos_build_plist"
 swift build --product HolosApp "$@"
 swift build --product voiceislocal "$@"
 holos_app_bin_dir=$(swift build --show-bin-path "$@")
 
 # Build locally only. This does not install, launch, or enable a login item.
 mkdir -p "$holos_app_bundle/Contents/MacOS"
-cp Resources/App-Info.plist "$holos_app_bundle/Contents/Info.plist"
+cp "$holos_build_plist" "$holos_app_bundle/Contents/Info.plist"
 mkdir -p "$holos_app_bundle/Contents/Resources"
 cp Resources/Icon/VoiceIsLocal.icns "$holos_app_bundle/Contents/Resources/VoiceIsLocal.icns"
 # The license, the trademark terms for the name and icon, and the notices the About panel points to, as in a release.

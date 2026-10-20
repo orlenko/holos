@@ -42,8 +42,9 @@ during startup produces a retry message instead of a partial insertion. Esc or
 Right Option is reserved while its shortcut is enabled. Unrelated typing while
 holding it cancels dictation and may be consumed until the key is released. Use
 the alternate shortcut or disable dictation if Right Option is needed for other
-work. Sleep or session lock pauses dictation; re-enable it manually from the menu
-after waking. There is no automatic login launch or background installation.
+work. Sleep or an inactive login session cancels the utterance and pauses dictation.
+On return, an enabled toggle is restored automatically; a disabled toggle stays off.
+Check sleep/wake and switching login sessions, including sleep during an in-progress enable. There is no automatic login launch or background installation.
 
 ## Setup Assistant
 

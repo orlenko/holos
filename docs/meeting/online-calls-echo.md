@@ -92,10 +92,12 @@ genuinely local (the user, or people in the room) stays even while the call play
      evenly, about 4 hours' worth, so memory stays bounded), and a constant delay at the median, for few
      windows with an outlier at an end (the delay drifts a few ms per hour between the two
      tracks' clocks).
-  2. *Gate.* Echo is present only when at least 3 windows, and at least 30 % of the windows
-     where the system plays, are confident and on the line, and the delay stays between 1 ms
+  2. *Gate.* Echo is present only when at least 3 windows, and at least 30 % of the confident
+     windows, are on the line, and the delay stays between 1 ms
      and 1.5 s. Otherwise (headphones; no or silent system audio) nothing is masked. A zero
-     lag is one signal recorded twice, not the room.
+     lag is one signal recorded twice, not the room. Weak correlations (for example when
+     room speech dominates the microphone) do not vote against a coherent echo path.
+     Analysis version 2 uses this gate; earlier analyses are recomputed.
   3. *Model.* STFT, 1,024-sample Hann window, 256 hop (16 ms frames), bins 150–4,000 Hz. Per
      5 s block and bin, an 8-tap complex filter (one frame after the delayed system frame to
      six before, ≈ −16…+112 ms) predicts the microphone from the system spectrum: ridge
