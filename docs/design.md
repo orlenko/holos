@@ -127,7 +127,8 @@ Sleep or an inactive login session cancels the current utterance and releases th
 Wake and session activation restore dictation when it was enabled or enabling before the
 interruption. Overlapping sleep and session changes wait for both to end. A user who turned
 dictation off keeps it off. Returning never resumes the interrupted utterance; the next
-hotkey press starts a fresh one. Deferred setup completion cannot enable while suspended.
+hotkey press starts a fresh one. Deferred setup completion cannot enable while suspended;
+return retries a pending model-install enable even when no hotkey was ready before sleep.
 
 Prefer supported Accessibility text-range insertion. Use paste as a fallback with
 careful preservation of clipboard types and change-count checks. Never overwrite

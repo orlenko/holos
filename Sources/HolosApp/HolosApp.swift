@@ -1597,7 +1597,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func dictationSessionChanged(_ reason: DictationSessionPolicy.Interruption, suspending: Bool) {
-        guard suspending else { if dictationSession.resume(from: reason) { enable() }; return }
+        guard suspending else { if dictationSession.resume(from: reason) { enable() }; resumeDeferredDictationSetup(); return }
         dictationSession.suspend(for: reason, wasEnabled: enabled || enabling)
         disable(persist: false)
         discardResult()

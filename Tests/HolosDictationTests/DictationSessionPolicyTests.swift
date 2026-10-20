@@ -61,3 +61,15 @@ func sleepAndSessionChangesWaitForBothReturns(wakeFirst: Bool) {
     #expect(!resumed10)
     #expect(policy.allowsSetupEnable(deferred: true))
 }
+
+@Test func deferredSetupCanRetryAfterTheFinalReturnWithoutAReadyHotkey() {
+    var policy = DictationSessionPolicy()
+    policy.suspend(for: .sleep, wasEnabled: false)
+    policy.suspend(for: .inactiveSession, wasEnabled: false)
+    let woke = policy.resume(from: .sleep)
+    #expect(!woke)
+    #expect(!policy.allowsSetupEnable(deferred: true))
+    let returned = policy.resume(from: .inactiveSession)
+    #expect(!returned, "There was no ready hotkey to restore.")
+    #expect(policy.allowsSetupEnable(deferred: true), "Return must retry the pending model-install enable separately.")
+}

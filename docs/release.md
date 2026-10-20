@@ -14,7 +14,9 @@ Both packaging scripts record the source revision and build time in UTC in `Info
 the credits. The revision has a `-dirty` suffix when the checkout has changed or untracked files. The metadata
 is captured before compilation. A local build uses `git rev-list --count HEAD` as `CFBundleVersion`, so a new
 commit changes the number; a release keeps the explicit `BUILD` value described below. The marketing version
-comes from `Resources/App-Info.plist` locally, or `VERSION` for a release.
+comes from `Resources/App-Info.plist` locally, or `VERSION` for a release. Source exports without
+Git metadata retain the template build number locally and identify their source as `source-export`;
+a release still uses its explicit `BUILD` value.
 
 ## One-time setup
 
