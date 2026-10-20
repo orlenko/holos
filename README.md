@@ -40,6 +40,8 @@ open build/VoiceIsLocal.app
 ```
 
 The build does not install or launch the app, add a login item, or enable dictation.
+About shows the local build's commit count, source revision (with `-dirty` for uncommitted changes),
+and build time in UTC. Rebuilding the same commit keeps its build number and updates its build time.
 
 To build a signed, notarized DMG for download, run `./scripts/release-app.sh`; see [releasing](docs/release.md) for
 the one-time Apple Developer setup. Without a Developer ID it makes an ad-hoc signed dry run in `build/release`.

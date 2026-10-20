@@ -3,7 +3,7 @@
 # reason in the PR description (AGENTS.md "Size caps").
 # entries: 43
 1710 Sources/HolosApp/HolosApp+Meeting.swift
-1609 Sources/HolosApp/HolosApp.swift
+1608 Sources/HolosApp/HolosApp.swift
 1021 Sources/HolosApp/MainWindow/HistoryPane.swift
 613 Sources/HolosApp/MainWindow/LiveMeetingView.swift
 709 Sources/HolosApp/MainWindow/MainWindowController.swift

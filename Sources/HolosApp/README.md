@@ -21,7 +21,7 @@ wiring between them and the library controllers (docs/design.md "Main window").
   model is `HolosMeeting`'s `ReviewSession`.
 - `Reading/`: `ReadingController`, voice preview, natural voices (`HelperNaturalRenderer` runs each natural part
   in `voiceislocal say`; `NaturalVoiceDownload` is Settings › Reading's pack rows). Dictation UI:
-  `DictationOverlay`, `DictationFixing`. Setup: `SetupAssistantWindow`. Meeting start: `MeetingStartPanel`.
+  `DictationOverlay`, `DictationFixing`, and `DictationSessionNotifications` (paired sleep/session return events). Setup: `SetupAssistantWindow`. Meeting start: `MeetingStartPanel`.
 
 **Must not own:** business logic, session-file layout or locks, decoding `voiceislocal` output by hand. Put
 controllers in `HolosMeeting`/`HolosDictation` and paths in `HolosStorage`. Commands whose output the app reads go

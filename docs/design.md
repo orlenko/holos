@@ -123,6 +123,12 @@ and start the screensaver, which takes focus from the destination. From press un
 release, cancel or failure, hold an idle display-sleep assertion; it does not stop a
 lock the user asks for (a hot corner, Lock Screen).
 
+Sleep or an inactive login session cancels the current utterance and releases the hotkey.
+Wake and session activation restore dictation when it was enabled or enabling before the
+interruption. Overlapping sleep and session changes wait for both to end. A user who turned
+dictation off keeps it off. Returning never resumes the interrupted utterance; the next
+hotkey press starts a fresh one. Deferred setup completion cannot enable while suspended.
+
 Prefer supported Accessibility text-range insertion. Use paste as a fallback with
 careful preservation of clipboard types and change-count checks. Never overwrite
 an entire field just because selected-text replacement is unsupported. Clipboard

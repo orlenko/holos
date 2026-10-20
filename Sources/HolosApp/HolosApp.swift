@@ -55,6 +55,7 @@ enum HolosAppMain {
 /// 4. Enabling awaits the language load, configures the controller from that snapshot, and checks its assets before
 ///    enabling the hotkey. A recovered default is applied after the active dictation ends and rechecks assets.
 /// 5. The controller and History keep the language fixed for each utterance; a reload applies to the next one.
+/// 6. Sleep and login-session changes cancel the utterance; returning restores only the prior enabled choice.
 @MainActor
 final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
@@ -250,10 +251,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
         AppKeyboard.install { [weak self] in self?.isBusy ?? false }
         let center = NSWorkspace.shared.notificationCenter
-        for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
-            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.suspendForSessionChange() }
-            })
+        observers += DictationSessionNotifications.observe(center) { [weak self] reason, suspending in
+            self?.dictationSessionChanged(reason, suspending: suspending)
         }
         observers.append(center.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
                                             object: nil, queue: .main) { [weak self] notification in
@@ -420,7 +419,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func enable() {
-        guard !enabled, !enabling, !installingAssets else { return }
+        guard !enabled, !enabling, !installingAssets, !dictationSession.suspended else { return }
         guard !refuseIfReplaced() else { return }
         guard AudioCapture.microphonePermission == "authorized", AXIsProcessTrusted() else {
             show("Grant Microphone and Accessibility access in Voice is Local Settings, then enable dictation.")
@@ -491,7 +490,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         monitor?.stop(); monitor = nil
         endFixing(heard: latestCommitted)
         controller.cancel()
-        if persist { UserDefaults.standard.set(false, forKey: "dictationEnabled") }
+        if persist { dictationSession.didDisable(); UserDefaults.standard.set(false, forKey: "dictationEnabled") }
         show("Disabled — \(shortcutTitle) is available to other apps")
         overlay.hide()
     }
@@ -1597,12 +1596,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func suspendForSessionChange() {
-        // Sleep/session suspension is cleared only by an explicit enable, never by a meeting ending.
-        dictationSession.suspend()
+    private func dictationSessionChanged(_ reason: DictationSessionPolicy.Interruption, suspending: Bool) {
+        guard suspending else { if dictationSession.resume(from: reason) { enable() }; return }
+        dictationSession.suspend(for: reason, wasEnabled: enabled || enabling)
         disable(persist: false)
         discardResult()
-        show("Paused after sleep/session change — enable from the menu to resume")
+        show("Paused — dictation resumes when you return")
     }
 
     @objc private func quit() { NSApplication.shared.terminate(nil) }

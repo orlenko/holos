@@ -653,8 +653,10 @@ Ctrl-C saves audio, another Ctrl-C can terminate ongoing transcription while
 preserving the archive.
 When a meeting's speakers are labelled, the computer's audio heard again by the
 microphone is removed from the transcript: 3 or more matching words, and words the
-acoustic echo analysis finds to be echo. The audio itself is not cancelled (review
-playback still plays the echo), and a meeting without speaker labels keeps the echo.
+acoustic echo analysis finds to be echo. Review mutes the microphone outside local-speech
+intervals when a current acoustic echo mask is available. Within those intervals it plays
+the recorded microphone, which can still contain the call's echo during simultaneous speech.
+Playback without a current mask combines the recorded tracks.
 
 ## Validation completed and pending
 

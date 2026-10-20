@@ -8,6 +8,14 @@ Facts about Apple's programs, prices, and forms below come from general knowledg
 writing this. Where a step says **check on developer.apple.com, as of 2026-09**, confirm it there before you rely on
 it.
 
+## Build identity
+
+Both packaging scripts record the source revision and build time in UTC in `Info.plist`; About shows them above
+the credits. The revision has a `-dirty` suffix when the checkout has changed or untracked files. The metadata
+is captured before compilation. A local build uses `git rev-list --count HEAD` as `CFBundleVersion`, so a new
+commit changes the number; a release keeps the explicit `BUILD` value described below. The marketing version
+comes from `Resources/App-Info.plist` locally, or `VERSION` for a release.
+
 ## One-time setup
 
 Do these once, in this order.

@@ -68,7 +68,20 @@ enum AboutCredits {
         Bell, and Estelle (CC0); see THIRD_PARTY_NOTICES.md.
         """
 
-    static var text: String { [license, fluidAudio, readability, models, whisper, pocket].joined(separator: "\n\n") }
+    /// Packaging records the checkout and compilation start time (docs/release.md "Build identity").
+    /// Older bundles omit these fields, so they do not claim a revision or a build date.
+    static var buildIdentity: String? {
+        guard let revision = Bundle.main.object(forInfoDictionaryKey: "VoiceIsLocalSourceRevision") as? String,
+              let builtAt = Bundle.main.object(forInfoDictionaryKey: "VoiceIsLocalBuiltAt") as? String else {
+            return nil
+        }
+        return "Source: \(revision)\nBuilt: \(builtAt)"
+    }
+
+    static var text: String {
+        ([buildIdentity].compactMap { $0 } + [license, fluidAudio, readability, models, whisper, pocket])
+            .joined(separator: "\n\n")
+    }
 
     /// The credits as the About panel shows them.
     static func attributed() -> NSAttributedString {
