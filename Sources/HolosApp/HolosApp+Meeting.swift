@@ -1160,8 +1160,8 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// a "Name Speakers" offer for it. The labels load off the main actor first. When the meeting cannot be reviewed,
     /// an alert says why, and with `fallBackToMeetings` Meetings opens with the meeting selected.
     func openReview(sessionID: String, directory: URL, name: String, fallBackToMeetings: Bool = false) {
-        showMeetingsWindow(selecting: sessionID)
-        meeting.meetingsPane?.showLive(sessionID: sessionID, directory: directory)
+        guard prepareMeetingReview(sessionID: sessionID, directory: directory, name: name,
+                                 fallBackToMeetings: fallBackToMeetings) else { return }
         // Final transcription and summaries finish before editable review opens.
         if reviewWaitsForDeepTranscription(sessionID: sessionID, directory: directory, name: name) { return }
         if reviewWaitsForSummary(sessionID: sessionID, directory: directory, name: name) { return }

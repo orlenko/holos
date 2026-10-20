@@ -1,5 +1,6 @@
 import AppKit
 import HolosCore
+import HolosStorage
 @testable import HolosMeeting
 import HolosTestSupport
 import Testing
@@ -123,8 +124,8 @@ struct ReviewWindowEmbeddingTests {
         await review.closeAndWait()
     }
 
-    @Test(.timeLimit(.minutes(1)))
-    func aRefusedMainWindowCloseDoesNotCloseTheHostAfterLaterNavigation() async throws {
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func aRefusedCloseCancelsItsMainWindowOrNavigationRequest(navigating: Bool) async throws {
         let temp = try TemporaryDirectory("review-refused-close")
         defer { temp.remove() }
         let (review, session) = try await ReviewWindowJoinTests().open(
@@ -141,8 +142,15 @@ struct ReviewWindowEmbeddingTests {
         let words = review.review.words(of: "T1")
         // A concurrent edit changes what the open field saw and makes its save refuse.
         _ = try await review.review.editWords([try #require(words.first).ref], to: "Changed", seen: review.review.revision)
-        #expect(!pane.sectionShouldClose())
-        #expect(await eventually { pane.live?.contentState.closeMainWindow == false })
+        var navigations = 0
+        if navigating {
+            #expect(!pane.prepareMeetingNavigation(to: "generated-destination", replay: { navigations += 1 }))
+        } else {
+            #expect(!pane.sectionShouldClose())
+        }
+        #expect(await eventually {
+            pane.live?.contentState.closeMainWindow == false && pane.live?.contentState.afterClose == nil
+        })
         #expect(host.closeRequests == 0)
         // Dismissing the recovered field allows Back without retaining the old close request.
         review.turnList.cancelWordEdit()
@@ -150,8 +158,54 @@ struct ReviewWindowEmbeddingTests {
             where button.title == "Dismiss" { button.performClick(nil) }
         pane.showList()
         #expect(await eventually { pane.activeMeetingID == nil })
-        #expect(host.closeRequests == 0)
+        #expect(host.closeRequests == 0 && navigations == 0)
         await review.closeAndWait()
+    }
+
+    @Test(.timeLimit(.minutes(1)), arguments: ["selection", "live", "review"])
+    func navigationReplaysOnlyTheLatestDestinationAfterTheEditSaves(kind: String) async throws {
+        let temp = try TemporaryDirectory("review-navigation-save")
+        defer { temp.remove() }
+        let (review, session) = try await ReviewWindowJoinTests().open(
+            [.init(speaker: "system:S1", start: 0, words: ["Generated", "words."])], root: temp.url)
+        var destinations: [(id: String, directory: URL)] = []
+        for _ in 0..<2 {
+            let archive = try SessionArchive.create(root: temp.url, name: "Generated destination", source: .system,
+                                                    locale: "en-CA", backend: .speech)
+            try await archive.finish(status: ArchiveStatus.complete)
+            destinations.append((archive.id, archive.directory))
+        }
+        let (_, pane) = try LiveMeetingViewTests.meetings(size: .init(width: 1000, height: 700), root: temp.url)
+        defer { pane.sectionDidHide(); pane.showList() }
+        pane.showLive(sessionID: review.sessionID, directory: session)
+        #expect(pane.installReview(review))
+        let (stream, release) = AsyncStream<Void>.makeStream()
+        review.review.beforeEdit = { for await _ in stream {} }
+        review.setEditMode(true)
+        review.turnList.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        review.turnList.editField.stringValue = "Edited"
+        var reviewsOpened = 0
+        for destination in destinations {
+            switch kind {
+            case "selection": pane.select(sessionID: destination.id)
+            case "live": pane.showLive(sessionID: destination.id, directory: destination.directory)
+            default:
+                let open = {
+                    reviewsOpened += 1
+                    pane.showLive(sessionID: destination.id, directory: destination.directory)
+                }
+                if pane.prepareMeetingNavigation(to: destination.id, replay: open) { open() }
+            }
+        }
+        #expect(pane.activeMeetingID == review.sessionID && reviewsOpened == 0)
+        release.finish()
+        let latest = try #require(destinations.last)
+        #expect(await eventually {
+            kind == "selection" ? pane.selectedSessionIDs == [latest.id] : pane.activeMeetingID == latest.id
+        })
+        #expect(reviewsOpened == (kind == "review" ? 1 : 0))
+        await review.closeAndWait()
+        #expect(review.review.words(of: "T1").first?.shown == "Edited")
     }
 
     private final class ClosingHost: NSWindow {

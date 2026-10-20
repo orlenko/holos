@@ -243,13 +243,11 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         return button
     }
 
-    /// Selects the meeting once the list is read (nil keeps the selection). A live transcript of another meeting gives
-    /// way to the list first, so the selection is seen (`MeetingOpenPolicy.keepsLiveView`).
+    /// Selects the meeting after the current review saves pending edits (nil keeps the selection).
     func select(sessionID: String?) {
-        if let sessionID, let live, !MeetingOpenPolicy.keepsLiveView(showing: live.sessionID, goingTo: sessionID) {
-            showList()
-            guard self.live == nil else { return }
-        }
+        if let sessionID, !prepareMeetingNavigation(to: sessionID, replay: { [weak self] in
+            self?.select(sessionID: sessionID)
+        }) { return }
         pendingSelection = sessionID
         refresh()
     }
@@ -273,7 +271,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         onScreen = false
         refreshTask?.cancel()
         refreshTask = nil
-        live?.stop()
+        live?.stop(); live?.contentState.afterClose = nil
     }
 
     // MARK: - Live transcript
@@ -307,14 +305,15 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         refreshLiveHeader()
     }
 
-    /// Shows the live transcript of the meeting in `directory` in place of the list (opening a live meeting, the menu
-    /// bar's Show Live Transcript…).
+    /// Opens the meeting screen after the previous review saves its edits.
     func showLive(sessionID: String, directory: URL) {
         if let live, live.sessionID == sessionID {
-            view.window?.makeFirstResponder(live.preferredFirstResponder)
+            live.contentState.afterClose = nil; view.window?.makeFirstResponder(live.preferredFirstResponder)
             return
         }
-        if live != nil { showList(); guard live == nil else { return } }
+        guard prepareMeetingNavigation(to: sessionID, replay: { [weak self] in
+            self?.showLive(sessionID: sessionID, directory: directory)
+        }) else { return }
         let controller = LiveMeetingViewController(
             sessionID: sessionID, directory: directory,
             onBack: { [weak self] in self?.live?.contentState.closeMainWindow = false; self?.showList() },
@@ -352,6 +351,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// Back to the list, with the meeting the live transcript showed selected.
     func showList() {
         guard let shown = live else { return }
+        shown.contentState.afterClose = nil
         if let review = shown.embeddedReview, !review.isClosing {
             if review.windowShouldClose(review.window) { review.startClosing() }
             return

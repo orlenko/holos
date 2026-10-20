@@ -534,7 +534,9 @@ When recording stops, the screen stays on the meeting while it saves. It adopts 
 saved transcript, then the editable review when speaker labels are ready and background jobs
 have released the meeting, without another
 Open action or a separate window. Back returns to the list with the meeting selected; an
-open word edit and pending edits pass through the review's save gate first. Closing the main
+open word edit and pending edits pass through the review's save gate first. Navigation to
+another meeting waits for a successful save and follows only the latest destination; a
+refused save or navigation elsewhere cancels the request. Closing the main
 window uses the same gate; a refused save cancels that close request. A meeting whose recorder stopped before it was saved shows
 "Interrupted" (orange); recovery is in Advanced. A failed or damaged one shows its status.
 

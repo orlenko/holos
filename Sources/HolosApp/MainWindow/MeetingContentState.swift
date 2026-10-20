@@ -7,6 +7,7 @@ import HolosMeeting
 /// 1. A screen has at most one embedded review.
 /// 2. A review remains owned until its closing path saves pending edits.
 /// 3. A refused review close cancels the pending request to close its host.
+/// 4. Only the latest navigation survives a pending save; refusal or other navigation cancels it.
 @MainActor
 final class MeetingContentState {
     var reader: LiveTranscriptReader
@@ -14,6 +15,7 @@ final class MeetingContentState {
     var requestedReview = false
     let progress = MeetingProgressView()
     var closeMainWindow = false
+    var afterClose: (() -> Void)?
     let more = MeetingActionsButton()
 
     init(directory: URL) { reader = LiveTranscriptReader(session: directory) }
@@ -32,6 +34,7 @@ extension MeetingsPane {
 
     func sectionShouldClose() -> Bool {
         guard let review = live?.embeddedReview else { return true }
+        live?.contentState.afterClose = nil
         live?.contentState.closeMainWindow = true
         guard review.windowShouldClose(review.window) else { return false }
         live?.contentState.closeMainWindow = false
@@ -40,10 +43,12 @@ extension MeetingsPane {
     }
 
     func reviewSurfaceClosed() {
+        let afterClose = live?.contentState.afterClose
         let closeMainWindow = live?.contentState.closeMainWindow == true
         let window = live?.embeddedReview?.window ?? view.window
         showList()
         if closeMainWindow, live == nil { window?.performClose(nil) }
+        else if live == nil { afterClose?() }
     }
 }
 
@@ -69,7 +74,10 @@ extension LiveMeetingViewController {
               let body = review.surface.embed(in: window, onClose: onClose) else { return false }
         stop()
         contentState.review = review // invariant 1
-        review.surface.onCloseRefused = { [weak contentState] in contentState?.closeMainWindow = false }
+        review.surface.onCloseRefused = { [weak contentState] in
+            contentState?.closeMainWindow = false
+            contentState?.afterClose = nil
+        }
         review.panes.listItem.minimumThickness = 280
         if view.bounds.width < 800 {
             let onChange = review.panes.onSpeakersHiddenChange
