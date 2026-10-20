@@ -22,11 +22,13 @@ struct ReviewWindowEmbeddingTests {
         pane.showLive(sessionID: id, directory: session)
         #expect(pane.installReview(review))
         host.contentView?.layoutSubtreeIfNeeded()
-        #expect(await eventually {
+        let cellFits = await eventually {
             host.contentView?.layoutSubtreeIfNeeded()
             let cell = review.turnList.table.view(atColumn: 0, row: 0, makeIfNecessary: true)
             return (cell?.frame.width ?? .infinity) <= review.turnList.bounds.width + 1
-        })
+        }
+        SettingsEmbeddingTests.render(host, name: "inline-review-\(Int(size.width))")
+        #expect(cellFits, "Cell \(review.turnList.table.view(atColumn: 0, row: 0, makeIfNecessary: true)?.frame.width ?? -1), list \(review.turnList.bounds.width), column \(review.turnList.table.tableColumns.first?.width ?? -1), table \(review.turnList.table.frame.width)")
         #expect(review.window === host)
         #expect(review.turnList.table.window === host)
         #expect(!review.surface.ownedWindow.isVisible)
@@ -118,6 +120,37 @@ struct ReviewWindowEmbeddingTests {
         controller.select(.settings)
         #expect(!controller.validateMenuItem(item))
         review.startClosing()
+        await review.closeAndWait()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aRefusedMainWindowCloseDoesNotCloseTheHostAfterLaterNavigation() async throws {
+        let temp = try TemporaryDirectory("review-refused-close")
+        defer { temp.remove() }
+        let (review, session) = try await ReviewWindowJoinTests().open(
+            [.init(speaker: "system:S1", start: 0, words: ["Generated", "words."])], root: temp.url)
+        let (_, pane) = try LiveMeetingViewTests.meetings(size: .init(width: 1000, height: 700), root: temp.url)
+        let host = ClosingHost(contentRect: .init(x: 0, y: 0, width: 1000, height: 700),
+                               styleMask: [.titled], backing: .buffered, defer: true)
+        host.contentView = pane.view
+        pane.showLive(sessionID: review.sessionID, directory: session)
+        #expect(pane.installReview(review))
+        review.setEditMode(true)
+        review.turnList.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        review.turnList.editField.stringValue = "Edited"
+        let words = review.review.words(of: "T1")
+        // A concurrent edit changes what the open field saw and makes its save refuse.
+        _ = try await review.review.editWords([try #require(words.first).ref], to: "Changed", seen: review.review.revision)
+        #expect(!pane.sectionShouldClose())
+        #expect(await eventually { pane.live?.contentState.closeMainWindow == false })
+        #expect(host.closeRequests == 0)
+        // Dismissing the recovered field allows Back without retaining the old close request.
+        review.turnList.cancelWordEdit()
+        for button in MainWindowNarrowTests.allViews(try #require(review.window.contentView)).compactMap({ $0 as? NSButton })
+            where button.title == "Dismiss" { button.performClick(nil) }
+        pane.showList()
+        #expect(await eventually { pane.activeMeetingID == nil })
+        #expect(host.closeRequests == 0)
         await review.closeAndWait()
     }
 

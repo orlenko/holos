@@ -145,6 +145,7 @@ extension HolosAppDelegate {
             other = holder.sessionID == sessionID
         }
         guard own || other else { return false }
+        if other { meeting.meetingsPane?.live?.contentState.requestedReview = false }
         let alert = NSAlert()
         alert.messageText = "Summary in progress"
         if own {

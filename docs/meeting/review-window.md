@@ -343,7 +343,8 @@ shown, Otter-style.
   the previous one, Esc cancels. Closing the window (or quitting) with the field open saves
   what it holds, before the close learns from the edits. Closed by hand (its close button,
   ⌘W), the window stays open until that edit is saved, and stays open when it is not (a full
-  disk, a refusal): the field opens again with what was typed and the footer says why
+  disk, a refusal). A refused close cancels the pending request to close the main window,
+  so later navigation keeps the main window open. The field opens again with what was typed and the footer says why
   (`ReviewCloseGate`), so nothing typed is lost to a failed save. It waits the same way for
   edits handed over a moment before and still saving (Return, then ⌘W), and stays open when
   one of them is not saved. No field opens while it waits, so each edit not saved is kept;

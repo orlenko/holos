@@ -390,7 +390,6 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         // The badges show what a running command is doing; reloading keeps the selection.
         reloadKeepingSelection()
         updateButtons()
-        // A saved live view switches between Open Review and Open Transcript as commands begin and end.
         refreshLiveHeader()
     }
 
@@ -470,6 +469,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                 ($0, PendingExports().generation($0))
             })
             let filesCache = self?.filesCache
+            let foreground = Set(self?.running.keys.map { $0 } ?? [])
             let listed = await Task.detached {
                 () -> ([SessionSummary], [String: [String]], Int64?, Set<String>, Set<String>, [String: PostProcessingProgress]) in
                 let summaries = await SessionCatalog.checkingLanguageModels(SessionCatalog.list(root: root))
@@ -493,7 +493,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                         session: $0.directory, profileNames: names, applyRecognition: recognition, selfName: selfName)
                 }.map(\.id))
                 let progress = Dictionary(uniqueKeysWithValues: summaries.filter {
-                    $0.state == .processing || $0.jobInProgress != nil
+                    $0.state == .processing || $0.jobInProgress != nil || foreground.contains($0.id)
                 }.compactMap { summary in
                     MeetingProcessingProgress.read(session: summary.directory).map { (summary.id, $0) }
                 })

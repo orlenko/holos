@@ -3,6 +3,11 @@ import AppKit
 /// Views (buttons, mostly) in a row that wraps onto more rows when the width runs out, so a row of actions never holds
 /// the main window wider than its narrowest (`MainWindowController.contentMinimumWidth`). Give it a width (constrain
 /// it to its container's): its height follows from the rows the views take at that width. Hidden views take no room.
+///
+/// Invariants:
+/// 1. Each visible view reserves its constrained fitting size or its unconstrained intrinsic size.
+/// 2. A subsequent view starts a new row when its reserved rectangle would exceed the available width.
+/// 3. Every layout recomputes the row height and invalidates a changed intrinsic height.
 @MainActor
 final class WrappingRowView: NSView {
     let spacing: CGFloat
@@ -95,7 +100,10 @@ final class WrappingRowView: NSView {
     private static func size(of view: NSView) -> NSSize {
         let intrinsic = view.intrinsicContentSize
         let fitting = view.fittingSize
-        return NSSize(width: intrinsic.width == NSView.noIntrinsicMetric ? fitting.width : intrinsic.width,
-                      height: intrinsic.height == NSView.noIntrinsicMetric ? fitting.height : intrinsic.height)
+        // Explicit dimensions (including minimum widths) take precedence over an empty label's intrinsic size.
+        let widthConstrained = view.constraints.contains { $0.isActive && $0.firstAttribute == .width }
+        let heightConstrained = view.constraints.contains { $0.isActive && $0.firstAttribute == .height }
+        return NSSize(width: widthConstrained || intrinsic.width == NSView.noIntrinsicMetric ? fitting.width : intrinsic.width,
+                      height: heightConstrained || intrinsic.height == NSView.noIntrinsicMetric ? fitting.height : intrinsic.height)
     }
 }

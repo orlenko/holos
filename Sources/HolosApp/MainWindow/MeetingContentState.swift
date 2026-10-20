@@ -6,6 +6,7 @@ import HolosMeeting
 /// Invariants:
 /// 1. A screen has at most one embedded review.
 /// 2. A review remains owned until its closing path saves pending edits.
+/// 3. A refused review close cancels the pending request to close its host.
 @MainActor
 final class MeetingContentState {
     var reader: LiveTranscriptReader
@@ -68,6 +69,7 @@ extension LiveMeetingViewController {
               let body = review.surface.embed(in: window, onClose: onClose) else { return false }
         stop()
         contentState.review = review // invariant 1
+        review.surface.onCloseRefused = { [weak contentState] in contentState?.closeMainWindow = false }
         review.panes.listItem.minimumThickness = 280
         if view.bounds.width < 800 {
             let onChange = review.panes.onSpeakersHiddenChange

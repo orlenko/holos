@@ -324,7 +324,8 @@ public struct LiveTranscriptReader: Sendable {
         // so the journal read next has every word live.json no longer shows (`VolatileText`).
         volatile = includeVolatile ? (LiveTextFile.read(session: session)?.volatile ?? [:]) : [:]
         if let file = try? LiveHintStore.read(session: session) { hints = file.hints }
-        if preferSaved, readSavedTranscript() { return }
+        // Keep the last readable saved revision while its replacement is unavailable.
+        if preferSaved, readSavedTranscript() || savedTranscriptID != nil { return }
         readJournal()
     }
 

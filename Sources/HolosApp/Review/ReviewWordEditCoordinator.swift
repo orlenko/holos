@@ -28,6 +28,8 @@ protocol ReviewWordEditHost: AnyObject {
     func showNotice(_ message: String)
     /// Whether a field may open changed (a close by hand began or stopped saving).
     func closeSavingChanged()
+    /// A close was refused; any request to close the containing window is cancelled.
+    func keepWindowOpen()
     /// Closes the window (a close by hand whose edits were all saved).
     func closeWindow()
 }
@@ -185,6 +187,7 @@ final class ReviewWordEditCoordinator {
     func shouldClose() -> Bool {
         // A close already saving decides itself.
         if unsaved.holdsClose, !closeGate.saving {
+            host?.keepWindowOpen()
             host?.showNotice(Self.unsavedBeforeClose)
             return false
         }
@@ -245,6 +248,7 @@ final class ReviewWordEditCoordinator {
     private func keepAfterFailedClose(outcome: CloseSaveOutcome, message: String) {
         // Quitting closed the window meanwhile: its close saves (or logs) what is left.
         guard let host, !host.isClosing else { return }
+        host.keepWindowOpen()
         // Fields may open again (the close by hand ended).
         host.closeSavingChanged()
         // Restores not saved have nothing typed to keep: the footer says why (`problem`).

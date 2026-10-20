@@ -224,6 +224,16 @@ private func summary(_ id: String, state: SessionState = .complete, runID: Strin
     #expect(!MeetingOpenPolicy.canReview(summary("C"), inUse: true))
 }
 
+@Test func editableReviewWaitsForAnExternalJobAndBecomesReadyWhenItEnds() {
+    var meeting = summary("generated")
+    #expect(MeetingOpenPolicy.canReview(meeting, inUse: false))
+    meeting.jobInProgress = "Generated processing job"
+    #expect(!MeetingOpenPolicy.canReview(meeting, inUse: false))
+    #expect(MeetingOpenPolicy.target(meeting, liveSessionID: nil, inUse: false, hasExport: true) == .live)
+    meeting.jobInProgress = nil
+    #expect(MeetingOpenPolicy.canReview(meeting, inUse: false))
+}
+
 @Test func liveMeetingsComeFirst() {
     let older = summary("old")
     let newer = summary("new")

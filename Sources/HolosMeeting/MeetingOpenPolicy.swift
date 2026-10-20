@@ -23,7 +23,7 @@ public enum MeetingOpenPolicy {
     /// Review needs speaker labels and no recording, labelling, or command running on the meeting (`inUse`).
     public static func canReview(_ summary: SessionSummary, inUse: Bool) -> Bool {
         summary.runID != nil && !inUse && summary.state != .recording && summary.state != .processing
-            && summary.speakerState != .running
+            && summary.speakerState != .running && summary.jobInProgress == nil
     }
 
     /// Every meeting opens the same screen, which follows recording and adopts the saved transcript and review.

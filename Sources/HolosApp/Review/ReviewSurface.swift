@@ -13,6 +13,7 @@ final class ReviewSurface {
     private weak var content: NSView?
     private var onEmbeddedClose: (() -> Void)?
     private var keyMonitor: Any?
+    var onCloseRefused: (() -> Void)?
 
     init(_ window: ReviewKeyWindow) { ownedWindow = window }
 

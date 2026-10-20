@@ -531,16 +531,19 @@ microphone words ahead of the system's stay. The first one or two volatile words
 can show until the third makes it a run.
 
 When recording stops, the screen stays on the meeting while it saves. It adopts the current
-saved transcript, then the editable review when speaker labels are ready, without another
+saved transcript, then the editable review when speaker labels are ready and background jobs
+have released the meeting, without another
 Open action or a separate window. Back returns to the list with the meeting selected; an
 open word edit and pending edits pass through the review's save gate first. Closing the main
-window uses the same gate. A meeting whose recorder stopped before it was saved shows
+window uses the same gate; a refused save cancels that close request. A meeting whose recorder stopped before it was saved shows
 "Interrupted" (orange); recovery is in Advanced. A failed or damaged one shows its status.
 
 Processing progress appears in the meeting header and list. A progress bar and percentage
 use `postprocess.json`'s current stage fraction. Final transcription reports the share of
 audio transcribed; stages without a fraction show activity. These describe the current
-step, not an estimate of remaining time. Volatile words cannot be corrected;
+step, not an estimate of remaining time. Foreground speaker labelling also reports progress
+when the saved meeting is already complete. A temporarily unreadable saved transcript leaves
+the last readable revision visible. Volatile words cannot be corrected;
 their finalized run supplies the durable identity and timing first.
 
 ### Reading section

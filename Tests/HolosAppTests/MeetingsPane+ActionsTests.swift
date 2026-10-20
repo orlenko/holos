@@ -1,6 +1,7 @@
 import AppKit
 import HolosCore
 import HolosMeeting
+import HolosStorage
 import HolosTestSupport
 import Testing
 @testable import HolosApp
@@ -49,4 +50,48 @@ struct MeetingsPaneActionsTests {
         #expect(pane.selectedSessionIDs == [summary.id])
         pane.showList()
     }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aForegroundJobShowsProgressEvenWhenTheSavedManifestIsComplete() async throws {
+        let temp = try TemporaryDirectory("meeting-foreground-progress")
+        defer { temp.remove() }
+        let archive = try SessionArchive.create(root: temp.url, name: "Generated meeting", source: .system,
+                                                locale: "en-CA", backend: .speech)
+        try await archive.finish(status: ArchiveStatus.complete)
+        let progress = PostProcessingProgress(stage: .diarize, fraction: 0.4, message: "Processing")
+        let record = PostProcessingRecord(sessionID: archive.id, state: .running, progress: progress,
+                                          pid: 1, startedAt: .now, updatedAt: .now)
+        try AtomicFile.writeJSON(record, to: SessionPaths.postprocess(archive.directory))
+        let (_, pane) = try LiveMeetingViewTests.meetings(size: .init(width: 1000, height: 700), root: temp.url)
+        defer { pane.sectionDidHide() }
+        pane.update(running: [archive.id: "Labelling speakers"])
+        pane.refresh()
+        #expect(await eventually { pane.listState.progress[archive.id] == progress })
+    }
+
+    @Test func theMeetingScreenAdoptsReviewWhenAnExternalJobReleasesIt() throws {
+        let temp = try TemporaryDirectory("meeting-external-job")
+        defer { temp.remove() }
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        var opens = 0
+        let pane = MeetingsPane(root: temp.url, perform: { _, _ in }, openReview: { _ in opens += 1 },
+                                beginUsing: { _, _ in true }, endUsing: { _ in },
+                                liveHeader: { _, _ in .init(name: "Generated meeting", phase: .saved, detail: "") })
+        pane.sectionDidShow()
+        defer { pane.sectionDidHide(); pane.showList() }
+        var summary = SessionSummary(id: "generated-id", directory: temp.url, name: "Generated meeting",
+                                     createdAt: .now, source: .system, state: .complete, manifestStatus: "complete",
+                                     speakerState: .labelled, runID: "generated-run", liveness: .exited,
+                                     jobInProgress: "Generated processing job")
+        pane.show([summary], people: [:], freeBytes: nil)
+        pane.showLive(sessionID: summary.id, directory: temp.url)
+        pane.refreshLiveHeader()
+        #expect(opens == 0)
+        #expect(pane.live?.contentState.requestedReview == false)
+        summary.jobInProgress = nil
+        pane.show([summary], people: [:], freeBytes: nil)
+        pane.refreshLiveHeader()
+        #expect(opens == 1)
+    }
+
 }

@@ -26,6 +26,7 @@ struct ReviewWordEditCoordinatorTests {
         private(set) var failures = 0
         private(set) var savingChanges = 0
         private(set) var closed = 0
+        private(set) var keptOpen = 0
 
         func turnOnEditingWords() { isEditingWords = true }
 
@@ -51,6 +52,7 @@ struct ReviewWordEditCoordinatorTests {
         func showProblem(_ message: String?) { problems.append(message) }
         func showNotice(_ message: String) { notices.append(message) }
         func closeSavingChanged() { savingChanges += 1 }
+        func keepWindowOpen() { keptOpen += 1 }
         func closeWindow() { closed += 1 }
     }
 
@@ -95,6 +97,7 @@ struct ReviewWordEditCoordinatorTests {
         #expect(host.problems.count == 1 && host.problems.first??.contains("Amber") == true)
         #expect(!coordinator.shouldClose())
         #expect(host.notices == [ReviewWordEditCoordinator.unsavedBeforeClose])
+        #expect(host.keptOpen == 1)
         coordinator.dismissNextUnsaved()
         #expect(coordinator.shouldClose())
     }
@@ -148,6 +151,7 @@ struct ReviewWordEditCoordinatorTests {
         #expect(!coordinator.shouldClose())
         #expect(await eventually { !coordinator.savingForClose && host.savingChanges == 2 })
         #expect(host.closed == 0 && host.failures == 1 && host.isEditingWords)
+        #expect(host.keptOpen == 1)
         #expect(host.reopened.map(\.text) == ["Amber"])
         #expect(!coordinator.unsaved.holdsClose)
     }
