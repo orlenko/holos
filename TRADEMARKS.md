@@ -2,9 +2,9 @@
 
 The code in this repository is free software under the GNU General Public License, version 3 or
 later (`LICENSE`). The license covers the code. It does not grant rights to use the name
-**Voice is Local** or the app icon (the steel safe door with VO / LO, a dial, and a sound wave) as
-the name or icon of your own app. They identify the official app released from this repository, so
-people can tell it apart from other builds.
+**Voice is Local** or the app icon (an open book with three waveform bars on the left page and three
+curved text lines on the right) as the name or icon of your own app. They identify the official app
+released from this repository, so people can tell it apart from other builds.
 
 ## Who owns them
 
