@@ -420,7 +420,9 @@ like any app's on a manual launch. Closing it never quits
 dictation, meeting recordings, and readings keep running, and only Quit in the menu bar
 menu or ⌘Q quits. While any of its windows is open the app is a regular one (Dock,
 ⌘-Tab); a click on the Dock icon brings the main window back, also when another window
-(Review) keeps the icon there: restored when minimised, else opened on its last section.
+(Review) keeps the icon there: restored when minimised, else opened on its last section. The
+`voiceislocal` recorder the app starts for a meeting never gets an icon of its own:
+`Resources/CLI-Info.plist`, embedded in the binary, sets `LSUIElement`.
 
 Appearance (`AppearanceChoice`, UserDefaults `appearance`: `system`, `light`, `dark`;
 System by default): Settings › General › Appearance sets `NSApp.appearance` at launch
