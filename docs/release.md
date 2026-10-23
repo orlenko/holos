@@ -108,7 +108,30 @@ xcrun notarytool store-credentials voiceislocal-notary --key AuthKey_KEYID.p8 --
 ## Each release
 
 Voice is Local is licensed under the GPL, version 3 or later. Every build given or sold to anyone must have its
-exact source available, so a signed release is built only from a clean checkout of a pushed tag:
+exact source available, so a signed release is built only from a clean checkout of a pushed tag.
+
+### In one command
+
+On the Mac that holds the Developer ID key, in its own session (not over SSH, so the keychain can ask), on a clean
+`main`:
+
+```sh
+./scripts/release.sh            # the next patch version: 1.0.1 → 1.0.2
+./scripts/release.sh minor      # 1.0.1 → 1.1.0; also major, or an exact version such as 1.2.0
+./scripts/release.sh 1.0.1      # a version already tagged: build that tag again
+```
+
+`scripts/release.sh` stops before changing anything when the signing identity is not in the keychain, the working
+tree is not clean, `main` is not checked out or has commits `origin/main` lacks, or `main` has nothing new since the
+last release tag. Otherwise it fast-forwards `main`, sets the version in the three places below, and checks that
+the commit changes only those three lines. It commits "Set the version to X" directly to `main` without a pull
+request, tags it `vX`, pushes both at once (`git push --atomic`), and runs `scripts/release-app.sh` with the
+identity, the `voiceislocal-notary` profile, and `BUILD` set to the number of release tags (1.0.0 was build 1,
+1.0.1 build 2). `DEVELOPER_ID`, `NOTARY_PROFILE`, and `BUILD` override those defaults. If the build or notarization
+fails after the push, fix the cause and run it again with the same version: the tag exists, so it builds that tag
+without a new commit.
+
+### By hand
 
 1. Set the version in `Resources/App-Info.plist` (or pass `VERSION` below), and the same version in
    `Resources/CLI-Info.plist` and in `voiceislocal --version` (`Sources/HolosCLI/Holos.swift`), which `VERSION`
