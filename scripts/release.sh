@@ -42,6 +42,9 @@ security find-identity -v -p codesigning | grep -Fq "\"$developer_id\"" \
     || fail "No valid signing identity \"$developer_id\" in the keychain; release from the Mac that holds the key."
 [ -z "$(git status --porcelain --untracked-files=all)" ] \
     || fail "The working tree has changes or untracked files; commit, stash, or remove them first."
+# The build number counts the release tags HEAD contains, which a shallow clone may not reach.
+[ "$(git rev-parse --is-shallow-repository)" = false ] \
+    || fail "This is a shallow clone; run git fetch --unshallow first."
 
 is_version() {
     case "$1" in
