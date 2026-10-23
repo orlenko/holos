@@ -110,7 +110,9 @@ xcrun notarytool store-credentials voiceislocal-notary --key AuthKey_KEYID.p8 --
 Voice is Local is licensed under the GPL, version 3 or later. Every build given or sold to anyone must have its
 exact source available, so a signed release is built only from a clean checkout of a pushed tag:
 
-1. Set the version in `Resources/App-Info.plist` (or pass `VERSION` below), commit, and push.
+1. Set the version in `Resources/App-Info.plist` (or pass `VERSION` below), and the same version in
+   `Resources/CLI-Info.plist` and in `voiceislocal --version` (`Sources/HolosCLI/Holos.swift`), which `VERSION`
+   does not change; commit, and push.
 2. Tag that commit `v<version>` and push the tag before building:
 
    ```sh
