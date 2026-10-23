@@ -20,8 +20,8 @@ way; `eval cloud` asks the consent question itself (the library takes the answer
 which release builds leave out. The other commands call library types directly. New logic goes in
 the library so the app and tests can use it.
 
-**Depends on:** every library except HolosDesktop, including HolosDiarization, HolosWhisper and, with the Evaluation trait, HolosEvaluation
-(of the products, only this target links them). ArgumentParser, FoundationModels (`doctor`, `session summarize`).
+**Depends on:** every library except HolosDesktop, including HolosDiarization, HolosWhisper and, with the Evaluation
+trait, HolosEvaluation (of the products, only this target links them). ArgumentParser, FoundationModels (`doctor`, `session summarize`).
 
 **Conventions** (`docs/conventions.md §1.4`)
 - Stdout carries content and `--json` output; progress and messages go to stderr.
