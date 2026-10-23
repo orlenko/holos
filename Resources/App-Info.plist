@@ -9,7 +9,7 @@
     <key>CFBundleExecutable</key><string>HolosApp</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleVersion</key><string>3</string>
-    <key>CFBundleShortVersionString</key><string>1.0.0</string>
+    <key>CFBundleShortVersionString</key><string>1.0.1</string>
     <key>LSMinimumSystemVersion</key><string>27.0</string>
     <key>LSUIElement</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>

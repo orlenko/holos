@@ -9,7 +9,7 @@ import HolosStorage
 @main
 struct Holos: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "voiceislocal", abstract: "Voice is Local: local speech tools for macOS.", version: "1.0.0",
+        commandName: "voiceislocal", abstract: "Voice is Local: local speech tools for macOS.", version: "1.0.1",
         subcommands: commands
     )
 
