@@ -60,7 +60,21 @@ case "$request" in
 esac
 
 step "Fetching origin"
-git fetch --quiet --tags origin
+git fetch --quiet --tags origin \
+    || fail "Fetching from origin failed; if a local tag differs from origin's, git fetch --tags names it."
+# Build numbers count release tags and new versions must not collide with one, so every local release tag must be on
+# origin at the same object. Each remote line sits between newlines, so a tag only matches itself.
+remote_tags="
+$(git ls-remote --tags origin 'v[0-9]*' | tr '\t' ' ')
+"
+for local_tag in $(git for-each-ref --format='%(objectname)=%(refname)' 'refs/tags/v[0-9]*'); do
+    case "$remote_tags" in
+        *"
+${local_tag%%=*} ${local_tag#*=}
+"*) ;;
+        *) fail "Tag ${local_tag#*=refs/tags/} is not on origin as it is here; push it or delete it (git tag -d) first." ;;
+    esac
+done
 
 start_branch=$(git symbolic-ref --quiet --short HEAD || true)
 if is_version "$request" && git rev-parse --quiet --verify "refs/tags/v$request" >/dev/null; then
