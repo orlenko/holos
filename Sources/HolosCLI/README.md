@@ -16,10 +16,11 @@ that needs FluidAudio or WhisperKit, and for recording (unless the app's in-proc
 `link`, `me`, `reject`) resolve their selectors, then run `SpeakerEditCommand` and print what it reports as it goes.
 The `eval` commands (except `list`, which only prints the saved runs) run `Eval*Command` in `HolosEvaluation` the same
 way; `eval cloud` asks the consent question itself (the library takes the answer through a callback), and
-`EvalInterrupt` stops their long steps on Ctrl-C. The other commands call library types directly. New logic goes in
+`EvalInterrupt` stops their long steps on Ctrl-C. `eval` is compiled only with the `Evaluation` trait (`Package.swift`),
+which release builds leave out. The other commands call library types directly. New logic goes in
 the library so the app and tests can use it.
 
-**Depends on:** every library except HolosDesktop, including HolosDiarization, HolosWhisper and HolosEvaluation
+**Depends on:** every library except HolosDesktop, including HolosDiarization, HolosWhisper and, with the Evaluation trait, HolosEvaluation
 (of the products, only this target links them). ArgumentParser, FoundationModels (`doctor`, `session summarize`).
 
 **Conventions** (`docs/conventions.md §1.4`)

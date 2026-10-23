@@ -152,9 +152,14 @@ cp "$app_plist_source" "$release_build_plist"
 sh scripts/stamp-build-info.sh "$release_build_plist" "$build_number"
 
 step "Building release products (version $version, build $build_number)"
-swift build -c release --product HolosApp
-swift build -c release --product voiceislocal
-bin_dir=$(swift build -c release --show-bin-path)
+# Without the default Evaluation trait (Package.swift): the DMG's voiceislocal has no `eval`, whose `eval cloud`
+# uploads audio to OpenAI. Every call passes the same traits, so they share one build.
+swift build -c release --disable-default-traits --product HolosApp
+swift build -c release --disable-default-traits --product voiceislocal
+bin_dir=$(swift build -c release --disable-default-traits --show-bin-path)
+if strings "$bin_dir/voiceislocal" | grep -q 'api\.openai\.com'; then
+    fail "The release voiceislocal still contains the OpenAI endpoint; the eval commands must not ship (docs/release.md)."
+fi
 if [ "$source_verified" = yes ]; then
     # A file changed while the build ran would be in the binaries but not in the tag.
     [ "$(git rev-parse HEAD)" = "$head_commit" ] || source_problem "HEAD changed during the build."
@@ -263,7 +268,7 @@ ln -s /Applications "$dmg_root/Applications"
 cp LICENSE "$dmg_root/LICENSE.txt"
 cp TRADEMARKS.md "$dmg_root/TRADEMARKS.md"
 cp THIRD_PARTY_NOTICES.md "$dmg_root/THIRD_PARTY_NOTICES.md"
-hdiutil create -volname "Voice is Local" -srcfolder "$dmg_root" -format UDZO -ov "$dmg"
+diskutil image create from --format UDZO --volumeName "Voice is Local" "$dmg_root" "$dmg"
 rm -rf "$dmg_root"
 if [ -n "$developer_id" ]; then
     codesign --force --timestamp --sign "$developer_id" "$dmg"

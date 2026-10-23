@@ -139,8 +139,10 @@ The script:
 1. checks the source: the working tree is clean (`git status --porcelain --untracked-files=all` is empty), the tag
    `v<VERSION>` exists and is `HEAD`, and `git ls-remote --tags origin` shows the same tag at the same commit. With
    `DEVELOPER_ID` set, any failure stops the script; a dry run prints a warning and goes on;
-2. builds `HolosApp` and `voiceislocal` with `swift build -c release` (arm64 only), then checks again that `HEAD`
-   did not move and the tree is still clean;
+2. builds `HolosApp` and `voiceislocal` with `swift build -c release --disable-default-traits` (arm64 only), so the
+   release `voiceislocal` has no `eval` commands (the Evaluation trait, `Package.swift`; `eval cloud` uploads audio to
+   OpenAI), and stops if the OpenAI endpoint is still in the binary; then checks again that `HEAD` did not move and
+   the tree is still clean;
 3. assembles `build/release/VoiceIsLocal.app`: `Info.plist` with the version and, when the source check passed, the
    tag as `VoiceIsLocalSourceTag` (the About panel then links the source and `TRADEMARKS.md` at that tag instead of
    `main`), the icon when `Resources/Icon/VoiceIsLocal.icns` exists, and `LICENSE.txt`, `TRADEMARKS.md`, and
@@ -238,4 +240,3 @@ Later, optionally:
 - `The timestamp service is not available`: Apple's timestamp server did not answer; run the script again.
 - Notarization Invalid: run the `notarytool log` command the script prints; common causes are a binary without the
   hardened runtime or without a secure timestamp.
-- On macOS 27, `hdiutil` prints a deprecation warning suggesting `diskutil image`; the DMG is still created.
