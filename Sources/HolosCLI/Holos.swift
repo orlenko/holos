@@ -9,8 +9,13 @@ import HolosStorage
 @main
 struct Holos: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "voiceislocal", abstract: "Voice is Local: local speech tools for macOS.", version: "1.0.0",
-        subcommands: [
+        commandName: "voiceislocal", abstract: "Voice is Local: local speech tools for macOS.", version: "1.0.1",
+        subcommands: commands
+    )
+
+    /// Every subcommand; `eval` only with the Evaluation trait, which release builds leave out (Package.swift).
+    private static var commands: [any ParsableCommand.Type] {
+        var commands: [any ParsableCommand.Type] = [
             Doctor.self,
             Setup.self,
             Transcribe.self,
@@ -23,9 +28,12 @@ struct Holos: AsyncParsableCommand {
             Read.self,
             History.self,
             Words.self,
-            Eval.self,
         ]
-    )
+        #if Evaluation
+        commands.append(Eval.self)
+        #endif
+        return commands
+    }
 
     /// Installs the system spell checker (for the fix and Run Again); before any `people`, `speakers`, or `session`
     /// command, finishes a forget of voices that a crash left pending (docs/meeting/people-voice.md §4.10); then runs the

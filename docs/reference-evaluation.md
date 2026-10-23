@@ -94,7 +94,9 @@ to the audio, and turns the decisions of a human reviewer into a reference
 transcript and proposed corrections. It is a developer tool: CLI only, never
 used by the app, and nothing it writes is read by the app or the exports.
 Its code is the `HolosEvaluation` module (`Sources/HolosEvaluation`), which
-only `voiceislocal` links; the app does not.
+only `voiceislocal` links; the app does not. It is the `Evaluation` package
+trait, on by default for local builds and tests; release builds
+(`scripts/release-app.sh`) leave it out, so the signed DMG has no `eval`.
 
 **Privacy.** `voiceislocal eval cloud` uploads the meeting's audio to OpenAI:
 the audio leaves this Mac. Use it only with the consent of everyone who was

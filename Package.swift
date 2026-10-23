@@ -16,6 +16,12 @@ let package = Package(
         .library(name: "HolosSynthesis", targets: ["HolosSynthesis"]),
         .library(name: "HolosStorage", targets: ["HolosStorage"]),
     ],
+    traits: [
+        // `voiceislocal eval` (docs/reference-evaluation.md), whose `eval cloud` uploads audio to OpenAI. On by default
+        // for local builds and tests; release-app.sh builds with --disable-default-traits, so the DMG has no eval.
+        .trait(name: "Evaluation", description: "The voiceislocal eval developer commands."),
+        .default(enabledTraits: ["Evaluation"]),
+    ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.1"),
@@ -66,7 +72,8 @@ let package = Package(
         ], exclude: ["README.md"]),
         .executableTarget(name: "HolosCLI", dependencies: [
             "HolosCore", "HolosSpeech", "HolosSynthesis", "HolosStorage", "HolosAudio", "HolosContent",
-            "HolosMeeting", "HolosSpeakers", "HolosDiarization", "HolosDictation", "HolosWhisper", "HolosEvaluation",
+            "HolosMeeting", "HolosSpeakers", "HolosDiarization", "HolosDictation", "HolosWhisper",
+            .target(name: "HolosEvaluation", condition: .when(traits: ["Evaluation"])),
             "HolosPocket", "HolosSpelling",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
         ], exclude: ["README.md"], linkerSettings: [.unsafeFlags([
