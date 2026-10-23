@@ -45,7 +45,7 @@ security find-identity -v -p codesigning | grep -Fq "\"$developer_id\"" \
 
 is_version() {
     case "$1" in
-        ''|*[!0-9.]*|.*|*.|*..*) return 1 ;;
+        ''|*[!0-9.]*|.*|*.|*..*|0[0-9]*|*.0[0-9]*) return 1 ;;
     esac
     [ "$(printf '%s' "$1" | tr -cd . | wc -c | tr -d ' ')" -eq 2 ]
 }
@@ -63,10 +63,13 @@ start_branch=$(git symbolic-ref --quiet --short HEAD || true)
 if is_version "$request" && git rev-parse --quiet --verify "refs/tags/v$request" >/dev/null; then
     version=$request
     step "Tag v$version exists; building it again"
+    # Back to the starting branch however the build ends: the tag may predate this script, so a retry needs it.
+    [ -z "$start_branch" ] || trap 'git switch --quiet "$start_branch"' EXIT
     git switch --quiet --detach "v$version"
 else
     [ "$start_branch" = main ] || fail "Switch to main first (git switch main)."
-    git merge --quiet --ff-only origin/main || fail "main has commits origin/main lacks; push or drop them first."
+    [ -z "$(git rev-list origin/main..HEAD)" ] || fail "main has commits origin/main lacks; push or drop them first."
+    git merge --quiet --ff-only origin/main
 
     current=$(plutil -extract CFBundleShortVersionString raw -o - "$app_plist")
     is_version "$current" || fail "$app_plist has version '$current'; expected three numbers such as 1.0.1."
@@ -112,6 +115,3 @@ fi
 build_number=${BUILD:-$(git tag --list 'v[0-9]*' --merged HEAD | wc -l | tr -d ' ')}
 step "Building Voice is Local $version (build $build_number)"
 DEVELOPER_ID=$developer_id NOTARY_PROFILE=$notary_profile ./scripts/release-app.sh "$version" "$build_number"
-# A rebuilt tag left HEAD detached; go back to the branch it started on.
-[ -z "$start_branch" ] || [ "$(git symbolic-ref --quiet --short HEAD || true)" = "$start_branch" ] \
-    || git switch --quiet "$start_branch"
