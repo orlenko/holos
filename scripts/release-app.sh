@@ -192,6 +192,11 @@ mkdir -p "$app_bundle/Contents/MacOS" "$app_bundle/Contents/Resources" "$app_bun
 cp "$release_build_plist" "$app_bundle/Contents/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$version" "$app_bundle/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$build_number" "$app_bundle/Contents/Info.plist"
+if [ -z "$developer_id" ]; then
+    # A dry run shares the release's bundle ID and settings, so a user's yes would let it check the real feed.
+    plutil -remove SUFeedURL "$app_bundle/Contents/Info.plist"
+    plutil -remove SUPublicEDKey "$app_bundle/Contents/Info.plist" 2>/dev/null || true
+fi
 if [ -f "$icon_source" ]; then
     cp "$icon_source" "$app_bundle/Contents/Resources/VoiceIsLocal.icns"
     plutil -replace CFBundleIconFile -string VoiceIsLocal "$app_bundle/Contents/Info.plist"

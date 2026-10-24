@@ -58,6 +58,9 @@ final class AppUpdates: NSObject, SPUUpdaterDelegate {
         controller?.checkForUpdates(nil)
     }
 
+    /// The question still needs an answer: none came from Settings while it waited.
+    var unanswered: Bool { available && answer == nil }
+
     private var answer: Bool? { defaults.object(forKey: UpdateCheckConsent.automaticChecksKey) as? Bool }
 
     private func start() {
@@ -78,7 +81,7 @@ extension HolosAppDelegate {
         guard updates.launch() else { return }
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
-            guard let self, self.assistantWindow?.isVisible != true, !self.isBusy,
+            guard let self, self.updates.unanswered, self.assistantWindow?.isVisible != true, !self.isBusy,
                   !self.meetingRecordingAtLaunch else { return }
             self.askAboutUpdateChecks()
         }

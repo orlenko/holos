@@ -48,10 +48,18 @@ cp TRADEMARKS.md "$holos_app_bundle/Contents/Resources/TRADEMARKS.md"
 cp THIRD_PARTY_NOTICES.md "$holos_app_bundle/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp "$holos_app_bin_dir/HolosApp" "$holos_app_bundle/Contents/MacOS/HolosApp"
 # The app links Sparkle (in-app updates), so it needs the framework to start even though this build never checks.
+# The framework comes from the package artifacts of the build folder that made the binaries (a --scratch-path too).
+sparkle_source=
+search_dir=$holos_app_bin_dir
+while [ "$search_dir" != / ] && [ -z "$sparkle_source" ]; do
+    candidate="$search_dir/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+    [ ! -d "$candidate" ] || sparkle_source=$candidate
+    search_dir=$(dirname "$search_dir")
+done
+[ -n "$sparkle_source" ] || { printf 'No Sparkle.framework in the package artifacts above %s.\n' "$holos_app_bin_dir" >&2; exit 1; }
 rm -rf "$holos_app_bundle/Contents/Frameworks"
 mkdir -p "$holos_app_bundle/Contents/Frameworks"
-ditto .build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework \
-    "$holos_app_bundle/Contents/Frameworks/Sparkle.framework"
+ditto "$sparkle_source" "$holos_app_bundle/Contents/Frameworks/Sparkle.framework"
 # The recorder and maintenance commands the app starts (docs/meeting/recorder.md §4.1): signed on its own first,
 # then sealed into the bundle's signature.
 cp "$holos_app_bin_dir/voiceislocal" "$holos_app_bundle/Contents/MacOS/voiceislocal"

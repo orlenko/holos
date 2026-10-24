@@ -31,6 +31,7 @@ struct AppUpdatesTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let updates = AppUpdates(bundle: bundle, defaults: defaults)
         #expect(!updates.available)
+        #expect(!updates.unanswered)
         #expect(!updates.launch())
         #expect(!updates.launch())
         updates.checkNow()
@@ -52,8 +53,10 @@ struct AppUpdatesTests {
         #expect(second.launch())
         #expect(!second.started)
         #expect(!second.checksAutomatically)
-        // No: saved as Sparkle's own setting, and never asked again.
+        #expect(second.unanswered)
+        // No (from the question or from Settings while it waited): saved as Sparkle's own setting, never asked again.
         second.setChecksAutomatically(false)
+        #expect(!second.unanswered)
         #expect(defaults.object(forKey: UpdateCheckConsent.automaticChecksKey) as? Bool == false)
         #expect(!second.started)
         let third = AppUpdates(bundle: bundle, defaults: defaults)
