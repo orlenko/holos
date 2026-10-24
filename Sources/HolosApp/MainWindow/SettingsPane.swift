@@ -65,6 +65,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     private let callbacks: Callbacks
     private let openAtLaunchToggle = NSButton(checkboxWithTitle: "Open the Voice is Local window when it starts",
                                               target: nil, action: nil)
+    private static let updateChecksTitle = "Check for updates automatically"
+    private let updateChecksToggle = NSButton(checkboxWithTitle: updateChecksTitle, target: nil, action: nil)
     private let appearanceControl = NSSegmentedControl(labels: AppearanceChoice.allCases.map(\.title),
                                                        trackingMode: .selectOne, target: nil, action: nil)
     private let fillerToggle = NSButton(checkboxWithTitle: "Remove filler words", target: nil, action: nil)
@@ -102,7 +104,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     private var rows: [SetupAction: Row] = [:]
     /// Status rows their state hides (Input Monitoring until macOS refuses the hotkey tap).
     private var stateHidden: Set<SetupAction> = []
-    private static let textWidth: CGFloat = 360
+    static let textWidth: CGFloat = 360
 
     // Chapters and search.
     /// What the sidebar marks: the chapter at the top, on each scroll by the user (not while `show(chapter:)`
@@ -150,7 +152,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         noMatches.font = .systemFont(ofSize: 13)
         noMatches.textColor = .secondaryLabelColor
         noMatches.isHidden = true
-        for checkbox in [openAtLaunchToggle, fillerToggle, previewToggle, aiFixToggle, spokenCodeToggle,
+        for checkbox in [openAtLaunchToggle, updateChecksToggle, fillerToggle, previewToggle, aiFixToggle, spokenCodeToggle,
                          spokenCodeBackticksToggle, recordSystemAudioToggle, screenCaptureToggle,
                          deepTranscriptionToggle, meetingSummariesToggle, historyAudioToggle] {
             Self.wrapsTitle(checkbox)
@@ -226,7 +228,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         return root
     }
 
-    /// Settings › General: whether the window opens at launch, and the appearance of every window.
+    /// Settings › General: whether the window opens at launch, update checks, and the appearance of every window.
     private func generalCard() -> NSView {
         openAtLaunchToggle.target = self
         openAtLaunchToggle.action = #selector(buttonPressed(_:))
@@ -253,7 +255,23 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
                       "Every Voice is Local window and the dictation preview; System follows macOS",
                       keywords: ["dark mode", "light mode", "theme", "colour", "color"],
                       control: appearanceControl, to: grid)
-        return card(.general, [launch, grid], widths: [launch, launchNote, grid])
+
+        updateChecksToggle.target = self
+        updateChecksToggle.action = #selector(buttonPressed(_:))
+        updateChecksToggle.tag = SetupAction.toggleUpdateChecks.rawValue
+        let updatesNote = Self.note("""
+            About once a day, downloads one small file from voiceislocal.com that names the latest version; the \
+            request sends only the app's name and version. An update downloads only when you choose to install \
+            it. Check for Updates… in the menu works either way.
+            """)
+        let updates = NSStackView(views: [updateChecksToggle, updatesNote])
+        updates.orientation = .vertical
+        updates.alignment = .leading
+        updates.spacing = 4
+        addItem(.general, Self.updateChecksTitle, caption: updatesNote.stringValue,
+                keywords: ["update", "upgrade", "new version", "sparkle", "privacy", "network", "online"],
+                views: [updates], focus: updateChecksToggle, titledBy: updateChecksToggle)
+        return card(.general, [launch, updates, grid], widths: [launch, launchNote, updates, updatesNote, grid])
     }
 
     private func permissionsCard() -> NSView {
@@ -694,45 +712,6 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
 
     /// A row's bold title over its detail line: `textWidth` wide, narrower in a narrow window (the detail wraps at
     /// the width it gets; the title truncates last).
-    private static func labels(_ title: String) -> (NSStackView, title: NSTextField, detail: NSTextField) {
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-        titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(300), for: .horizontal)
-        let detail = NSTextField(wrappingLabelWithString: "")
-        detail.font = .systemFont(ofSize: 12)
-        detail.textColor = .secondaryLabelColor
-        let text = NSStackView(views: [titleLabel, detail])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 2
-        text.widthAnchor.constraint(lessThanOrEqualToConstant: textWidth).isActive = true
-        let preferred = text.widthAnchor.constraint(equalToConstant: textWidth)
-        preferred.priority = NSLayoutConstraint.Priority(260)
-        preferred.isActive = true
-        // Below this the control gives way first (`addControlRow`), so the detail never wraps a word a line.
-        let readable = text.widthAnchor.constraint(greaterThanOrEqualToConstant: 120)
-        readable.priority = NSLayoutConstraint.Priority(280)
-        readable.isActive = true
-        return (text, titleLabel, detail)
-    }
-
-    /// A note under a setting; it wraps at the width it gets (the card's).
-    private static func note(_ text: String) -> NSTextField {
-        let note = NSTextField(wrappingLabelWithString: text)
-        note.font = .systemFont(ofSize: 11)
-        note.textColor = .secondaryLabelColor
-        return note
-    }
-
-    /// A checkbox whose title wraps when the card is narrower than it (the window beside a call's window).
-    private static func wrapsTitle(_ checkbox: NSButton) {
-        checkbox.lineBreakMode = .byWordWrapping
-        checkbox.usesSingleLineMode = false
-        checkbox.cell?.wraps = true
-        checkbox.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-    }
-
     // MARK: - State
 
     func update(_ state: SetupState) {
@@ -752,6 +731,10 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         shortcutPopup.isEnabled = state.shortcutChangeable
         select(retentionPopup, state.historyRetention.rawValue)
         openAtLaunchToggle.state = state.openWindowAtLaunch ? .on : .off
+        updateChecksToggle.isEnabled = state.updatesAvailable
+        updateChecksToggle.state = state.checkUpdatesAutomatically && state.updatesAvailable ? .on : .off
+        setSearched(updateChecksToggle, title: state.updatesAvailable ? Self.updateChecksTitle
+            : "\(Self.updateChecksTitle) — only in the downloaded app")
         appearanceControl.selectedSegment = AppearanceChoice.allCases.firstIndex(of: state.appearance) ?? 0
         fillerToggle.isEnabled = state.fillerExamples != nil
         fillerToggle.state = state.removeFillers && state.fillerExamples != nil ? .on : .off

@@ -64,6 +64,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     var controller: DictationController!
     /// Meeting recording controls (HolosApp+Meeting.swift, docs/meeting/app-controls.md §5.8).
     let meeting = MeetingAppState()
+    /// In-app updates (HolosApp+Updates.swift).
+    let updates = AppUpdates()
     private(set) var enabled = false
     /// Session suspension belongs to dictation, not to a meeting; deferred setup cannot clear it.
     var dictationSession = DictationSessionPolicy()
@@ -280,25 +282,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .markDone, .normal: if dictationEnabled { openMainWindowAtLaunch() } else { showSetup() }
         }
         if dictationEnabled { enable() }
+        startUpdates()
     }
 
     /// Closing the last window never quits: Voice is Local lives in the menu bar, and dictation, meeting recordings,
     /// and readings keep running. Only the menu's Quit and ⌘Q quit (`applicationShouldTerminate`).
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
-    }
-
-    /// A click on the Dock icon (the app is regular while one of its windows is open, the live transcript or Review
-    /// included) brings back the main window: restored from the Dock when minimised, else opened on the section it
-    /// last showed. With the main window on screen, AppKit's own handling brings the app forward.
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if let mainWindow, mainWindow.isMiniaturized {
-            mainWindow.restoreFromDock()
-            return false
-        }
-        guard mainWindow?.isVisible != true else { return true }
-        showMainWindowFromMenu(nil)
-        return false
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -376,6 +366,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         addWindowItems(to: menu)
         menu.addItem(.separator())
         addAboutItem(to: menu)
+        addUpdateItem(to: menu)
         menu.addItem(item("Quit Voice is Local", #selector(quit)))
         statusItem.menu = menu
         statusItem.button?.toolTip = meetingToolTip() ?? "Voice is Local — \(message)"
@@ -1483,7 +1474,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             historyRetention: history.retention, historyCount: history.keptCount,
             historyUnreadable: history.unreadable, historyKeepsAudio: history.keepsAudio,
             historyAudioBytes: history.audioBytes,
-            openWindowAtLaunch: openWindowAtLaunch, appearance: appearance, naturalVoices: naturalVoiceDownloads()))
+            openWindowAtLaunch: openWindowAtLaunch, appearance: appearance,
+            updatesAvailable: updates.available, checkUpdatesAutomatically: updates.checksAutomatically,
+            naturalVoices: naturalVoiceDownloads()))
     }
 
     /// The sidebar's dictation status, independent of meeting recording.
@@ -1531,6 +1524,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             updateSettings()
         case .toggleOpenWindowAtLaunch:
             openWindowAtLaunch.toggle()  // takes effect from the next launch
+            updateSettings()
+        case .toggleUpdateChecks:
+            updates.setChecksAutomatically(!updates.checksAutomatically)
             updateSettings()
         case .toggleRecordSystemAudio:
             MeetingAppState.recordSystemAudio.toggle()  // takes effect from the next meeting

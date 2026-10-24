@@ -26,6 +26,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.1"),
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", exact: "1.1.0"),
+        .package(url: "https://github.com/sparkle-project/Sparkle.git", exact: "2.10.0"),
     ],
     targets: [
         // Every source target excludes its README.md (module notes for contributors, AGENTS.md).
@@ -69,7 +70,11 @@ let package = Package(
         .executableTarget(name: "HolosApp", dependencies: [
             "HolosCore", "HolosAppModel", "HolosAudio", "HolosSpeech", "HolosDesktop", "HolosDictation",
             "HolosStorage", "HolosSpeakers", "HolosMeeting", "HolosSynthesis", "HolosContent", "HolosSpelling",
-        ], exclude: ["README.md"]),
+            .product(name: "Sparkle", package: "Sparkle"),
+        ], exclude: ["README.md"], linkerSettings: [.unsafeFlags([
+            // In-app updates (docs/release.md "Updates"): the build scripts copy Sparkle.framework here.
+            "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks",
+        ])]),
         .executableTarget(name: "HolosCLI", dependencies: [
             "HolosCore", "HolosSpeech", "HolosSynthesis", "HolosStorage", "HolosAudio", "HolosContent",
             "HolosMeeting", "HolosSpeakers", "HolosDiarization", "HolosDictation", "HolosWhisper",

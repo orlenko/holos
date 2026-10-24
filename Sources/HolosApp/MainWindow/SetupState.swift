@@ -80,6 +80,9 @@ struct SetupState {
     /// app's appearance (UserDefaults "appearance").
     var openWindowAtLaunch = true
     var appearance = AppearanceChoice.system
+    /// General: this build can update itself (a release build), and whether it checks automatically (`AppUpdates`).
+    var updatesAvailable = false
+    var checkUpdatesAutomatically = false
     /// Settings › Reading › Natural voices: each pack's download.
     var naturalVoices: [NaturalVoicePack: NaturalVoiceDownload] = [:]
 }
@@ -107,4 +110,6 @@ enum SetupAction: Int, CaseIterable {
     /// A permission row's System Settings… link (or its Open Settings once granted): only opens the page, while
     /// `accessibility`, `inputMonitoring`, and `systemAudio` only ask macOS (`PermissionButtons`).
     case accessibilitySettings, inputMonitoringSettings, systemAudioSettings
+    /// Settings › General › Check for updates automatically.
+    case toggleUpdateChecks
 }

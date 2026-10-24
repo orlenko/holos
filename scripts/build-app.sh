@@ -30,6 +30,9 @@ holos_build_plist=$(mktemp -t holos-build-info)
 trap 'rm -f "$holos_build_plist"' EXIT HUP INT TERM
 cp Resources/App-Info.plist "$holos_build_plist"
 sh scripts/stamp-build-info.sh "$holos_build_plist"
+# A local build never checks for updates: without a feed the app leaves Sparkle off (docs/release.md "Updates").
+plutil -remove SUFeedURL "$holos_build_plist"
+plutil -remove SUPublicEDKey "$holos_build_plist" 2>/dev/null || true
 swift build --product HolosApp "$@"
 swift build --product voiceislocal "$@"
 holos_app_bin_dir=$(swift build --show-bin-path "$@")
@@ -44,6 +47,11 @@ cp LICENSE "$holos_app_bundle/Contents/Resources/LICENSE.txt"
 cp TRADEMARKS.md "$holos_app_bundle/Contents/Resources/TRADEMARKS.md"
 cp THIRD_PARTY_NOTICES.md "$holos_app_bundle/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp "$holos_app_bin_dir/HolosApp" "$holos_app_bundle/Contents/MacOS/HolosApp"
+# The app links Sparkle (in-app updates), so it needs the framework to start even though this build never checks.
+rm -rf "$holos_app_bundle/Contents/Frameworks"
+mkdir -p "$holos_app_bundle/Contents/Frameworks"
+ditto .build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework \
+    "$holos_app_bundle/Contents/Frameworks/Sparkle.framework"
 # The recorder and maintenance commands the app starts (docs/meeting/recorder.md §4.1): signed on its own first,
 # then sealed into the bundle's signature.
 cp "$holos_app_bin_dir/voiceislocal" "$holos_app_bundle/Contents/MacOS/voiceislocal"

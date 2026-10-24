@@ -10,7 +10,9 @@
 #   DEVELOPER_ID    signing identity, e.g. "Developer ID Application: Bjola Software Inc. (TEAMID)". Unset: a dry run, signed
 #                   ad-hoc, for local testing only.
 #   NOTARY_PROFILE  a keychain profile saved with `xcrun notarytool store-credentials`. With DEVELOPER_ID, the app
-#                   and the DMG are notarized and stapled.
+#                   and the DMG are notarized and stapled, and build/release/appcast.xml offers the DMG as an in-app
+#                   update, signed with the Sparkle key in this Mac's keychain (docs/release.md "Updates").
+#   DOWNLOADS_URL   where the DMG is published; default https://voiceislocal.com/downloads.
 # A signed release (DEVELOPER_ID set) must be built from a clean working tree (no changed or untracked files) whose
 # HEAD is the tag v<VERSION>, pushed to origin at the same commit; otherwise the script stops. A dry run warns and
 # goes on.
@@ -19,7 +21,7 @@ cd "$(dirname "$0")/.."
 
 case "${1:-}" in
     -h|--help)
-        sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
 esac
@@ -80,6 +82,17 @@ cli_executable="$app_bundle/Contents/MacOS/voiceislocal"
 dmg_root="$release_root/dmg-root"
 dmg="$release_root/VoiceIsLocal-$version.dmg"
 app_zip="$release_root/VoiceIsLocal-$version-notarize.zip"
+appcast="$release_root/appcast.xml"
+downloads_url=${DOWNLOADS_URL:-https://voiceislocal.com/downloads}
+# In-app updates (docs/release.md "Updates"): Sparkle's framework and its signing tools, from the Swift package's
+# artifact (Package.swift pins the version).
+sparkle_artifact="$PWD/.build/artifacts/sparkle/Sparkle"
+sparkle_tools="$sparkle_artifact/bin"
+sparkle_framework="$app_bundle/Contents/Frameworks/Sparkle.framework"
+public_ed_key=$(plutil -extract SUPublicEDKey raw -o - "$app_plist_source" 2>/dev/null || true)
+if [ -n "$developer_id" ] && [ -z "$public_ed_key" ]; then
+    fail "$app_plist_source has no SUPublicEDKey, so the app could not verify its updates. Create the key once as docs/release.md \"Updates\" says."
+fi
 
 for file in "$app_plist_source" "$app_entitlements" "$cli_entitlements"; do
     plutil -lint "$file" >/dev/null || fail "$file is not a valid property list."
@@ -160,6 +173,13 @@ bin_dir=$(swift build -c release --disable-default-traits --show-bin-path)
 if strings "$bin_dir/voiceislocal" | grep -q 'api\.openai\.com'; then
     fail "The release voiceislocal still contains the OpenAI endpoint; the eval commands must not ship (docs/release.md)."
 fi
+if [ -n "$developer_id" ]; then
+    # The keychain's key signs the update; the app accepts only updates that SUPublicEDKey verifies.
+    keychain_ed_key=$("$sparkle_tools/generate_keys" -p) \
+        || fail "No Sparkle signing key in this Mac's keychain; create it (or import its backup) as docs/release.md \"Updates\" says."
+    [ "$keychain_ed_key" = "$public_ed_key" ] \
+        || fail "The Sparkle key in the keychain ($keychain_ed_key) is not SUPublicEDKey in $app_plist_source ($public_ed_key)."
+fi
 if [ "$source_verified" = yes ]; then
     # A file changed while the build ran would be in the binaries but not in the tag.
     [ "$(git rev-parse HEAD)" = "$head_commit" ] || source_problem "HEAD changed during the build."
@@ -167,8 +187,8 @@ if [ "$source_verified" = yes ]; then
 fi
 
 step "Assembling $app_bundle"
-rm -rf "$app_bundle" "$dmg_root" "$dmg" "$app_zip"
-mkdir -p "$app_bundle/Contents/MacOS" "$app_bundle/Contents/Resources"
+rm -rf "$app_bundle" "$dmg_root" "$dmg" "$app_zip" "$appcast"
+mkdir -p "$app_bundle/Contents/MacOS" "$app_bundle/Contents/Resources" "$app_bundle/Contents/Frameworks"
 cp "$release_build_plist" "$app_bundle/Contents/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$version" "$app_bundle/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$build_number" "$app_bundle/Contents/Info.plist"
@@ -190,12 +210,26 @@ cp TRADEMARKS.md "$app_bundle/Contents/Resources/TRADEMARKS.md"
 cp THIRD_PARTY_NOTICES.md "$app_bundle/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp "$bin_dir/HolosApp" "$app_executable"
 cp "$bin_dir/voiceislocal" "$cli_executable"
+# Sparkle without its XPC services, which only sandboxed apps use.
+ditto "$sparkle_artifact/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" "$sparkle_framework"
+rm -rf "$sparkle_framework/XPCServices" "$sparkle_framework/Versions/B/XPCServices"
 # Extended attributes such as Finder info make codesign refuse the bundle.
 xattr -cr "$app_bundle"
 
 step "Signing with the hardened runtime (identity: $sign_identity)"
 # Inside out: the bundled tool first, then the bundle, whose signature seals the tool's. The identifiers match the
 # local builds, so settings keyed to the bundle ID carry over.
+# Sparkle's helpers before the framework that holds them, in the order Sparkle's documentation gives (no --deep).
+each_sparkle_part() {
+    # $@: a command run on each of Sparkle's signed parts, inside out.
+    "$@" "$sparkle_framework/Versions/B/Autoupdate"
+    "$@" "$sparkle_framework/Versions/B/Updater.app"
+    "$@" "$sparkle_framework"
+}
+sign_sparkle_part() {
+    codesign --force --options runtime "$timestamp" --sign "$sign_identity" "$1"
+}
+each_sparkle_part sign_sparkle_part
 codesign --force --options runtime "$timestamp" --entitlements "$cli_entitlements" \
     --identifier "$cli_identifier" --sign "$sign_identity" "$cli_executable"
 codesign --force --options runtime "$timestamp" --entitlements "$app_entitlements" \
@@ -215,16 +249,27 @@ verify_binary() {
         *) fail "$name is not signed with the hardened runtime." ;;
     esac
     printf 'Architectures: %s\n' "$(lipo -archs "$1")"
-    # Every library should be a system one (/usr/lib, /System): a bundled dynamic library would need to be copied
-    # into the app and signed by the same team, or library validation refuses to load it.
+    # Every library should be a system one (/usr/lib, /System) or Sparkle, which this script copies into the app
+    # and signs: any other would need the same, or library validation refuses to load it.
     printf 'Linked libraries:\n'
     otool -L "$1" | sed 1d
-    if otool -L "$1" | sed 1d | grep -v -e '^[[:space:]]*/usr/lib/' -e '^[[:space:]]*/System/' >/dev/null; then
-        fail "$name links a library outside /usr/lib and /System, which this script does not bundle."
+    if otool -L "$1" | sed 1d | grep -v -e '^[[:space:]]*/usr/lib/' -e '^[[:space:]]*/System/' \
+        -e '^[[:space:]]*@rpath/Sparkle\.framework/Versions/B/Sparkle ' >/dev/null; then
+        fail "$name links a library outside /usr/lib and /System other than Sparkle, which this script does not bundle."
     fi
 }
 verify_binary "$app_executable" "$app_identifier"
 verify_binary "$cli_executable" "$cli_identifier"
+verify_sparkle_part() {
+    case "$(codesign -d --verbose=2 "$1" 2>&1)" in
+        *'flags='*runtime*) ;;
+        *) fail "${1#"$PWD"/} is not signed with the hardened runtime." ;;
+    esac
+}
+each_sparkle_part verify_sparkle_part
+# Sparkle loads through the rpath: one into a folder outside the bundle could load a library from there.
+[ -z "$(otool -l "$app_executable" | awk '$1 == "path" && $2 !~ /^@/')" ] \
+    || fail "The app executable has an rpath outside the bundle."
 
 notarize() {
     # $1: the file to submit. Waits for Apple's verdict and fails unless it is Accepted.
@@ -295,10 +340,42 @@ if [ -n "$developer_id" ]; then
     fi
 fi
 
+if [ "$notarized" = yes ]; then
+    step "Writing $appcast"
+    # One item, this release, which Sparkle offers to every older version. The EdDSA signature covers the DMG, and the
+    # feed carries its own signature (SURequireSignedFeed), so the published file must stay byte for byte as written.
+    enclosure=$("$sparkle_tools/sign_update" "$dmg") || fail "sign_update could not sign the DMG."
+    minimum_system=$(plutil -extract LSMinimumSystemVersion raw -o - "$app_bundle/Contents/Info.plist")
+    cat >"$appcast" <<APPCAST
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+    <channel>
+        <title>Voice is Local</title>
+        <item>
+            <title>Voice is Local $version</title>
+            <pubDate>$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')</pubDate>
+            <sparkle:version>$build_number</sparkle:version>
+            <sparkle:shortVersionString>$version</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>$minimum_system</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="$downloads_url/VoiceIsLocal-$version.dmg" type="application/x-apple-diskimage" $enclosure/>
+        </item>
+    </channel>
+</rss>
+APPCAST
+    xmllint --noout "$appcast" || fail "$appcast is not well-formed XML."
+    "$sparkle_tools/sign_update" "$appcast" >/dev/null || fail "sign_update could not sign $appcast."
+    "$sparkle_tools/sign_update" --verify "$appcast" >/dev/null || fail "$appcast does not verify with the Sparkle key."
+fi
+
 step "Done"
 dmg_sha=$(shasum -a 256 "$dmg" | awk '{print $1}')
 printf 'DMG:     %s\n' "$dmg"
 printf 'SHA-256: %s\n' "$dmg_sha"
+printf 'Size:    %s bytes\n' "$(stat -f %z "$dmg")"
+if [ -f "$appcast" ]; then
+    printf 'Appcast: %s (publish it unchanged, next to the DMG at %s)\n' "$appcast" "$downloads_url"
+fi
 if [ "$source_verified" = yes ]; then
     printf 'Source:  %s (%s)\n' "$release_tag" "$head_commit"
 else

@@ -111,7 +111,7 @@ extension HolosAppDelegate {
     }
 
     /// A recorder is starting, recording, or saving (the app reattached to it at launch): Meetings shows its progress.
-    private var meetingRecordingAtLaunch: Bool {
+    var meetingRecordingAtLaunch: Bool {
         switch meeting.controller?.state {
         case .starting, .active, .finishing: return true
         case .idle, .failed, nil: return false
@@ -177,5 +177,18 @@ extension HolosAppDelegate {
         settings.keyEquivalent = ","
         settings.keyEquivalentModifierMask = .command
         menu.addItem(settings)
+    }
+
+    /// A click on the Dock icon (the app is regular while one of its windows is open, the live transcript or Review
+    /// included) brings back the main window: restored from the Dock when minimised, else opened on the section it
+    /// last showed. With the main window on screen, AppKit's own handling brings the app forward.
+    @objc func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if let mainWindow, mainWindow.isMiniaturized {
+            mainWindow.restoreFromDock()
+            return false
+        }
+        guard mainWindow?.isVisible != true else { return true }
+        showMainWindowFromMenu(nil)
+        return false
     }
 }
