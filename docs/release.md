@@ -205,7 +205,11 @@ The app is not sandboxed. Both entitlement files contain one entitlement,
 and both the app (dictation, in-process recording) and the `voiceislocal` recorder the app starts open the
 microphone. Accessibility, the CGEvent tap (and Input Monitoring, only where macOS asks for it), speech recognition, and ScreenCaptureKit system audio
 need no entitlement outside the sandbox. Both binaries link only system libraries (FluidAudio and
-swift-argument-parser are linked statically), so library validation needs no exception.
+swift-argument-parser are linked statically), so library validation needs no exception. The app also loads
+`Sparkle.framework` from `Contents/Frameworks`, which the script signs with the same identity before the app, so
+library validation accepts it (same Team ID). An ad-hoc dry run has no Team ID: only there the app is signed with
+`com.apple.security.cs.disable-library-validation` too. Every build then runs the app's `--check` report, which
+fails at once if dyld refuses the framework.
 
 ## What users see
 
@@ -221,6 +225,7 @@ swift-argument-parser are linked statically), so library validation needs no exc
 - Moving from a local ad-hoc build to the first Developer ID build keeps settings, meetings, voices, and corrections
   (same bundle ID), but macOS asks for the permissions once more, because the signer changed.
 - It runs on Apple Silicon Macs with macOS 27 or later only.
+- From 1.0.2, the second launch asks once whether to check for updates automatically ("Updates" below).
 
 ## Why not the Mac App Store
 
@@ -238,7 +243,8 @@ malware scan (notarization).
 three files into local builds. The `voiceislocal` tool compiles in FluidAudio (Apache 2.0) and the code it bundles, whose
 license texts the notices reproduce. The speaker diarization models are not shipped: `voiceislocal setup --speakers`
 downloads them at runtime from Hugging Face under their own license (CC BY 4.0), and the notices carry their
-attribution. Apple's speech assets are downloaded by macOS. When a dependency or model changes, update
+attribution. The app includes Sparkle (MIT, with the licenses of the code it bundles), whose license the
+notices reproduce too. Apple's speech assets are downloaded by macOS. When a dependency or model changes, update
 `THIRD_PARTY_NOTICES.md` before the release.
 
 ## Publishing on the website
@@ -247,14 +253,57 @@ attribution. Apple's speech assets are downloaded by macOS. When a dependency or
    version).
 2. Publish its SHA-256 (printed at the end of the script; `shasum -a 256 <dmg>` repeats it) next to the link, with
    the requirements: macOS 27 or later, Apple Silicon.
-3. Keep a short changelog per version.
+3. Publish `build/release/appcast.xml` at `https://voiceislocal.com/downloads/appcast.xml`, byte for byte: its
+   signature covers the whole file. Publish it after the DMG, so the app never offers a file that is not there yet.
+4. Update the Homebrew cask, `Casks/voiceislocal.rb` in
+   [orlenko/homebrew-tap](https://github.com/orlenko/homebrew-tap): its `version` and `sha256`. Users install with
+   `brew install --cask orlenko/tap/voiceislocal`.
+5. Keep a short changelog per version.
 
-Later, optionally:
+## Updates
 
-- **Sparkle** for in-app updates: add the framework, publish an appcast signed with Sparkle's EdDSA key. The
-  framework is a dynamic library inside the app, so the script would have to copy it into `Contents/Frameworks` and
-  sign its helpers before the app.
-- **A Homebrew cask** (`brew install --cask voice-is-local`): needs a stable versioned download URL and the SHA-256.
+The app updates itself with [Sparkle](https://sparkle-project.org) 2.10.0 (`HolosApp+Updates.swift`).
+
+- **What goes online.** Nothing until the user agrees. The first launch of a build with updates says nothing; the
+  second asks once, "Check for updates automatically?" (`UpdateCheckConsent`). With a yes, Sparkle downloads
+  `SUFeedURL` (`https://voiceislocal.com/downloads/appcast.xml`) about once a day, with a User-Agent that names the
+  app and its version. Sparkle's system profile is off (`SUEnableSystemProfiling`). The DMG downloads only when the
+  user chooses to install the update it offers. Check for Updates… in the menu bar menu works whatever the answer;
+  Settings › General › "Check for updates automatically" changes it.
+- **What it trusts.** The app accepts an appcast only with a valid signature (`SURequireSignedFeed`), and an update
+  only when the DMG's EdDSA signature matches `SUPublicEDKey` (checked before the DMG is opened,
+  `SUVerifyUpdateBeforeExtraction`) and the new app is signed with the same Developer ID.
+- **Local builds never check.** `scripts/build-app.sh` removes `SUFeedURL` from the build's Info.plist, so the app
+  leaves Sparkle off and Settings shows the checkbox unavailable. They still bundle the framework, which the app
+  links.
+
+### One-time: the signing key
+
+The private key lives in the login keychain of the Mac that builds releases, next to the Developer ID key, and
+nowhere else. On that Mac, in its own session, after one `swift build` has fetched the Sparkle package:
+
+```sh
+.build/artifacts/sparkle/Sparkle/bin/generate_keys      # creates the key, or prints the one already there
+.build/artifacts/sparkle/Sparkle/bin/generate_keys -x ~/Desktop/voiceislocal-sparkle-key   # a backup
+```
+
+Put the public key it prints in `Resources/App-Info.plist` as `SUPublicEDKey` and commit it. Store the backup
+file somewhere safe and offline (a password manager), then delete it from the Desktop. Without the key no update
+can ever be signed for the apps already installed, so losing it means users must download the next version by
+hand. `generate_keys -f <backup>` imports it on another Mac.
+
+`scripts/release-app.sh` stops a signed release when `SUPublicEDKey` is missing or differs from the keychain's key
+(`generate_keys -p`).
+
+### Each release
+
+With `DEVELOPER_ID` and `NOTARY_PROFILE`, the script also writes `build/release/appcast.xml`: one item, this
+version, whose enclosure is `$DOWNLOADS_URL/VoiceIsLocal-<version>.dmg` (default
+`https://voiceislocal.com/downloads`) with the DMG's EdDSA signature and length, and the minimum macOS and Apple
+Silicon requirement. It then signs the feed and checks the signature (`sign_update`, `sign_update --verify`). The
+keychain may ask once to let `sign_update` use the key.
+
+Releases before 1.0.2 have no updater: their users download 1.0.2 by hand once.
 
 ## Troubleshooting
 

@@ -5,9 +5,9 @@ wiring between them and the library controllers (docs/design.md "Main window").
 
 **Owns**
 - `HolosApp.swift`: `HolosAppMain` (`@main`; `--check` prints a permission report) and `HolosAppDelegate`, the menu
-  bar item and menu, plus 13 `HolosApp+<Area>.swift` extensions (Meeting, DeepTranscription, MeetingSummary,
+  bar item and menu, plus 14 `HolosApp+<Area>.swift` extensions (Meeting, DeepTranscription, MeetingSummary,
   EchoCatchUp, BackgroundJobs, MainWindow, History, People, WordList, Reading, SetupAssistant, MeetingLanguage,
-  DictationLanguage: the dictation languages and the recognizer each needs) with
+  DictationLanguage: the dictation languages and the recognizer each needs; Updates: `AppUpdates`, Sparkle) with
   their state holders (`MeetingAppState`, `DeepTranscriptionAppState`, …). `+BackgroundJobs` wires `HolosMeeting`'s
   `BackgroundJobCoordinator`, which runs final transcripts, echo analyses and summaries.
 - `MainWindow/`: `MainWindowController` (sidebar window) and the panes (History, Meetings, People, Corrections,
@@ -33,7 +33,8 @@ through `HolosMeeting`'s `CommandRunner` and decode into the library's types (`D
 
 **Depends on:** HolosCore, HolosAppModel (the app's decisions without AppKit, tested without the executable),
 HolosAudio, HolosSpeech, HolosDesktop, HolosDictation, HolosStorage, HolosSpeakers,
-HolosMeeting, HolosSynthesis, HolosContent, HolosSpelling (installed in `HolosAppMain.main`). Never HolosDiarization, HolosWhisper or HolosPocket (they run in a
+HolosMeeting, HolosSynthesis, HolosContent, HolosSpelling (installed in `HolosAppMain.main`), and Sparkle (the only
+third-party framework it links; the build scripts copy it into `Contents/Frameworks`). Never HolosDiarization, HolosWhisper or HolosPocket (they run in a
 `voiceislocal` child), nor HolosEvaluation. AppKit, AVFoundation, ApplicationServices.
 
 **Invariants**

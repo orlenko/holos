@@ -16,5 +16,9 @@
     <key>NSHighResolutionCapable</key><true/>
     <key>NSMicrophoneUsageDescription</key><string>Voice is Local uses your microphone for push-to-talk dictation and for meeting recordings you start.</string>
     <key>NSSpeechRecognitionUsageDescription</key><string>Voice is Local transcribes your dictation locally on your Mac.</string>
+    <key>SUEnableSystemProfiling</key><false/>
+    <key>SUFeedURL</key><string>https://voiceislocal.com/downloads/appcast.xml</string>
+    <key>SURequireSignedFeed</key><true/>
+    <key>SUVerifyUpdateBeforeExtraction</key><true/>
 </dict>
 </plist>

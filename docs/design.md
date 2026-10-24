@@ -16,8 +16,9 @@ Target this Apple Silicon Mac and macOS 27 initially. Most core APIs also exist 
 macOS 26, but supporting older systems is a separate decision and test obligation.
 Use the installed Swift 6.4 toolchain in Swift 6 language mode.
 
-All speech and language-model inference runs locally. Fetching a requested article
-and initially downloading speech/voice/model assets may use the network. An offline
+All speech and language-model inference runs locally. Fetching a requested article,
+initially downloading speech/voice/model assets, and the update check the user allows
+(docs/release.md "Updates") may use the network. An offline
 operation with missing assets reports what is missing. It does not choose a server
 model. In particular, explicitly use `SystemLanguageModel` for corrections; macOS 27
 Foundation Models also exposes remote providers, which are outside this design.
