@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import HolosAppModel
+import HolosTestSupport
 import Testing
 @testable import HolosApp
 
@@ -8,10 +9,10 @@ import Testing
 /// would look for updates to the test runner.
 @MainActor
 struct AppUpdatesTests {
-    /// A bundle with only an Info.plist, with the update keys or without them.
-    private static func bundle(feed: Bool) throws -> (Bundle, URL) {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("AppUpdatesTest-\(UUID().uuidString)")
-        let contents = root.appendingPathComponent("Test.app/Contents")
+    /// A bundle in `folder` with only an Info.plist, with the update keys or without them.
+    private static func bundle(in folder: TemporaryDirectory, feed: Bool) throws -> Bundle {
+        let app = folder.url.appendingPathComponent("Test.app")
+        let contents = app.appendingPathComponent("Contents")
         try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
         var info: [String: Any] = ["CFBundleIdentifier": "ca.orlenko.holos.updates-test", "CFBundlePackageType": "APPL"]
         if feed {
@@ -20,15 +21,16 @@ struct AppUpdatesTests {
         }
         let data = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
         try data.write(to: contents.appendingPathComponent("Info.plist"))
-        return (try #require(Bundle(url: root.appendingPathComponent("Test.app"))), root)
+        return try #require(Bundle(url: app))
     }
 
     @Test func aLocalBuildNeverOffersUpdates() throws {
         let suite = "VoiceIsLocalUpdatesTest-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let (bundle, root) = try Self.bundle(feed: false)
-        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = try TemporaryDirectory("updates")
+        defer { folder.remove() }
+        let bundle = try Self.bundle(in: folder, feed: false)
         let updates = AppUpdates(bundle: bundle, defaults: defaults)
         #expect(!updates.available)
         #expect(!updates.unanswered)
@@ -43,8 +45,9 @@ struct AppUpdatesTests {
         let suite = "VoiceIsLocalUpdatesTest-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let (bundle, root) = try Self.bundle(feed: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = try TemporaryDirectory("updates")
+        defer { folder.remove() }
+        let bundle = try Self.bundle(in: folder, feed: true)
         #expect(AppUpdates(bundle: bundle, defaults: defaults).available)
         let first = AppUpdates(bundle: bundle, defaults: defaults)
         #expect(!first.launch())

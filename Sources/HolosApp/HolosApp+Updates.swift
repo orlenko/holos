@@ -7,6 +7,15 @@ import Sparkle
 /// build (scripts/build-app.sh) leaves it out, so it never checks. Sparkle starts only when it has something to do:
 /// at launch when the user chose automatic checks, else on Check for Updates…, so nothing goes online before the
 /// user's answer (`UpdateCheckConsent`).
+///
+/// Invariants:
+/// 1. Sparkle (`controller`) starts only in a build that is `available`, and only after a yes (the question or
+///    Settings) or for Check for Updates…. Once started it stays for the rest of the run.
+/// 2. No answer (Sparkle's key absent) and a refusal (the key saved as false) both mean no automatic checks; only
+///    the absence is asked about, once.
+/// 3. The answer has one home, Sparkle's key in `defaults`: written directly before Sparkle starts and through
+///    `automaticallyChecksForUpdates` after, so Sparkle reschedules its checks.
+/// 4. Sparkle never shows its own permission prompt (`updaterShouldPromptForPermissionToCheck`).
 @MainActor
 final class AppUpdates: NSObject, SPUUpdaterDelegate {
     /// Whether this build can update itself: a release build with a feed and a key.
@@ -27,7 +36,7 @@ final class AppUpdates: NSObject, SPUUpdaterDelegate {
     }
 
     func setChecksAutomatically(_ on: Bool) {
-        if let controller {
+        if let controller {  // invariant 3
             controller.updater.automaticallyChecksForUpdates = on
         } else {
             defaults.set(on, forKey: UpdateCheckConsent.automaticChecksKey)
@@ -44,7 +53,7 @@ final class AppUpdates: NSObject, SPUUpdaterDelegate {
         case .wait: return false
         case .ask: return true
         case .answered(let automatic):
-            if automatic { start() }
+            if automatic { start() }  // invariant 1
             return false
         }
     }
