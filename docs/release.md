@@ -206,7 +206,10 @@ and both the app (dictation, in-process recording) and the `voiceislocal` record
 microphone. Accessibility, the CGEvent tap (and Input Monitoring, only where macOS asks for it), speech recognition, and ScreenCaptureKit system audio
 need no entitlement outside the sandbox. Both binaries link only system libraries (FluidAudio and
 swift-argument-parser are linked statically), so library validation needs no exception. The app also loads
-`Sparkle.framework` from `Contents/Frameworks`, which the script signs with the same identity before the app.
+`Sparkle.framework` from `Contents/Frameworks`, which the script signs with the same identity before the app, so
+library validation accepts it (same Team ID). An ad-hoc dry run has no Team ID: only there the app is signed with
+`com.apple.security.cs.disable-library-validation` too. Every build then runs the app's `--check` report, which
+fails at once if dyld refuses the framework.
 
 ## What users see
 

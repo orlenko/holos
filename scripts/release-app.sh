@@ -1,7 +1,8 @@
 #!/bin/sh
 # Builds a release Voice is Local.app for direct download: signed for the hardened runtime, packaged in a DMG, and,
 # with credentials, notarized and stapled. Everything goes to build/release; it never touches build/VoiceIsLocal.app
-# and never installs, launches, or quits the app. See docs/release.md for the one-time setup.
+# and never installs, launches, or quits the app (it runs only the built app's `--check` report, which opens no
+# window). See docs/release.md for the one-time setup.
 #
 #   scripts/release-app.sh [VERSION [BUILD]]
 #
@@ -21,7 +22,7 @@ cd "$(dirname "$0")/.."
 
 case "${1:-}" in
     -h|--help)
-        sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
 esac
@@ -160,7 +161,14 @@ if pgrep -f "$app_bundle/Contents/MacOS/" >/dev/null 2>&1; then
 fi
 
 release_build_plist=$(mktemp -t holos-release-info)
-trap 'rm -f "$release_build_plist"' EXIT HUP INT TERM
+signing_entitlements=$(mktemp -t holos-release-entitlements)
+trap 'rm -f "$release_build_plist" "$signing_entitlements"' EXIT HUP INT TERM
+cp "$app_entitlements" "$signing_entitlements"
+if [ -z "$developer_id" ]; then
+    # Ad-hoc signatures have no Team ID, so the hardened runtime's library validation would refuse the ad-hoc signed
+    # Sparkle.framework. Only dry runs get the exception; a signed release shares one Team ID and keeps validation.
+    /usr/libexec/PlistBuddy -c 'Add :com.apple.security.cs.disable-library-validation bool true' "$signing_entitlements"
+fi
 cp "$app_plist_source" "$release_build_plist"
 sh scripts/stamp-build-info.sh "$release_build_plist" "$build_number"
 
@@ -237,7 +245,7 @@ sign_sparkle_part() {
 each_sparkle_part sign_sparkle_part
 codesign --force --options runtime "$timestamp" --entitlements "$cli_entitlements" \
     --identifier "$cli_identifier" --sign "$sign_identity" "$cli_executable"
-codesign --force --options runtime "$timestamp" --entitlements "$app_entitlements" \
+codesign --force --options runtime "$timestamp" --entitlements "$signing_entitlements" \
     --identifier "$app_identifier" --sign "$sign_identity" "$app_bundle"
 
 step "Verifying the signatures"
@@ -272,6 +280,8 @@ verify_sparkle_part() {
     esac
 }
 each_sparkle_part verify_sparkle_part
+# The app starts with the framework as signed: dyld loads Sparkle before `--check` prints its report and exits.
+"$app_executable" --check >/dev/null || fail "The built app does not start; dyld's message above says why."
 # Sparkle loads through the rpath: one into a folder outside the bundle could load a library from there.
 [ -z "$(otool -l "$app_executable" | awk '$1 == "path" && $2 !~ /^@/')" ] \
     || fail "The app executable has an rpath outside the bundle."
