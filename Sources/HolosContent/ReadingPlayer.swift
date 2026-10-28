@@ -43,6 +43,8 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
     public var onChange: (() -> Void)?
     /// Playback stopped on an error: what to tell (a sentence).
     public var onError: ((String) -> Void)?
+    /// The reading played to its end (never called for a stop, a pause, or another reading played over it).
+    public var onEnded: ((UUID) -> Void)?
 
     public init(open: @escaping Open = ReadingPlayer.openAudio) {
         self.open = open
@@ -182,8 +184,10 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
     /// replaced since arrives late and leaves the new reading alone); a failure is reported. A reading asked for
     /// meanwhile still starts once open.
     func ended(_ ended: ObjectIdentifier, failure: String?) {
-        guard let player, ObjectIdentifier(player) == ended else { return }
-        if let failure { fail(failure) } else { unload() }
+        guard let player, ObjectIdentifier(player) == ended, let id = entryID else { return }
+        if let failure { return fail(failure) }
+        unload()
+        onEnded?(id)
     }
 
     /// The playback loaded, for tests.

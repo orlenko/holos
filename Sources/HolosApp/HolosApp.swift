@@ -1538,7 +1538,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .speakerModels: installSpeakerModels()
         case .deepTranscriptionModel:
             installDeepTranscriptionModel()
-        case .naturalVoicesEnglish, .naturalVoicesFrench, .pronunciations: performReadingSetup(action)
+        case .naturalVoicesEnglish, .naturalVoicesFrench, .pronunciations, .readSelection: performReadingSetup(action)
         case .toggleDeepTranscription:
             toggleDeepTranscription()
         case .toggleMeetingSummaries:

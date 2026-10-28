@@ -757,6 +757,40 @@ stopped, with Resume. When the quit is cancelled after that question, at once (a
 question answered Cancel) or later (a meeting that could not be stopped,
 `waitBeforeQuitting`), the kept readings continue at once (`quitCancelled`).
 
+### Read the selection aloud
+
+**⌃⌥⌘R** in any app reads the text selected there aloud (`ReadAloud`, HolosApp). The text is
+read through Accessibility (`SelectedText`, HolosDesktop): the focused element's selected
+text, or, for web content whose focus sits on a child, that of the nearest of its first 8
+ancestors that has one; Chromium and Electron apps are first asked to build their
+accessibility tree (`TextInsertion.enableAccessibility`). Nothing is copied: the pasteboard is
+left alone, so an app that does not tell Accessibility its selection gives "No selected text
+found". A secure input or password field is refused, as in dictation, and so is a press while
+Accessibility is not granted.
+
+The selection becomes a reading in the Reading list (see "Reading section"): its source is
+`ReadingSource.selection` with the app's name ("Selected in Notes"), its text is
+`ReadableDocument.selection` (paragraphs as in a plain text file, `PlainTextReader`; titled by
+a first line that looks like a title, else by its first 8 words), saved before the index names
+the reading, since it is the only copy. It is made with Settings › Reading's voice and speed,
+like any other reading, and plays in the app as soon as it is made, after the readings the
+shortcut added before it: they play in the order asked, each once it is made and nothing else
+plays; one that fails or is stopped is skipped (a failure says so). A short notice under the
+pointer, like dictation's, says "Making audio…" with its title, or why nothing is read. The
+readings stay in the list with their text (Show Text), file, and row like any other.
+
+The menu bar menu shows **Stop Reading Aloud** while a reading the shortcut added plays or
+waits: it stops the one playing, and the waiting ones are still made but not played. Closing
+the main window stops a reading played from its row, never one the shortcut started. The
+section's ▶ Play and the shortcut share one player, so the row of a reading the shortcut
+plays shows Pause and its position.
+
+The shortcut is a Carbon hot key (`ChordHotkey`, `RegisterEventHotKey`): macOS gives it to
+this app alone and the front app never sees it, and it needs no Accessibility or Input
+Monitoring of its own. It is on unless turned off in Settings › Reading › **Read the selection
+aloud** (UserDefaults `readSelectionAloud`), whose row says when Accessibility is missing or
+another app holds the chord.
+
 ### Natural voices
 
 Reading can use natural (neural) voices besides Apple's: Kyutai's Pocket TTS (CC BY 4.0) in Fluid Inference's

@@ -26,3 +26,20 @@ public enum PlainTextReader {
         return !".,;:!?".contains(last)
     }
 }
+
+extension ReadableDocument {
+    /// The words a title made from a selection's first words keeps.
+    static let selectionTitleWords = 8
+
+    /// Text selected in another app, as a reading reads it: paragraphs as in a plain text file (`PlainTextReader`),
+    /// titled by its first line when that looks like a title, else by its first words. Nil when it has no text.
+    public static func selection(_ text: String) -> ReadableDocument? {
+        let document = PlainTextReader.document(from: text)
+        guard !document.isEmpty else { return nil }
+        if document.title != nil { return document }
+        let words = document.plainText.split(whereSeparator: \.isWhitespace)
+        var title = words.prefix(selectionTitleWords).joined(separator: " ")
+        if words.count > selectionTitleWords { title += "…" }
+        return ReadableDocument(title: title, language: document.language, sections: document.sections)
+    }
+}

@@ -114,4 +114,6 @@ enum SetupAction: Int, CaseIterable {
     case accessibilitySettings, inputMonitoringSettings, systemAudioSettings
     /// Settings › General › Check for updates automatically.
     case toggleUpdateChecks
+    /// Settings › Reading › Read the selection aloud: the shortcut turned on or off.
+    case readSelection
 }

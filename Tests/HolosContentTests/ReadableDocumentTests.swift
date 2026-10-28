@@ -18,3 +18,25 @@ import Testing
         #expect(ReadableDocument(sections: [.init(paragraphs: ["Only this."])]).plainText == "Only this.")
     }
 }
+
+@Suite struct ReadableDocumentSelectionTests {
+    @Test func aSelectionIsTitledByItsFirstWords() throws {
+        let document = try #require(ReadableDocument.selection(
+            "  The quick brown fox jumps over the lazy dog again and again.\n\nA second paragraph.\n"))
+        #expect(document.title == "The quick brown fox jumps over the lazy…")
+        #expect(document.sections.flatMap(\.paragraphs) == [
+            "The quick brown fox jumps over the lazy dog again and again.", "A second paragraph.",
+        ])
+        #expect(ReadableDocument.selection("Short words.")?.title == "Short words.")
+    }
+
+    @Test func aSelectionWhoseFirstLineLooksLikeATitleKeepsItAsTheTitle() throws {
+        let document = try #require(ReadableDocument.selection("Getting Started\n\nInstall the app first."))
+        #expect(document.title == "Getting Started")
+        #expect(document.plainText == "Getting Started\n\nInstall the app first.")
+    }
+
+    @Test func aBlankSelectionHasNoDocument() {
+        #expect(ReadableDocument.selection(" \n\t ") == nil)
+    }
+}

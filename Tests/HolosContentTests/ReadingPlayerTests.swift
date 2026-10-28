@@ -37,6 +37,8 @@ private final class FakePlayback: ReadingPlayback, @unchecked Sendable {
         let player = ReadingPlayer(open: { _ in OpenedPlayback(playback) })
         var errors: [String] = []
         player.onError = { errors.append($0) }
+        var endedReadings: [UUID] = []
+        player.onEnded = { endedReadings.append($0) }
         let id = UUID()
         try await player.play(id, file: { try? self.file() })
         #expect(player.entryID == id)
@@ -57,11 +59,13 @@ private final class FakePlayback: ReadingPlayback, @unchecked Sendable {
         #expect(player.entryID == nil)
         #expect(errors.last == "The audio could not be decoded.")
 
-        // The end of the reading is no error.
+        // The end of the reading is no error, and is reported as the end; a failure was not.
+        #expect(endedReadings.isEmpty)
         try await player.play(id, file: { try? self.file() })
         player.ended(ObjectIdentifier(try #require(player.loaded)), failure: nil)
         #expect(player.entryID == nil)
         #expect(errors.count == 2)
+        #expect(endedReadings == [id])
 
         // One that does not start is an error for the caller.
         playback.starts = false

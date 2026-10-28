@@ -156,8 +156,11 @@ final class ReadingRowView: NSTableCellView {
                 progress.isHidden = false
                 progress.doubleValue = 1
             case .loading?, nil:
-                if case .web = entry.source { status.stringValue = "Loading the page…" }
-                else { status.stringValue = "Reading the file…" }
+                switch entry.source {
+                case .web: status.stringValue = "Loading the page…"
+                case .file: status.stringValue = "Reading the file…"
+                case .selection: status.stringValue = "Preparing…"
+                }
             }
             setPrimary("Stop", .stop, help: "Stop making this reading; Resume continues where it stopped")
             buttons = [primary]
