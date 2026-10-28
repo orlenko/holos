@@ -139,8 +139,8 @@ struct MainWindowNarrowTests {
         SettingsEmbeddingTests.render(controller.window, name: "live-stop-\(Int(width))")
     }
 
-    /// A finished reading's row in the Reading list at the window's narrowest: Share… and Show in Finder become
-    /// symbols (still named for VoiceOver), every button fits, and the title keeps some room; wide, they have titles.
+    /// A finished reading's row in the Reading list at the window's narrowest: Show Text, Share… and Show in Finder
+    /// become symbols (still named for VoiceOver), every button fits, and the title keeps some room; wide, they have titles.
     @Test(arguments: [CGFloat(316), 700])
     func aReadingRowFitsTheNarrowestWindow(width: CGFloat) throws {
         var entry = ReadingEntry(source: .web(try #require(URL(string: "https://example.com/story"))),
@@ -155,7 +155,7 @@ struct MainWindowNarrowTests {
         row.layoutSubtreeIfNeeded()
         row.layoutSubtreeIfNeeded()  // the compact titles change on the first pass
         let buttons = Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
-        #expect(buttons.count == 4)
+        #expect(buttons.count == 5)
         for button in buttons {
             let frame = try #require(button.superview).convert(button.frame, to: row)
             #expect(frame.minX >= 0 && frame.maxX <= row.bounds.width, "\(button.title) is cut off")
@@ -165,8 +165,10 @@ struct MainWindowNarrowTests {
         let title = try #require(labels.first { $0.stringValue == entry.title })
         #expect(title.frame.width > 60)
         let compact = width < ReadingRowView.compactWidth
+        #expect(buttons.contains { $0.title == "Show Text" } == !compact)
         #expect(buttons.contains { $0.title == "Share…" } == !compact)
         #expect(buttons.contains { $0.title == "Show in Finder" } == !compact)
+        #expect(buttons.contains { $0.title == "Delete…" } == !compact)
         #expect(buttons.contains { $0.accessibilityLabel() == "Show in Finder — \(entry.title)" })
         #expect(Self.brokenConstraints(in: row).isEmpty)
     }

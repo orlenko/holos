@@ -3,10 +3,10 @@ import HolosContent
 import HolosSynthesis
 
 /// A reading in the list: its title and source, then either its progress with Stop, or its details with Play,
-/// Share…, Show in Finder, and Delete…, or its error with Try Again.
+/// Show Text, Share…, Show in Finder, and Delete…, or its error with Try Again.
 @MainActor
 final class ReadingRowView: NSTableCellView {
-    enum Action { case play, stop, retry, share, reveal, delete }
+    enum Action { case play, stop, retry, showText, share, reveal, delete }
 
     /// The player's state for the reading it has loaded.
     struct Playback {
@@ -23,19 +23,21 @@ final class ReadingRowView: NSTableCellView {
     private let progress = NSProgressIndicator()
     private let position = NSTextField(labelWithString: "")
     private let primary = NSButton(title: "", target: nil, action: nil)
+    private let textButton = NSButton(title: "Show Text", target: nil, action: nil)
     private let shareButton = NSButton(title: "Share…", target: nil, action: nil)
     private let revealButton = NSButton(title: "Show in Finder", target: nil, action: nil)
     private let deleteButton = NSButton(title: "Delete…", target: nil, action: nil)
     private var primaryAction: Action = .play
-    /// Share… and Show in Finder show only their symbols, in a row narrower than `compactWidth`.
+    /// Show Text, Share…, Show in Finder and Delete… show only their symbols, in a row narrower than `compactWidth`.
     private var compact = false
     /// The playback position has something to show (the reading is loaded in the player).
     private var showsPosition = false
-    /// Narrower than this (the window beside a call's), Share… and Show in Finder are symbols and the playback
-    /// position is left out, so the title keeps some room.
-    static let compactWidth: CGFloat = 520
-    private static let compactSymbols: [String: String] = ["Share…": "square.and.arrow.up",
-                                                           "Show in Finder": "folder"]
+    /// Narrower than this (the window beside a call's), Show Text, Share…, Show in Finder and Delete… are symbols and
+    /// the playback position is left out, so the title keeps some room.
+    static let compactWidth: CGFloat = 600
+    private static let compactSymbols: [String: String] = ["Show Text": "doc.plaintext",
+                                                           "Share…": "square.and.arrow.up",
+                                                           "Show in Finder": "folder", "Delete…": "trash"]
 
     var shareAnchor: NSView { shareButton }
 
@@ -57,13 +59,15 @@ final class ReadingRowView: NSTableCellView {
         progress.widthAnchor.constraint(equalToConstant: 140).isActive = true
         position.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         position.textColor = .secondaryLabelColor
-        for (button, selector) in [(primary, #selector(primaryPressed)), (shareButton, #selector(sharePressed)),
-                                   (revealButton, #selector(revealPressed)), (deleteButton, #selector(deletePressed))] {
+        for (button, selector) in [(primary, #selector(primaryPressed)), (textButton, #selector(textPressed)),
+                                   (shareButton, #selector(sharePressed)), (revealButton, #selector(revealPressed)),
+                                   (deleteButton, #selector(deletePressed))] {
             button.target = self
             button.action = selector
             button.bezelStyle = .push
             button.controlSize = .small
         }
+        textButton.toolTip = "Read or copy the text this reading reads"
         shareButton.toolTip = "Send the audio file with AirDrop, Messages, Mail… (⇧⌘S)"
         revealButton.toolTip = "Show the audio file in Finder"
         deleteButton.toolTip = "Delete this reading and its audio file (⌫)"
@@ -76,7 +80,7 @@ final class ReadingRowView: NSTableCellView {
         text.orientation = .vertical
         text.alignment = .leading
         text.spacing = 2
-        let buttons = NSStackView(views: [position, primary, shareButton, revealButton, deleteButton])
+        let buttons = NSStackView(views: [position, primary, textButton, shareButton, revealButton, deleteButton])
         buttons.spacing = 6
         buttons.alignment = .centerY
         buttons.setHuggingPriority(.required, for: .horizontal)
@@ -108,7 +112,7 @@ final class ReadingRowView: NSTableCellView {
         guard compact != self.compact else { return }
         self.compact = compact
         position.isHidden = !showsPosition || compact
-        for button in [shareButton, revealButton] {
+        for button in [textButton, shareButton, revealButton, deleteButton] {
             let name = fullTitle(button)
             button.title = compact ? "" : name
             button.image = compact
@@ -120,8 +124,10 @@ final class ReadingRowView: NSTableCellView {
 
     /// A button's title, also while it shows only its symbol.
     private func fullTitle(_ button: NSButton) -> String {
+        if button === textButton { return "Show Text" }
         if button === shareButton { return "Share…" }
         if button === revealButton { return "Show in Finder" }
+        if button === deleteButton { return "Delete…" }
         return button.title
     }
 
@@ -187,7 +193,7 @@ final class ReadingRowView: NSTableCellView {
                 showsPosition = true
                 position.stringValue = "\(ReadingLibrary.clockText(current)) / \(ReadingLibrary.clockText(duration))"
             }
-            buttons = [primary, shareButton, revealButton, deleteButton]
+            buttons = [primary, textButton, shareButton, revealButton, deleteButton]
         case .failed:
             status.stringValue = entry.message ?? "The reading failed."
             status.textColor = .systemOrange
@@ -200,7 +206,7 @@ final class ReadingRowView: NSTableCellView {
             setPrimary("Resume", .retry, help: "Continue where it stopped")
             buttons = [primary, deleteButton]
         }
-        for button in [primary, shareButton, revealButton, deleteButton] {
+        for button in [primary, textButton, shareButton, revealButton, deleteButton] {
             button.isHidden = !buttons.contains(button)
         }
         position.isHidden = !showsPosition || compact
@@ -217,6 +223,7 @@ final class ReadingRowView: NSTableCellView {
     }
 
     @objc private func primaryPressed() { send(primaryAction) }
+    @objc private func textPressed() { send(.showText) }
     @objc private func sharePressed() { send(.share) }
     @objc private func revealPressed() { send(.reveal) }
     @objc private func deletePressed() { send(.delete) }

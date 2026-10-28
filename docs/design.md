@@ -628,9 +628,9 @@ temporary: the launch removes the index's and the saved texts', and Delete remov
 reading's. Document paths, typed or dropped, keep their spelling too; they are looked up off
 the main actor (a drag passing over is judged from what the pasteboard offers alone).
 The loaded document is saved beside it (`Documents/<id>.json`) before anything is
-rendered, and kept until the reading is made, so Resume and Try Again read the same text
-without fetching the page again; a document that cannot be saved, or a saved one that
-cannot be read back, fails the reading rather than loading the source again.
+rendered, and kept until the reading is deleted, so Resume and Try Again read the same text
+without fetching the page again, and **Show Text** shows it; a document that cannot be saved,
+or a saved one that cannot be read back, fails the reading rather than loading the source again.
 
 `ReadingController` (HolosApp) runs the readings one at a time through
 `ReadingWorkQueue` (HolosContent): first come, first made; Stop takes a waiting one out at
@@ -670,8 +670,11 @@ Rows show the title and the source (the site without "www.", or the file's name)
 waiting (Stop); loading or "Rendering part N of M" with a bar (Stop); joining; made
 (length · chapters · size · voice, and the speed when not 1×) with **▶ Play** (an
 `AVAudioPlayer` in the app, Space or double-click, one reading at a time, position shown;
-stopped when the window closes), **Share…** (`NSSharingServicePicker`, ⇧⌘S), **Show in
-Finder**, **Delete…**; failed (the error, **Try Again**); stopped (where, **Resume**). A
+stopped when the window closes), **Show Text** (the saved text, `ReadableDocument.plainText`,
+in a sheet to read, select, or copy whole with **Copy Text**; a reading an earlier version made
+has none and says so), **Share…** (`NSSharingServicePicker`, ⇧⌘S), **Show in Finder**,
+**Delete…**; in a row narrower than 600 points Show Text, Share…, Show in Finder and Delete…
+show only their symbols; failed (the error, **Try Again**); stopped (where, **Resume**). A
 made reading whose file is no longer there, or was replaced by another file (its file
 identity, saved when it was made, differs), says so and offers only Delete; Play, Share…,
 and Show in Finder use only that same file (Play reads the file opened and checked, through /dev/fd; Share… hands over a clone or copy made from it). A file's identity is its
@@ -722,8 +725,7 @@ removes the joined files a cut-off render left beside the output, and keeps the 
 that folder cannot be reached and its render got to joining; all of it holds the cache's render lock, so a
 `voiceislocal read --resume` of the same cache keeps the reading until it ends), removes the render cache only when it is
 an `Output-<16 hex>` folder directly in the Readings cache folder, and removes the saved
-text; only then does the entry leave the index. A made reading is saved as made before its
-saved text is removed. A file that cannot be
+text; only then does the entry leave the index. A file that cannot be
 removed brings the row back with the reason, to delete again; a quit or crash in between is
 finished at the next launch.
 
@@ -743,9 +745,7 @@ saved (unreadable, a newer build's, or its last save failed) only Stop and Cance
 offered, and a Keep Rendering whose save fails cancels the quit (the readings go on) and says so. A
 Stop whose save fails cancels the quit (the saved list may still ask the next launch to
 continue the reading) and says why; with nothing rendering, a quit first saves again a list
-whose last save failed, and asks Quit Anyway or Cancel when it still cannot. The saved text
-of a made reading is removed after each save that works (and at launch), so one kept by a
-failed save or removal goes later. The output folder and each file's path are kept spelled
+whose last save failed, and asks Quit Anyway or Cancel when it still cannot. The output folder and each file's path are kept spelled
 as chosen (`ReadingOutput.fileURL(keepingSpelling:)`), so an NFC name on a share that keeps
 NFC and NFD apart is the folder the user picked. Playback stops when the playing reading's
 file is moved, deleted, or replaced. A deletion waiting

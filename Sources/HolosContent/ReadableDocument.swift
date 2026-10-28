@@ -38,6 +38,14 @@ public struct ReadableDocument: Sendable, Equatable, Codable {
 
     public var isEmpty: Bool { sections.isEmpty }
 
+    /// The text as Show Text gives it: the title (unless the first heading or paragraph says it), then each heading
+    /// and paragraph, a blank line between them.
+    public var plainText: String {
+        var blocks = sections.flatMap { [$0.heading].compactMap { $0 } + $0.paragraphs }
+        if let title, !(blocks.first.map { Self.sameTitle(title, $0) } ?? false) { blocks.insert(title, at: 0) }
+        return blocks.joined(separator: "\n\n")
+    }
+
     /// Separators between a page title and the site or series name around it:
     /// "Title | Site", "Site — Title", "Title - Blog". A colon is not one: it starts a subtitle.
     static let titleSeparators = [" | ", " || ", " — ", " – ", " - ", " · ", " • ", " :: ", " » ", " « "]
