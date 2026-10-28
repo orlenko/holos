@@ -869,8 +869,8 @@ reading resumed after an update that changed them may say a few words differentl
 the first 45 paragraphs of a technical onboarding guide (2026-10-28), the recognizer heard the new wording in the
 audio ("port 8,090", "0.5 to 6 megabits per second", "frames per second", "megapixel", "section 9", "then slew
 then"). The check failed about as often as before (11 paragraphs kept after two failed takes, against 12), now
-mostly on names the recognizer cannot spell (a camera brand, repository and service names), which no normalizer fixes; a
-pronunciation list is the planned next step.
+mostly on names the recognizer cannot spell (a camera brand, repository and service names), which no normalizer fixes;
+the user's pronunciation list (docs/design.md "Pronunciations") is applied before both stages.
 
 **Rendering a part.** `NaturalSpeechPlan` splits the part into paragraphs (blank lines, spaces or tabs on them allowed; line breaks inside one read
 as spaces) and feeds Pocket TTS one paragraph at a time; it splits a paragraph into sentences itself. A paragraph
@@ -924,6 +924,31 @@ here). Installing took 99 s for English and 621 s for French (download included)
 `HOLOS_NATURAL_STATS=1 voiceislocal say …` prints a render's timings. The opt-in test
 `HOLOS_POCKET_INTEGRATION=1 ./scripts/test.sh --filter PocketIntegrationTests` renders a paragraph with the real
 model (skipped by default, so the suite stays offline).
+
+### Pronunciations
+
+Names and jargon no rule can know how to say ("XIMEA" is "zay mee ah") are said by a spelling the user gives:
+Settings › Reading › Pronunciations, or `voiceislocal pronunciations set XIMEA "zay mee ah"` (`list`, `remove`). The
+list is `Application Support/Holos/pronunciations.json` (`PronunciationStore`, HolosStorage): versioned, written
+whole and atomically (0600) under an exclusive lock (`pronunciations.json.lock`) on the list as it is on disk then; a
+damaged file or one from a newer Voice is Local is refused, never overwritten, and fails the renders that read it.
+At most 1,000 entries; each side at most 100 characters, whitespace collapsed.
+
+- Matching (`PronunciationList.respelled`, HolosCore): whole words only (no letter or digit on either side, so
+  "XIMEAs" and "XIMEA2" are left), a space in an entry matching any run of whitespace. Smart case: an entry written
+  in lower case matches in any case ("ximea" also matches "XIMEA" and "ximea-server"); one with a capital matches only
+  as written ("US" never matches "us"). One pass over the text, so a spelling is never respelled; where entries
+  overlap, the one starting first wins, then the longer, then the one written exactly as the text has it.
+- Every reading voice uses it: Apple's voices (`NativeSpeechRenderer`) and the natural voices
+  (`NaturalSpeechRenderer`), in readings, `voiceislocal say` and `voiceislocal read`. The natural voices respell
+  before the spoken form (docs/design.md "Natural voices"), so an entry matches the text as written. A paragraph a
+  system voice reads in a natural voice's place gets the respelled text.
+- The list is read when each part starts (in the app: the natural voices' helper reads it itself for its part), so
+  an edit counts from the next part rendered, a reading being made included. It is not part of a reading's saved
+  settings or of the cache key of `voiceislocal read --output`.
+- The per-paragraph check cannot hold a made-up spelling against what it hears ("zay mee ah" is written "Xiamia"):
+  each word of a spelling used in the paragraph may be heard as any 0 to 3 words at no cost
+  (`SpeechChunkCheck.maximumWordsPerSpelledWord`), and a paragraph heard as nothing still fails.
 
 ### Dictation history
 

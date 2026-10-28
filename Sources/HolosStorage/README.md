@@ -25,6 +25,7 @@ Durable files: the session folder (`<id>.holos`), its locks, and the global stor
   commits the canonical name/source pair, preserving additional metadata fields.
 - Stores: `SessionSpeakerStore` (runs, head, edit journal, voice data, recognition), `SpeakerProfileStore`
   (people database and forget journal), `DictationHistoryStore` / `DictationHistoryService`, `WordListStore`,
+  `PronunciationStore` (`pronunciations.json`, with `PronunciationCommand` for `voiceislocal pronunciations`),
   `ScreenContextStore`, `SessionDeletion` (Delete Audio, Delete Meeting), `FreeSpaceProvider`.
 - `corrections.json` (`CorrectionsFile.swift`): `CorrectionList.defaultURL`, `load(from:)`, `save(to:)`, and
   `update(at:_:)` / `withFileLock(for:_:)` under its `flock` on `corrections.json.lock`; `FolderWatcher`, which tells

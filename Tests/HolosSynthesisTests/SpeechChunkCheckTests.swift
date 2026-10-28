@@ -72,3 +72,34 @@ import Testing
         #expect(SpeechChunkCheck.evaluate(expected: "—", heard: "", language: "en").passed)
     }
 }
+
+@Suite struct SpeechChunkCheckSpellingTests {
+    @Test func aSpellingsWordsMayBeHeardAsAnyFewWordsFree() {
+        let expected = "The zai mee ah camera streams to the gee zee link relay over the ring."
+        let spellings = ["zai mee ah", "gee zee link"]
+        for heard in ["the xiamia camera streams to the g z link relay over the ring",
+                      "the zay me a camera streams to the geezy link relay over the ring",
+                      "the camera streams to the relay over the ring"] {
+            let verdict = SpeechChunkCheck.evaluate(expected: expected, heard: heard, language: "en",
+                                                    spellings: spellings)
+            #expect(verdict.passed && verdict.wordErrorRate == 0, "\(heard)")
+        }
+        // Without the spellings, the same hearing fails; and the other words still count.
+        #expect(!SpeechChunkCheck.evaluate(expected: expected, heard: "the xiamia camera streams to the g z link "
+            + "relay over the ring", language: "en").passed)
+        #expect(!SpeechChunkCheck.evaluate(expected: expected, heard: "the xiamia lens is down and the geezy "
+            + "is lost entirely", language: "en", spellings: spellings).passed)
+    }
+
+    @Test func aSpellingStandsForAtMostThreeWordsEachAndNotForSilence() {
+        // "zai" may take up to three heard words; a fourth costs one edit.
+        #expect(SpeechChunkCheck.editDistance(["a", "zai", "b"], ["a", "x", "y", "z", "b"], free: { $0 == "zai" }) == 0)
+        #expect(SpeechChunkCheck.editDistance(["a", "zai", "b"], ["a", "w", "x", "y", "z", "b"],
+                                              free: { $0 == "zai" }) == 1)
+        #expect(SpeechChunkCheck.editDistance(["zai"], [], free: { _ in true }) == 0)
+        #expect(!SpeechChunkCheck.evaluate(expected: "Zai mee ah", heard: "", language: "en",
+                                           spellings: ["zai mee ah"]).passed)
+        #expect(SpeechChunkCheck.evaluate(expected: "Zai mee ah", heard: "xiamia", language: "en",
+                                          spellings: ["zai mee ah"]).passed)
+    }
+}

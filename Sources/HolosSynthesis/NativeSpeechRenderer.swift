@@ -72,16 +72,23 @@ public enum SpeechRate {
     }
 }
 
+/// Renders text with one of the Mac's voices. Words in the pronunciation list (`pronunciations`, read off the main
+/// actor when each render starts) are said by their spellings.
 @MainActor public final class NativeSpeechRenderer {
     /// How the finished file is moved into place (see `ExclusivePublisher`); tests make it fail.
     private let exclusiveRename: ExclusivePublisher.ExclusiveRename
+    private let pronunciations: PronunciationSource
 
-    public init() {
+    /// `pronunciations`: none by default (a natural voice's paragraph comes respelled already).
+    public init(pronunciations: @escaping PronunciationSource = { PronunciationList() }) {
         exclusiveRename = ExclusivePublisher.systemExclusiveRename
+        self.pronunciations = pronunciations
     }
 
-    init(exclusiveRename: @escaping ExclusivePublisher.ExclusiveRename) {
+    init(exclusiveRename: @escaping ExclusivePublisher.ExclusiveRename,
+         pronunciations: @escaping PronunciationSource = { PronunciationList() }) {
         self.exclusiveRename = exclusiveRename
+        self.pronunciations = pronunciations
     }
 
     /// Fails unless a voice with `identifier` is installed.
@@ -157,7 +164,10 @@ public enum SpeechRate {
             }
             voice = selected
         }
-        let utterance = AVSpeechUtterance(string: text)
+        let pronunciations = pronunciations
+        let spoken = try await Task.detached(priority: .userInitiated) { try pronunciations().respelled(text).text }.value
+        try Task.checkCancellation()
+        let utterance = AVSpeechUtterance(string: spoken)
         utterance.voice = voice
         if let rate { utterance.rate = rate }
         let synthesizer = AVSpeechSynthesizer()
