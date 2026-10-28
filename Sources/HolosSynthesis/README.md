@@ -22,6 +22,9 @@ natural voices' catalog and pack install (their backend is in `HolosPocket`).
   (`SpeechChunkCheck`, numbers written out in words on both sides with HolosCore's `SpelledNumbers`), rendered
   again when it fails, then read by a system voice (`ParagraphFallback`) only when that reading is heard clearly
   better (`fallbackMargin`); one render at a time per renderer.
+- `SpokenForm`: the text a natural voice says and its check hears (docs/design.md "Spoken form"): our rules for paths,
+  web addresses, units, ranges, arrows, ports, versions and symbols, then a `SpokenFormNormalizer` (NeMo's, given by
+  the tool). English and French only; pure, no I/O.
   `NaturalRenderSettings` are what a caller can keep across runs. `NaturalVoiceTemporaries` sweeps the folders a killed render
   leaves.
 - `NaturalHelperRun`, `ProcessExitWatch`, `NaturalOutputLock`, `NaturalHelperScratch`

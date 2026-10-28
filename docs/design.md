@@ -852,6 +852,26 @@ installed from Terminal meanwhile is noticed when the app becomes active (`Natur
 another process is installing one (its install lock held) the app looks again every 3 s until it ends
 (`NaturalVoicesInstallPoll`).
 
+**Spoken form.** Before a paragraph is spoken and checked, its text is rewritten as it is said (`SpokenForm`,
+HolosSynthesis), in two stages. The first is our own rules, for what a general normalizer reads badly: a file path is
+said as its last part without the extension (`flight-tools/notes/BENCH_RESULTS_2026-10-25.txt` → "BENCH RESULTS
+2026-10-25"), a web address as its host, `snake_case` as words, units after a number that the second stage does not
+know (`MP`, `Mbit/s`, `GB`, `fps`, `ms`, …), number ranges with an en dash ("0.5 to 6"), arrows ("to", "then" in a
+block with two or more, "to and from" for `⇄`), ports (`:8090` → "port 8090"), versions ("1 point 2 point 3"), a
+slash between words ("dev slash ops"; `1/2` is left as a fraction), `§`, `~`, `#`, `&`, `±`, `×`, and a few
+abbreviations and codec and resolution names (`e.g.`, `H.265`, `1080p`). The second is NVIDIA NeMo's rule-based
+normalizer (compiled grammars, no model) that FluidAudio already bundles (`NemoSpokenForm`, HolosPocket, in the tool):
+numbers, dates, times, money and common units in words. Both stages handle English and French; other text is spoken
+as written. The check compares what it hears with the spoken form, and a failed paragraph's system voice reads the
+spoken form too. A reading saves whether it uses spoken forms (`NaturalRenderSettings.spokenForm`, `say
+--spoken-form`): readings started before have none and are resumed without them. The rules are not versioned, so a
+reading resumed after an update that changed them may say a few words differently in its later parts. Measured on
+the first 45 paragraphs of a technical onboarding guide (2026-10-28), the recognizer heard the new wording in the
+audio ("port 8,090", "0.5 to 6 megabits per second", "frames per second", "megapixel", "section 9", "then slew
+then"). The check failed about as often as before (11 paragraphs kept after two failed takes, against 12), now
+mostly on names the recognizer cannot spell (a camera brand, repository and service names), which no normalizer fixes; a
+pronunciation list is the planned next step.
+
 **Rendering a part.** `NaturalSpeechPlan` splits the part into paragraphs (blank lines, spaces or tabs on them allowed; line breaks inside one read
 as spaces) and feeds Pocket TTS one paragraph at a time; it splits a paragraph into sentences itself. A paragraph
 over 1,000 characters (a text without blank lines is one paragraph) is fed in groups of whole sentences of at most

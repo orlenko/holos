@@ -22,31 +22,6 @@ public protocol SpeechChunkChecker: Sendable {
         -> (samples: [Float], voice: String)
 }
 
-/// What a natural rendering depends on besides its voice, text, and speed: the system voice a failed paragraph is
-/// read with, and whether paragraphs are checked. A reading keeps them in its manifest when it starts
-/// (`ReadingManifest.rendererSettings`) and gives them back for every part (`render(…settings:)`; the app's parts pass
-/// them as `say --fallback-voice`, `--check`), so a resumed reading does not mix fallback voices or check policies.
-public struct NaturalRenderSettings: Codable, Sendable, Equatable {
-    public var fallbackVoice: String?
-    public var checked: Bool
-
-    public init(fallbackVoice: String?, checked: Bool) {
-        self.fallbackVoice = fallbackVoice
-        self.checked = checked
-    }
-
-    /// As strings, to keep with a caller's own data.
-    public var values: [String: String] {
-        var values = ["check": checked ? "on" : "off"]
-        if let fallbackVoice { values["fallbackVoice"] = fallbackVoice }
-        return values
-    }
-
-    public init(values: [String: String]) {
-        self.init(fallbackVoice: values["fallbackVoice"], checked: values["check"] != "off")
-    }
-}
-
 /// How a part is fed to the natural voice: one paragraph at a time (Pocket TTS splits a paragraph into sentences
 /// itself), with explicit pauses between paragraphs and after a heading. The pipeline's own gaps go between parts. A
 /// paragraph longer than `maximumBlockLength` (a text without blank lines is one paragraph) is fed in groups of whole
@@ -210,6 +185,8 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     /// checker is there either way, so settings given with the check on are honoured whatever the default is.
     private let checksByDefault: Bool
     private let fallback: any ParagraphFallback
+    /// `SpokenForm`'s second stage (nil: its own rules only).
+    private let normalizer: (any SpokenFormNormalizer)?
     private let installedPacks: @Sendable () -> Set<NaturalVoicePack>
     private let exclusiveRename: ExclusivePublisher.ExclusiveRename
     /// Called on the main actor for each check, re-render, and fallback.
@@ -224,7 +201,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     private var confirmedPacks: Set<NaturalVoicePack> = []
 
     public init(backend: any NaturalSpeechBackend, checker: (any SpeechChunkChecker)?, checksByDefault: Bool = true,
-                fallback: any ParagraphFallback, installedPacks: @escaping @Sendable () -> Set<NaturalVoicePack> = {
+                fallback: any ParagraphFallback, normalizer: (any SpokenFormNormalizer)? = nil, installedPacks: @escaping @Sendable () -> Set<NaturalVoicePack> = {
                     NaturalVoiceModels.installedPacks()
                 },
                 exclusiveRename: @escaping ExclusivePublisher.ExclusiveRename = ExclusivePublisher.systemExclusiveRename) {
@@ -232,6 +209,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         self.checker = checker
         self.checksByDefault = checksByDefault
         self.fallback = fallback
+        self.normalizer = normalizer
         self.installedPacks = installedPacks
         self.exclusiveRename = exclusiveRename
     }
@@ -267,7 +245,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     public func settings(for voiceIdentifier: String) -> NaturalRenderSettings? {
         guard let voice = NaturalVoiceCatalog.voice(id: voiceIdentifier) else { return nil }
         return NaturalRenderSettings(fallbackVoice: fallback.defaultVoice(language: voice.pack.languageCode),
-                                     checked: checker != nil && checksByDefault)
+                                     checked: checker != nil && checksByDefault, spokenForm: true)
     }
 
     public func render(text: String, voiceIdentifier: String?, rate: Float?, to output: URL)
@@ -303,10 +281,15 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         defer { _ = unlink(temporary.path) }
         // The file is written, and each paragraph time-stretched, off the main actor (`NaturalSpeechSink`).
         let sink = try await NaturalSpeechSink.open(temporary, refusing: output, sampleRate: Self.sampleRate)
+        let language = voice.pack.languageCode, normalizer = normalizer
         for block in blocks {
             try Task.checkCancellation()
+            // What the voice says and the check compares with; rewritten off the main actor.
+            let text = settings?.spokenForm == true ? await Task.detached(priority: .userInitiated) {
+                SpokenForm.text(block.text, language: language, normalizer: normalizer)
+            }.value : block.text
             // Events and the log name the part's paragraph (a long one's groups share its number).
-            let speech = try await paragraph(block.text, index: block.paragraph, voice: voice,
+            let speech = try await paragraph(text, index: block.paragraph, voice: voice,
                                              fallbackVoice: settings?.fallbackVoice, checking: &checking,
                                              stats: &stats)
             try await sink.add(speech, rate: speed, pauseAfter: block.pauseAfter)

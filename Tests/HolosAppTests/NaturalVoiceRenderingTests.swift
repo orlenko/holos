@@ -57,7 +57,8 @@ import Testing
         _ = try await renderer.render(text: "Hello.", voiceIdentifier: "pocket:en:alba", rate: nil,
                                       savedSettings: ["check": "on"], to: try folder().appendingPathComponent("n.caf"))
         let arguments = launches.arguments.withLock { $0 }.first ?? []
-        #expect(Array(arguments.suffix(4)) == ["--check", "on", "--fallback-voice", ""])
+        // Nor did it save a spoken form: it is resumed without one.
+        #expect(Array(arguments.suffix(6)) == ["--check", "on", "--fallback-voice", "", "--spoken-form", "off"])
     }
 
     @Test func quittingStopsTheToolAndRemovesItsFolder() async throws {
@@ -203,16 +204,17 @@ import Testing
             DispatchQueue.main.async { onExit(0) }
             return 4242
         }, installedPacks: { [.english] }, gate: NaturalVoiceHelperGate(),
-           currentSettings: { _ in NaturalRenderSettings(fallbackVoice: "today", checked: true) })
+           currentSettings: { _ in NaturalRenderSettings(fallbackVoice: "today", checked: true, spokenForm: true) })
         // What a reading saves when it starts: the tool's settings now.
-        #expect(renderer.renderSettings(for: "pocket:en:alba") == ["fallbackVoice": "today", "check": "on"])
+        #expect(renderer.renderSettings(for: "pocket:en:alba")
+            == ["fallbackVoice": "today", "check": "on", "spokenForm": "on"])
         #expect(renderer.renderSettings(for: "ava") == nil)
         // Started with Ava as the fallback and the check off: each part is rendered so, whatever today's settings.
         _ = try await renderer.render(text: "Hello.", voiceIdentifier: "pocket:en:alba", rate: nil,
-                                      savedSettings: ["fallbackVoice": "ava", "check": "off"],
+                                      savedSettings: ["fallbackVoice": "ava", "check": "off", "spokenForm": "on"],
                                       to: try folder().appendingPathComponent("p.caf"))
         let arguments = launches.arguments.withLock { $0 }.first ?? []
-        #expect(Array(arguments.suffix(4)) == ["--check", "off", "--fallback-voice", "ava"])
+        #expect(Array(arguments.suffix(6)) == ["--check", "off", "--fallback-voice", "ava", "--spoken-form", "on"])
     }
 
     @Test func aFailedRenderSaysWhatTheToolSaid() async throws {

@@ -187,6 +187,31 @@ private final class FakeChecker: SpeechChunkChecker, Sendable {
         #expect(abs(result.duration - (0.2 + 0.2 + 0.4 + 1.5)) < 0.01)
     }
 
+    @Test func theSpokenFormIsWhatTheVoiceSaysAndTheCheckHearsForReadingsThatSavedIt() async throws {
+        struct Marked: SpokenFormNormalizer {
+            func normalize(_ text: String, language: String) -> String { text + " [\(language)]" }
+        }
+        let backend = FakeBackend()
+        // Heard exactly as rewritten: the check compares with the spoken form, so the take passes.
+        let checker = FakeChecker { _ in "The ring is 220 gigabytes at 30 frames per second en" }
+        let renderer = NaturalSpeechRenderer(backend: backend, checker: checker, fallback: FakeFallback(),
+                                             normalizer: Marked(), installedPacks: { [.english] })
+        let written = "The ring is 220 GB at 30 fps."
+        var events: [NaturalSpeechEvent] = []
+        renderer.onEvent = { events.append($0) }
+        _ = try await renderer.render(text: written, voiceIdentifier: alba, rate: nil,
+                                      to: folder.appendingPathComponent("spoken.caf"))
+        #expect(await backend.calls.map(\.text) == ["The ring is 220 gigabytes at 30 frames per second. [en]"])
+        #expect(events.allSatisfy { if case .checked(_, _, let verdict, _) = $0 { verdict.passed } else { true } })
+        // A reading saved before spoken forms existed (no "spokenForm" value) is resumed with the text as written.
+        let saved = NaturalRenderSettings(values: ["check": "off"])
+        #expect(!saved.spokenForm && saved.values == ["check": "off"])
+        _ = try await renderer.render(text: written, voiceIdentifier: alba, rate: nil, settings: saved,
+                                      to: folder.appendingPathComponent("written.caf"))
+        #expect(await backend.calls.last?.text == written)
+        #expect(NaturalRenderSettings(values: ["check": "on", "spokenForm": "on"]).spokenForm)
+    }
+
     @Test func aSystemVoiceHeardNoClearlyBetterLeavesTheNaturalVoicesBetterTake() async throws {
         let fallback = FakeFallback()
         // The second paragraph's takes are heard with 100 % and 50 % of six words wrong; the system voice with 50 %,
@@ -564,7 +589,7 @@ private actor CountingBackend: NaturalSpeechBackend {
         let renderer = NaturalSpeechRenderer(backend: CountingBackend(), checker: checker, fallback: fallback,
                                              installedPacks: { [.english] })
         #expect(renderer.settings(for: "pocket:en:alba")
-            == NaturalRenderSettings(fallbackVoice: "com.apple.voice.premium.en-US.Ava", checked: true))
+            == NaturalRenderSettings(fallbackVoice: "com.apple.voice.premium.en-US.Ava", checked: true, spokenForm: true))
         // Saved when the reading started: another system voice than today's best.
         let saved = NaturalRenderSettings(fallbackVoice: "com.apple.voice.enhanced.en-GB.Daniel", checked: true)
         #expect(NaturalRenderSettings(values: saved.values) == saved)

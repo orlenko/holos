@@ -47,7 +47,8 @@ import Synchronization
          gate: NaturalVoiceHelperGate = .shared,
          currentSettings: @escaping (NaturalVoice) -> NaturalRenderSettings = { voice in
              NaturalRenderSettings(fallbackVoice: NativeSpeechRenderer.bestVoice(language: voice.pack.languageCode)?.id,
-                                   checked: ProcessInfo.processInfo.environment["HOLOS_NATURAL_CHECK"] != "0")
+                                   checked: ProcessInfo.processInfo.environment["HOLOS_NATURAL_CHECK"] != "0",
+                                   spokenForm: true)
          }) {
         self.launch = launch
         self.installedPacks = installedPacks
@@ -91,6 +92,7 @@ import Synchronization
             arguments += ["--check", settings.checked ? "on" : "off"]
             // An empty one: the reading saved no fallback voice (not "use today's").
             arguments += ["--fallback-voice", settings.fallbackVoice ?? ""]
+            arguments += ["--spoken-form", settings.spokenForm ? "on" : "off"]
         }
         if let rate { arguments += ["--rate", "\(rate)"] }
         return arguments
