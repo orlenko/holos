@@ -78,6 +78,26 @@ import Testing
         #expect(loaded.notice?.contains("newer") == true)
     }
 
+    @Test func aVersion1IndexIsReadAndSavedAsVersion2() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ReadingLibraryStore(folder: root)
+        let known = entry(.done)
+        let object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(known)) as? [String: Any])
+        let index: [String: Any] = ["kind": "voiceislocal.reading-library", "schemaVersion": 1, "entries": [object]]
+        try JSONSerialization.data(withJSONObject: index).write(to: store.indexURL)
+        let loaded = store.load()
+        #expect(loaded.entries == [known])
+        #expect(loaded.writable)
+        var selection = entry(.queued)
+        selection.source = .selection(app: "Notes")
+        try store.save([selection, known])
+        let saved = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: store.indexURL))
+            as? [String: Any])
+        #expect(saved["schemaVersion"] as? Int == 2)
+        #expect(ReadingLibraryStore(folder: root).load().entries == [selection, known])
+    }
+
     @Test func documentsAreKeptUntilRemoved() throws {
         let root = try folder()
         defer { try? FileManager.default.removeItem(at: root) }

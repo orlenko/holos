@@ -618,6 +618,9 @@ final class ReadingController {
                 return try DocumentLoader.load(url)
             }
             document = try await withTaskCancellationHandler { try await load.value } onCancel: { load.cancel() }
+        case .selection:
+            // Its saved text is the only copy: there is nothing to load again.
+            throw HolosError.io("The text saved for this reading is gone, so it cannot be read again.")
         }
         // Stopped while it loaded: nothing is saved for it.
         try Task.checkCancellation()

@@ -1,9 +1,12 @@
 import Foundation
 
-/// What a reading reads: an `https` web page, or a local document `DocumentLoader` reads.
+/// What a reading reads: an `https` web page, a local document `DocumentLoader` reads, or text selected in another app,
+/// whose only copy is the reading's saved text (docs/design.md "Reading section").
 public enum ReadingSource: Codable, Sendable, Equatable {
     case web(URL)
     case file(URL)
+    /// Text selected in `app` (its name; nil when unknown). The index's schema version 2 adds this case.
+    case selection(app: String?)
 
     /// The list's second line: the site ("nytimes.com", without "www.") or the file's name.
     public var label: String {
@@ -13,6 +16,8 @@ public enum ReadingSource: Codable, Sendable, Equatable {
             return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
         case .file(let url):
             return url.lastPathComponent
+        case .selection(let app):
+            return app.map { "Selected in \($0)" } ?? "Selected text"
         }
     }
 
@@ -21,14 +26,17 @@ public enum ReadingSource: Codable, Sendable, Equatable {
         switch self {
         case .web: label
         case .file(let url): url.deletingPathExtension().lastPathComponent
+        case .selection: "Selected text"
         }
     }
 
-    /// As the New Reading field shows it: the address, or the file's path with "~" for the home folder.
+    /// As the New Reading field shows it: the address, or the file's path with "~" for the home folder; empty for a
+    /// selection, which the field cannot take.
     public var fieldText: String {
         switch self {
         case .web(let url): url.absoluteString
         case .file(let url): (url.path as NSString).abbreviatingWithTildeInPath
+        case .selection: ""
         }
     }
 }

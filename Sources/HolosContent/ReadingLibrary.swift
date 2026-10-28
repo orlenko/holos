@@ -83,10 +83,11 @@ public struct ReadingEntry: Codable, Sendable, Equatable, Identifiable {
     public var outputURL: URL? { output.map { ReadingOutput.fileURL(keepingSpelling: $0) } }
 }
 
-/// What the index file holds.
+/// What the index file holds. Version 2 adds `ReadingSource.selection`; a version 1 index decodes as it is (it has
+/// none), and a build that knows only version 1 shows a version 2 list without changing it.
 struct ReadingIndex: Codable {
     static let kind = "voiceislocal.reading-library"
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     var kind: String
     var schemaVersion: Int
