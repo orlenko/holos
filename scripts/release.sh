@@ -40,6 +40,15 @@ notary_profile=${NOTARY_PROFILE:-voiceislocal-notary}
 # Before anything is committed or pushed: a Mac without the key stops here.
 security find-identity -v -p codesigning | grep -Fq "\"$developer_id\"" \
     || fail "No valid signing identity \"$developer_id\" in the keychain; release from the Mac that holds the key."
+# The tag must carry the public key of this Mac's Sparkle key, or no build of it could ever update an installed app.
+public_ed_key=$(plutil -extract SUPublicEDKey raw -o - "$app_plist" 2>/dev/null) \
+    || fail "$app_plist has no SUPublicEDKey; create the Sparkle key as docs/release.md \"Updates\" says."
+generate_keys=.build/artifacts/sparkle/Sparkle/bin/generate_keys
+[ -x "$generate_keys" ] || fail "$generate_keys is missing; run swift build once to fetch the Sparkle package."
+keychain_ed_key=$("$generate_keys" -p) \
+    || fail "No Sparkle signing key in this Mac's keychain; create it (or import its backup) as docs/release.md \"Updates\" says."
+[ "$keychain_ed_key" = "$public_ed_key" ] \
+    || fail "The Sparkle key in the keychain ($keychain_ed_key) is not SUPublicEDKey in $app_plist ($public_ed_key)."
 [ -z "$(git status --porcelain --untracked-files=all)" ] \
     || fail "The working tree has changes or untracked files; commit, stash, or remove them first."
 # The build number counts the release tags HEAD contains, which a shallow clone may not reach.

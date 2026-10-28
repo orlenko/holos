@@ -18,6 +18,7 @@
     <key>NSSpeechRecognitionUsageDescription</key><string>Voice is Local transcribes your dictation locally on your Mac.</string>
     <key>SUEnableSystemProfiling</key><false/>
     <key>SUFeedURL</key><string>https://voiceislocal.com/downloads/appcast.xml</string>
+    <key>SUPublicEDKey</key><string>/QgeweBlIk75+7QAuSL+9f0f+YtCYitofjh2Vi0Q1jY=</string>
     <key>SURequireSignedFeed</key><true/>
     <key>SUVerifyUpdateBeforeExtraction</key><true/>
 </dict>
