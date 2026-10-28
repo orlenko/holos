@@ -121,9 +121,9 @@ On the Mac that holds the Developer ID key, in its own session (not over SSH, so
 ./scripts/release.sh 1.0.1      # a version already tagged: build that tag again
 ```
 
-`scripts/release.sh` stops before changing anything when the signing identity is not in the keychain, the working
-tree is not clean, `main` is not checked out or has commits `origin/main` lacks, or `main` has nothing new since the
-last release tag. Otherwise it fast-forwards `main`, sets the version in the three places below, and checks that
+`scripts/release.sh` stops before changing anything when the signing identity is not in the keychain, the Sparkle
+key in the keychain is missing or is not `SUPublicEDKey` (see "Updates"), the working tree is not clean, `main` is
+not checked out or has commits `origin/main` lacks, or `main` has nothing new since the last release tag. Otherwise it fast-forwards `main`, sets the version in the three places below, and checks that
 the commit changes only those three lines. It commits "Set the version to X" directly to `main` without a pull
 request, tags it `vX`, pushes both at once (`git push --atomic`), and runs `scripts/release-app.sh` with the
 identity, the `voiceislocal-notary` profile, and `BUILD` set to the number of release tags (1.0.0 was build 1,
@@ -292,8 +292,8 @@ file somewhere safe and offline (a password manager), then delete it from the De
 can ever be signed for the apps already installed, so losing it means users must download the next version by
 hand. `generate_keys -f <backup>` imports it on another Mac.
 
-`scripts/release-app.sh` stops a signed release when `SUPublicEDKey` is missing or differs from the keychain's key
-(`generate_keys -p`).
+`scripts/release.sh` and `scripts/release-app.sh` stop a signed release when `SUPublicEDKey` is missing or differs
+from the keychain's key (`generate_keys -p`); `release.sh` checks before it commits or pushes anything.
 
 ### Each release
 
