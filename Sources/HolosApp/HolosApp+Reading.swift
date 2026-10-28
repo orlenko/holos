@@ -120,8 +120,9 @@ extension HolosAppDelegate {
         return naturalVoices.downloads
     }
 
-    /// The Settings action of a pack's row.
-    func toggleNaturalVoiceDownload(for action: SetupAction) {
+    /// The Settings action of a Reading row: a pack's download, or the pronunciations editor.
+    func performReadingSetup(_ action: SetupAction) {
+        if action == .pronunciations { return showPronunciations() }
         toggleNaturalVoiceDownload(action == .naturalVoicesFrench ? .french : .english)
     }
 

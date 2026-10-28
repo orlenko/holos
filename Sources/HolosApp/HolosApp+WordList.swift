@@ -186,3 +186,46 @@ extension HolosAppDelegate {
         return parts.isEmpty ? "Nothing to add." : parts.joined(separator: " ")
     }
 }
+
+/// Settings › Reading › Pronunciations (docs/design.md "Pronunciations"): `pronunciations.json`, edited in a sheet over
+/// the main window and with `voiceislocal pronunciations`. The renderers read it when each part starts, so the app
+/// keeps no copy; every change is made on the list as it is on disk (`PronunciationStore.update`), off the main actor.
+extension HolosAppDelegate {
+    func showPronunciations() {
+        guard let content = mainWindow?.window.contentViewController, content.presentedViewControllers?.isEmpty != false
+        else { return }
+        let store = PronunciationStore()
+        content.presentAsSheet(PronunciationsSheet(store: PronunciationsSheet.Store(
+            load: {
+                await Task.detached(priority: .userInitiated) {
+                    do {
+                        return (try store.load(), nil)
+                    } catch {
+                        return (PronunciationList(), "Could not read \(PronunciationStore.fileName): "
+                            + "\(error.localizedDescription) The voices read without it until it is fixed or removed.")
+                    }
+                }.value
+            },
+            set: { written, sayAs in
+                await Task.detached(priority: .userInitiated) {
+                    Self.pronunciationReport { try PronunciationCommand.set(written, sayAs: sayAs, store: store) }
+                }.value
+            },
+            remove: { written in
+                await Task.detached(priority: .userInitiated) {
+                    Self.pronunciationReport { try PronunciationCommand.remove(written, store: store) }
+                }.value
+            })))
+    }
+
+    /// What a change did and what it could not do, without the count the sheet shows itself (the report's last
+    /// output line); or why the list could not be changed.
+    nonisolated static func pronunciationReport(_ change: () throws -> PronunciationCommand.Report) -> String {
+        do {
+            let report = try change()
+            return (report.output.dropLast() + report.errors).joined(separator: " ")
+        } catch {
+            return "The pronunciation list could not be changed: \(error.localizedDescription)"
+        }
+    }
+}

@@ -105,6 +105,8 @@ enum SetupAction: Int, CaseIterable {
     case deepTranscriptionModel, toggleDeepTranscription
     /// Settings › Reading › Natural voices: download (or cancel) a language pack.
     case naturalVoicesEnglish, naturalVoicesFrench
+    /// Settings › Reading › Pronunciations: open the editor.
+    case pronunciations
     /// Settings › Meetings › Title and summarize meetings with Apple Intelligence.
     case toggleMeetingSummaries
     /// A permission row's System Settings… link (or its Open Settings once granted): only opens the page, while

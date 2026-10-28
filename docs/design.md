@@ -928,7 +928,11 @@ model (skipped by default, so the suite stays offline).
 ### Pronunciations
 
 Names and jargon no rule can know how to say ("XIMEA" is "zay mee ah") are said by a spelling the user gives:
-Settings › Reading › Pronunciations, or `voiceislocal pronunciations set XIMEA "zay mee ah"` (`list`, `remove`). The
+Settings › Reading › Pronunciations, or `voiceislocal pronunciations set XIMEA "zay mee ah"` (`list`, `remove`).
+Edit… opens a sheet over the main window (`PronunciationsSheet`): the list, a field for the word as written and one
+for how to say it (choosing a row fills them), Save (adds the word or changes its spelling), Remove (or ⌫), and
+▶ Listen, which says the spelling with Settings › Reading's voice and speed (a natural voice's sample is made by the
+bundled tool, a few seconds). The
 list is `Application Support/Holos/pronunciations.json` (`PronunciationStore`, HolosStorage): versioned, written
 whole and atomically (0600) under an exclusive lock (`pronunciations.json.lock`) on the list as it is on disk then; a
 damaged file or one from a newer Voice is Local is refused, never overwritten, and fails the renders that read it.
