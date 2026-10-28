@@ -31,7 +31,8 @@ enum NaturalVoicesCLI {
         let renderer = NaturalSpeechRenderer(
             backend: PocketSpeechBackend(), checker: AppleSpeechChunkChecker(temporaryRoot: root),
             checksByDefault: ProcessInfo.processInfo.environment["HOLOS_NATURAL_CHECK"] != "0",
-            fallback: NativeParagraphFallback(temporaryRoot: root), installedPacks: { installed })
+            fallback: NativeParagraphFallback(temporaryRoot: root), normalizer: NemoSpokenForm(),
+            installedPacks: { installed })
         renderer.onEvent = { event in
             guard log else { return }
             switch event {

@@ -12,7 +12,8 @@ its updates (section 7).
 - Source: https://github.com/FluidInference/FluidAudio, tag v0.17.1, commit
   `5c51c5c93afff0d89594a2a93c3103e790ba648c`.
 - License: Apache License 2.0; the full text of the checkout's `LICENSE` follows.
-- Voice is Local uses its offline speaker diarization (`OfflineDiarizerManager`). The files of its
+- Voice is Local uses its offline speaker diarization (`OfflineDiarizerManager`) and, for natural voices, its NeMo
+  text normalizer (`NemoTextNormalizer`, from the NemoTextProcessing binary below). The files of its
   `ThirdPartyLicenses/` folder follow the license verbatim: the VBx port (Apache 2.0), fastcluster
   (BSD-2-clause style), the prebuilt NemoTextProcessing binary v0.3.1 that FluidAudio links by default
   (Apache 2.0), and the text-frontend notices that ship in the same module.

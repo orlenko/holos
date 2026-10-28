@@ -68,6 +68,9 @@ struct Say: AsyncParsableCommand {
     @Option(help: ArgumentHelp("A natural voice: on or off, whether paragraphs are heard back.",
                                visibility: .hidden))
     var check: String?
+    @Option(help: ArgumentHelp("A natural voice: on or off, whether the text is first rewritten as it is said "
+                               + "(paths, units, ranges, numbers).", visibility: .hidden))
+    var spokenForm: String?
     @Option(help: ArgumentHelp("The process that started this: when it ends, the render stops and cleans up; "
                                + "another one still writing the same output is waited for.", visibility: .hidden))
     var parentPid: Int32?
@@ -76,6 +79,9 @@ struct Say: AsyncParsableCommand {
     func validate() throws {
         if textFile != nil && !text.isEmpty { throw ValidationError("Give the text or --text-file, not both.") }
         if let check, !["on", "off"].contains(check) { throw ValidationError("--check must be on or off.") }
+        if let spokenForm, !["on", "off"].contains(spokenForm) {
+            throw ValidationError("--spoken-form must be on or off.")
+        }
     }
 
     @MainActor mutating func run() async throws {
@@ -106,10 +112,12 @@ struct Say: AsyncParsableCommand {
             }
             let renderer = NaturalVoicesCLI.renderer(scratch: scratch, installed: await NaturalVoicesCLI.installedPacks())
             let rate = self.rate
-            // Settings a caller kept from an earlier run (--fallback-voice, --check) take the place of today's.
+            // Settings a caller kept from an earlier run (--fallback-voice, --check, --spoken-form) take the place of
+            // today's.
             var settings = renderer.settings(for: voice)
             if let fallbackVoice { settings?.fallbackVoice = fallbackVoice.isEmpty ? nil : fallbackVoice }
             if let check { settings?.checked = check == "on" }
+            if let spokenForm { settings?.spokenForm = spokenForm == "on" }
             let pinned = settings
             render = {
                 let result = try await renderer.render(text: input, voiceIdentifier: voice, rate: rate,
