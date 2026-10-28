@@ -117,9 +117,9 @@ struct Say: AsyncParsableCommand {
                 if ProcessInfo.processInfo.environment["HOLOS_NATURAL_STATS"] == "1" {
                     let stats = renderer.lastStats
                     Console.error(String(format: "Natural voice: %d paragraphs, %.2f s of audio, %.2f s speaking, "
-                        + "%.2f s checking, %d re-rendered, %d read by a system voice", stats.paragraphs,
-                        stats.audioSeconds, stats.synthesisSeconds, stats.checkSeconds, stats.rerenders,
-                        stats.fallbacks))
+                        + "%.2f s checking, %d re-rendered, %d read by a system voice, %d kept after failing",
+                        stats.paragraphs, stats.audioSeconds, stats.synthesisSeconds, stats.checkSeconds,
+                        stats.rerenders, stats.fallbacks, stats.keptNatural))
                 }
                 return result
             }
