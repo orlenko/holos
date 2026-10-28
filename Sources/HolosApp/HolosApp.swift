@@ -154,7 +154,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// The dictation history (HolosApp+History.swift).
     let history = DictationHistoryService()
     /// The Reading list and the readings being made (HolosApp+Reading.swift).
-    let readings = ReadingController()
+    let readings = ReadingController(pronunciations: { try PronunciationStore().load() })
     /// The dictation in progress, for its History record; nil when there is none or it was refused.
     private var historyDraft: HistoryDraft?
     /// The language frozen for the active dictation (invariant 5).

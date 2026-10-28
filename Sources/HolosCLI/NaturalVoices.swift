@@ -3,6 +3,7 @@ import HolosContent
 import HolosCore
 import HolosPocket
 import HolosSpeech
+import HolosStorage
 import HolosSynthesis
 import Synchronization
 
@@ -16,6 +17,10 @@ enum NaturalVoicesCLI {
         if filter != nil { atexit { NaturalVoicesCLI.logFilter?.finish() } }
         return filter
     }()
+
+    /// The pronunciation list every voice of `say` and `read` reads with (`pronunciations.json`, read when a render
+    /// starts).
+    static let pronunciations: PronunciationSource = { try PronunciationStore().load() }
 
     /// The renderer `say` and `read` use for natural voices. The check runs unless `HOLOS_NATURAL_CHECK=0` or `--check off` (the
     /// checker is always made, so `--check on` is honoured either way). What it finds (a re-render, a paragraph read by
@@ -32,7 +37,7 @@ enum NaturalVoicesCLI {
             backend: PocketSpeechBackend(), checker: AppleSpeechChunkChecker(temporaryRoot: root),
             checksByDefault: ProcessInfo.processInfo.environment["HOLOS_NATURAL_CHECK"] != "0",
             fallback: NativeParagraphFallback(temporaryRoot: root), normalizer: NemoSpokenForm(),
-            installedPacks: { installed })
+            pronunciations: pronunciations, installedPacks: { installed })
         renderer.onEvent = { event in
             guard log else { return }
             switch event {

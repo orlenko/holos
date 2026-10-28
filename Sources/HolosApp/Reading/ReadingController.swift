@@ -93,6 +93,10 @@ final class ReadingController {
     /// their files are gone finishes the deletion at the next launch).
     private var all: [ReadingEntry] = []
     private let store = ReadingLibraryStore.standard()
+    /// The pronunciation list Apple's voices say words by, read when each part starts (`HolosApp` gives the store; the
+    /// natural voices' helper reads it itself).
+    private let pronunciations: PronunciationSource
+    init(pronunciations: @escaping PronunciationSource = { PronunciationList() }) { self.pronunciations = pronunciations }
     /// Whether the list is saved; false until it is read (see `start`).
     private var writable = false
     /// The list has been read (see `start`).
@@ -689,6 +693,7 @@ final class ReadingController {
 
     /// Renders Apple voices in this process and natural voices through the bundled `voiceislocal` tool.
     private lazy var renderer = RoutingSpeechRenderer(
+        system: NativeSpeechRenderer(pronunciations: pronunciations),
         natural: HelperNaturalRenderer(launcher: MaintenanceLauncher(executable: ChildProcessLauncher.bundledExecutable)))
 
     private func progressed(_ id: UUID, _ progress: ReadingRenderProgress) {

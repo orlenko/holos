@@ -199,7 +199,8 @@ struct Read: AsyncParsableCommand {
         }
         progress.resumeHint = "To continue, run the same command with --resume --output \"\(request.output ?? location.workDirectory.path)\"."
         let packs = await NaturalVoicesCLI.installedPacks()
-        let renderer = RoutingSpeechRenderer(natural: NaturalVoicesCLI.renderer(installed: packs))
+        let renderer = RoutingSpeechRenderer(system: NativeSpeechRenderer(pronunciations: NaturalVoicesCLI.pronunciations),
+                                             natural: NaturalVoicesCLI.renderer(installed: packs))
         let result = try await ReadingPipeline(renderer: renderer).render(
             script: script, voiceIdentifier: selected.id, rate: request.rate, metadata: metadata,
             location: location, resume: request.resume)

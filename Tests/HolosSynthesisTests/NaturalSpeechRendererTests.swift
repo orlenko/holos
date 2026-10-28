@@ -212,6 +212,35 @@ private final class FakeChecker: SpeechChunkChecker, Sendable {
         #expect(NaturalRenderSettings(values: ["check": "on", "spokenForm": "on"]).spokenForm)
     }
 
+    @Test func listedWordsAreSaidByTheirSpellingsBeforeTheSpokenFormAndTheCheckForgivesThem() async throws {
+        struct Marked: SpokenFormNormalizer {
+            func normalize(_ text: String, language: String) -> String { text + " [\(language)]" }
+        }
+        let backend = FakeBackend()
+        // The recognizer writes the made-up spelling its own way: the take passes all the same.
+        let checker = FakeChecker { call in
+            call == 1 ? "The xiamia camera has 24.5 megapixel en" : "Ximea is not zaimia en"
+        }
+        let reads = Mutex(0)
+        let renderer = NaturalSpeechRenderer(
+            backend: backend, checker: checker, fallback: FakeFallback(), normalizer: Marked(),
+            pronunciations: {
+                reads.withLock { $0 += 1 }
+                return PronunciationList(entries: [Pronunciation(written: "XIMEA", sayAs: "zai mee ah",
+                                                                 addedAt: Date(timeIntervalSince1970: 0))])
+            }, installedPacks: { [.english] })
+        var events: [NaturalSpeechEvent] = []
+        renderer.onEvent = { events.append($0) }
+        _ = try await renderer.render(text: "The XIMEA camera has 24.5 MP.\n\nXimea is not XIMEA.",
+                                      voiceIdentifier: alba, rate: nil, to: folder.appendingPathComponent("said.caf"))
+        // Matched as written ("Ximea" is left: the entry has capitals), before the spoken form's units.
+        #expect(await backend.calls.map(\.text) == ["The zai mee ah camera has 24.5 megapixel. [en]",
+                                                     "Ximea is not zai mee ah. [en]"])
+        #expect(reads.withLock { $0 } == 1)
+        let verdicts = events.compactMap { if case .checked(_, _, let verdict, _) = $0 { verdict } else { nil } }
+        #expect(verdicts.count == 2 && verdicts.allSatisfy(\.passed))
+    }
+
     @Test func aSystemVoiceHeardNoClearlyBetterLeavesTheNaturalVoicesBetterTake() async throws {
         let fallback = FakeFallback()
         // The second paragraph's takes are heard with 100 % and 50 % of six words wrong; the system voice with 50 %,

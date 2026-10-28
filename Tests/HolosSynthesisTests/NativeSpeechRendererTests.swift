@@ -21,6 +21,16 @@ import Testing
     #expect(!FileManager.default.fileExists(atPath: output.path))
 }
 
+@Test func aPronunciationListThatCannotBeReadFailsTheRenderWithoutOutput() async throws {
+    let output = FileManager.default.temporaryDirectory
+        .appendingPathComponent("holos-test-\(UUID().uuidString).wav")
+    let renderer = NativeSpeechRenderer(pronunciations: { throw HolosError.invalidInput("damaged") })
+    await #expect(throws: HolosError.self) {
+        try await renderer.render(text: "Hello", to: output)
+    }
+    #expect(!FileManager.default.fileExists(atPath: output.path))
+}
+
 @Test func existingOutputIsPreserved() async throws {
     let output = FileManager.default.temporaryDirectory
         .appendingPathComponent("holos-test-\(UUID().uuidString).wav")

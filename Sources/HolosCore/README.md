@@ -12,7 +12,9 @@ The values every other target shares, and text processing that needs no engine.
 - Text processing: `TranscriptFixer` (language-model fix of misheard words, with an injected model and the
   `AIFixGuard` check), `SpokenCode`, `DictationSeams`, `FillerWords`,
   `WordList`, `TranscriptEditLearning`, `DictationTextPipeline` (with Run Again's report types), `SpelledNumbers` (the
-  numbers of a text written out in English or French words with Foundation's `NumberFormatter`).
+  numbers of a text written out in English or French words with Foundation's `NumberFormatter`),
+  `PronunciationList` (the spellings every reading voice says listed words by, and the respelling of a text by them;
+  `PronunciationSource` is how a renderer gets the list).
 
 - `SpellChecking` and `SystemSpelling` (`Lexicon.swift`): the spell checker `Lexicon` and `DictationSeams` ask,
   installed by each executable (HolosSpelling's `SystemSpellChecker`); until one is installed every word is known.

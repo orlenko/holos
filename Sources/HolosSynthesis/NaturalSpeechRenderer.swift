@@ -155,7 +155,8 @@ public struct NaturalSpeechStats: Sendable, Equatable {
 
 /// Renders text with a natural voice into one audio file (`voiceislocal say`, a part of `voiceislocal read`; the app's
 /// parts go through `say`), paragraph by paragraph (see
-/// `NaturalSpeechPlan`), each with the same fixed seed so the same text always sounds the same.
+/// `NaturalSpeechPlan`), each with the same fixed seed so the same text always sounds the same. Words in the user's
+/// pronunciation list (read when a render starts) are said by their spellings, then the text is put in its spoken form.
 /// Each paragraph is heard back (`SpeechChunkCheck`) when a checker is given: one that fails is rendered again with
 /// another seed. One that fails again is read by a system voice (`ParagraphFallback`), and that reading is heard back
 /// too: it replaces the better take only when heard with `fallbackMargin` fewer of its words wrong (text that no voice
@@ -187,6 +188,8 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     private let fallback: any ParagraphFallback
     /// `SpokenForm`'s second stage (nil: its own rules only).
     private let normalizer: (any SpokenFormNormalizer)?
+    /// Read once per render, off the main actor.
+    private let pronunciations: PronunciationSource
     private let installedPacks: @Sendable () -> Set<NaturalVoicePack>
     private let exclusiveRename: ExclusivePublisher.ExclusiveRename
     /// Called on the main actor for each check, re-render, and fallback.
@@ -201,7 +204,9 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     private var confirmedPacks: Set<NaturalVoicePack> = []
 
     public init(backend: any NaturalSpeechBackend, checker: (any SpeechChunkChecker)?, checksByDefault: Bool = true,
-                fallback: any ParagraphFallback, normalizer: (any SpokenFormNormalizer)? = nil, installedPacks: @escaping @Sendable () -> Set<NaturalVoicePack> = {
+                fallback: any ParagraphFallback, normalizer: (any SpokenFormNormalizer)? = nil,
+                pronunciations: @escaping PronunciationSource = { PronunciationList() },
+                installedPacks: @escaping @Sendable () -> Set<NaturalVoicePack> = {
                     NaturalVoiceModels.installedPacks()
                 },
                 exclusiveRename: @escaping ExclusivePublisher.ExclusiveRename = ExclusivePublisher.systemExclusiveRename) {
@@ -210,6 +215,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         self.checksByDefault = checksByDefault
         self.fallback = fallback
         self.normalizer = normalizer
+        self.pronunciations = pronunciations
         self.installedPacks = installedPacks
         self.exclusiveRename = exclusiveRename
     }
@@ -281,15 +287,20 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         defer { _ = unlink(temporary.path) }
         // The file is written, and each paragraph time-stretched, off the main actor (`NaturalSpeechSink`).
         let sink = try await NaturalSpeechSink.open(temporary, refusing: output, sampleRate: Self.sampleRate)
-        let language = voice.pack.languageCode, normalizer = normalizer
+        let language = voice.pack.languageCode, normalizer = normalizer, pronunciations = pronunciations
+        let list = try await Task.detached(priority: .userInitiated) { try pronunciations() }.value
         for block in blocks {
             try Task.checkCancellation()
-            // What the voice says and the check compares with; rewritten off the main actor.
-            let text = settings?.spokenForm == true ? await Task.detached(priority: .userInitiated) {
-                SpokenForm.text(block.text, language: language, normalizer: normalizer)
-            }.value : block.text
+            // What the voice says and the check compares with: the user's spellings first (they match the text as
+            // written), then the spoken form; rewritten off the main actor.
+            let spokenForm = settings?.spokenForm == true
+            let (text, spellings) = await Task.detached(priority: .userInitiated) {
+                let respelled = list.respelled(block.text)
+                return (spokenForm ? SpokenForm.text(respelled.text, language: language, normalizer: normalizer)
+                            : respelled.text, respelled.spellings)
+            }.value
             // Events and the log name the part's paragraph (a long one's groups share its number).
-            let speech = try await paragraph(text, index: block.paragraph, voice: voice,
+            let speech = try await paragraph(text, spellings: spellings, index: block.paragraph, voice: voice,
                                              fallbackVoice: settings?.fallbackVoice, checking: &checking,
                                              stats: &stats)
             try await sink.add(speech, rate: speed, pauseAfter: block.pauseAfter)
@@ -318,7 +329,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     }
 
     /// One paragraph: rendered, checked, rendered again once with the next seed, else `replacement`'s choice.
-    private func paragraph(_ text: String, index: Int, voice: NaturalVoice, fallbackVoice: String?,
+    private func paragraph(_ text: String, spellings: [String], index: Int, voice: NaturalVoice, fallbackVoice: String?,
                            checking: inout Bool, stats: inout NaturalSpeechStats) async throws -> [Float] {
         var reason = ""
         // The failed take heard best (the first on a tie), which a system voice must beat.
@@ -366,7 +377,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
                 return speech
             }
             let verdict = SpeechChunkCheck.evaluate(expected: text, heard: heard,
-                                                   language: voice.pack.languageCode)
+                                                   language: voice.pack.languageCode, spellings: spellings)
             onEvent?(.checked(paragraph: index + 1, take: take, verdict: verdict, seconds: seconds))
             if verdict.passed { return speech }
             if verdict.wordErrorRate < best?.wordErrorRate ?? .infinity { best = (speech, verdict.wordErrorRate) }
@@ -374,7 +385,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
             Self.log.notice("Paragraph \(index + 1, privacy: .public) failed its check (take \(take, privacy: .public), WER \(verdict.wordErrorRate, privacy: .public))")
             if take == 1 { stats.rerenders += 1 }
         }
-        return try await replacement(text, index: index, language: voice.pack.languageCode,
+        return try await replacement(text, spellings: spellings, index: index, language: voice.pack.languageCode,
                                      fallbackVoice: fallbackVoice, best: best, reason: reason, stats: &stats)
     }
 
@@ -382,7 +393,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     /// used when it is heard with at least `fallbackMargin` fewer of its words wrong than `best`, the better failed
     /// take; otherwise `best` is kept. With no take to compare (the voice failed or made no sound), the system voice's
     /// reading is used unchecked.
-    private func replacement(_ text: String, index: Int, language: String, fallbackVoice: String?,
+    private func replacement(_ text: String, spellings: [String], index: Int, language: String, fallbackVoice: String?,
                              best: (speech: [Float], wordErrorRate: Double)?, reason: String,
                              stats: inout NaturalSpeechStats) async throws -> [Float] {
         let fallen = try await fallback.samples(for: text, voice: fallbackVoice, language: language,
@@ -395,8 +406,8 @@ public struct NaturalSpeechStats: Sendable, Equatable {
             do {
                 if let heard = try await checker.transcript(of: fallen.samples, sampleRate: Self.sampleRate,
                                                             language: language) {
-                    fallbackRate = SpeechChunkCheck.evaluate(expected: text, heard: heard, language: language)
-                        .wordErrorRate
+                    fallbackRate = SpeechChunkCheck.evaluate(expected: text, heard: heard, language: language,
+                                                             spellings: spellings).wordErrorRate
                 }
             } catch {
                 if error is CancellationError || Task.isCancelled { throw CancellationError() }

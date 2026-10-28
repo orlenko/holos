@@ -78,9 +78,9 @@ The main protocols that exist, and what implements them (not exhaustive; search 
 - A version newer than the reader knows is handled per file (the rule is `docs/conventions.md §1.6`, rule 3):
   - Whole files are refused with `HolosError.unavailable` by the readers that need them: the transcript pointer
     and revisions, `meeting.json`, `status.json`, `postprocess.json`, the speaker head and runs, `summary.json`,
-    `audio-deleted.json`, `exports/.generated.json`, `live-hints.json`, `words.json`, the people store. A reader
-    that only uses a file as an optional input may treat a newer one as absent instead (post-processing with a
-    newer `echo/mask.json`).
+    `audio-deleted.json`, `exports/.generated.json`, `live-hints.json`, `words.json`, `pronunciations.json`, the
+    people store. A reader that only uses a file as an optional input may treat a newer one as absent instead
+    (post-processing with a newer `echo/mask.json`).
   - Line files keep going: the speaker edit journal skips and counts newer lines; the forget journal skips them
     when reading and keeps them when compacting; dictation history keeps them unshown and loads the rest.
   - The reading library shows a newer `library.json` read-only. The deep-transcription queue (`UserDefaults`) is

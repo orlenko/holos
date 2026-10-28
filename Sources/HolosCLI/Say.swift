@@ -132,7 +132,7 @@ struct Say: AsyncParsableCommand {
                 return result
             }
         } else {
-            let renderer = NativeSpeechRenderer()
+            let renderer = NativeSpeechRenderer(pronunciations: NaturalVoicesCLI.pronunciations)
             let rate = self.rate
             render = { try await renderer.render(text: input, voiceIdentifier: voice, rate: rate, to: $0) }
         }
