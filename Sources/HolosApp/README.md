@@ -13,7 +13,8 @@ wiring between them and the library controllers (docs/design.md "Main window").
 - `MainWindow/`: `MainWindowController` (sidebar window) and the panes (History, Meetings, People, Corrections,
   Reading, Settings, live meeting view). `ReadingLibrary+Formatting` holds the Reading pane's duration and position
   texts. `ReadingVoicePopup` and `ReadingVoiceBrowser` share the searchable, language-filtered voice picker between
-  Reading and Settings.
+  Reading and Settings. `PronunciationsSheet` is Settings › Reading › Pronunciations' editor (its store calls are
+  `HolosApp+WordList.swift`'s, which already imports `HolosStorage`).
 - `Review/`: `ReviewSurface` hosts review inside the main meeting screen and routes its close and keyboard handling; `ReviewWindow` (+Layout, +Joining, +WordEdits; its close types in `ReviewClosing`), its word edits'
   saves, refusals and close by hand in `ReviewWordEditCoordinator` (no AppKit; the window is its
   `ReviewWordEditHost`), `TurnListView` (+WordEditing, +Splitting, +Joining) with its `TurnTableView`,

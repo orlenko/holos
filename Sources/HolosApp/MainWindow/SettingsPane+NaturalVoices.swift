@@ -1,8 +1,8 @@
 import AppKit
 import HolosSynthesis
 
-/// Settings › Reading's natural voices: a row per language pack (Download, progress, Cancel), and the texts that
-/// mention them.
+/// Settings › Reading's natural voices: a row per language pack (Download, progress, Cancel), the Pronunciations row,
+/// and the texts that mention them.
 extension SettingsPane {
     static let readingVoiceHint = "Natural voices sound best; download them below. Apple's Premium voices come next; "
         + "add them in System Settings › Accessibility › Spoken Content"
@@ -13,13 +13,20 @@ extension SettingsPane {
         Support so it can continue after a stop.
         """
 
-    func addNaturalVoiceRows(to grid: NSGridView) {
+    func addVoiceRows(to grid: NSGridView) {
         addRow(.naturalVoicesEnglish, "Natural voices (English)", to: grid)
         addRow(.naturalVoicesFrench, "Natural voices (French)", to: grid)
         addRowItem(.reading, .naturalVoicesEnglish,
                    keywords: ["natural", "neural", "pocket", "kyutai", "alba", "download", "voices"])
         addRowItem(.reading, .naturalVoicesFrench,
                    keywords: ["natural", "neural", "pocket", "kyutai", "estelle", "french", "download"])
+        addRow(.pronunciations, "Pronunciations", to: grid)
+        set(.pronunciations, .pending, "How every voice says names and jargon it does not know (XIMEA as \"zay mee "
+            + "ah\")", button: "Edit…")
+        rows[.pronunciations]?.icon.image = NSImage(systemSymbolName: "character.bubble", accessibilityDescription: nil)
+        rows[.pronunciations]?.icon.contentTintColor = .secondaryLabelColor
+        addRowItem(.reading, .pronunciations,
+                   keywords: ["pronunciation", "pronounce", "say as", "names", "jargon", "phonetic", "spelling"])
     }
 
     /// Each pack's row; voices installed since the menu was filled (a download that just ended) are offered. While one

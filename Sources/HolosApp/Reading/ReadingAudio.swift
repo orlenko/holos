@@ -6,7 +6,7 @@ import HolosMeeting
 import HolosSynthesis
 import os
 
-/// ▶ Preview: speaks a short sample with a voice and speed; a second press stops it.
+/// ▶ Preview: speaks a short sample (or the text given) with a voice and speed; a second press stops it.
 ///
 /// Invariants:
 /// 1. At most one of `synthesizer`, `natural` and `player` is set: what speaks now (`isSpeaking`); `speak` stops the
@@ -50,18 +50,18 @@ final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
 
     /// Speaks the sample in `voiceIdentifier`'s language. Nil (Automatic): the voice Make Audio would read the user's
     /// first language with (`ReadingVoices.automatic`): the natural voice once its pack is installed, else the best
-    /// Apple voice.
-    func speak(voiceIdentifier: String?, speed: Double) {
+    /// Apple voice. `text`: what to say instead of the sample.
+    func speak(voiceIdentifier: String?, speed: Double, text: String? = nil) {
         stop()
         let identifier = voiceIdentifier
             ?? ReadingVoices.automatic(language: preferredLanguage(), installed: installedPacks(),
                                        bestApple: NativeSpeechRenderer.bestVoice(language:))?.id
         if let identifier, let voice = NaturalVoiceCatalog.voice(id: identifier) {
-            speakNatural(voice, speed: speed)
+            speakNatural(voice, speed: speed, text: text ?? Self.sample(language: voice.pack.languageCode))
             return
         }
         let voice = identifier.flatMap(AVSpeechSynthesisVoice.init(identifier:))
-        let utterance = AVSpeechUtterance(string: Self.sample(language: voice?.language ?? "en"))
+        let utterance = AVSpeechUtterance(string: text ?? Self.sample(language: voice?.language ?? "en"))
         utterance.voice = voice
         if let rate = ReadingSpeed.rate(for: speed) { utterance.rate = rate }
         let synthesizer = AVSpeechSynthesizer()
@@ -72,9 +72,8 @@ final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     }
 
     /// Makes the sample with the natural voice (into a temporary folder), then plays it.
-    private func speakNatural(_ voice: NaturalVoice, speed: Double) {
+    private func speakNatural(_ voice: NaturalVoice, speed: Double, text: String) {
         guard let renderNatural else { return }
-        let text = Self.sample(language: voice.pack.languageCode)
         let rate = ReadingSpeed.rate(for: speed)
         natural = Task { [weak self] in
             let folder = FileManager.default.temporaryDirectory

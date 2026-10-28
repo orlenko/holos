@@ -16,7 +16,7 @@ import HolosSynthesis
 @MainActor
 final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDelegate {
     enum Mark { case done, pending, problem }
-    private struct Row {
+    struct Row {
         let icon: NSImageView
         let title: NSTextField
         let detail: NSTextField
@@ -101,7 +101,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     private let historyAudioToggle = NSButton(
         checkboxWithTitle: "Keep the audio of dictations (for Run Again)", target: nil, action: nil)
     private let historyAudioUsage = SettingsPane.note("")
-    private var rows: [SetupAction: Row] = [:]
+    var rows: [SetupAction: Row] = [:]
     /// Status rows their state hides (Input Monitoring until macOS refuses the hotkey tap).
     private var stateHidden: Set<SetupAction> = []
     static let textWidth: CGFloat = 360
@@ -456,7 +456,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
                       keywords: ["rate", "pace", "faster", "slower", "reading speed"], control: speed,
                       focus: readingSpeedSlider, to: grid)
 
-        addNaturalVoiceRows(to: grid)
+        addVoiceRows(to: grid)
 
         let (text, _, detail) = Self.labels("Save audio files in")
         readingFolderDetail = detail
