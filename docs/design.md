@@ -879,9 +879,15 @@ words ("twenty fifteen", "trois virgule cinq", "deuxième"), and "and", "point",
 voice reads "2015" as words the recognizer may write as digits or spell out; leaving numbers out on both sides makes
 the check blind to a misread number but never fails a right one. It fails
 when the word edits exceed 15 % of the paragraph's words (at least 2), when the lengths differ by more than 8 words
-(cut off or run on), or when nothing is heard. A failed paragraph is rendered again with the next seed; one that
-fails again (or that the model cannot make) is read by the best Apple voice for the language, converted to 24 kHz,
-and the tool says so on stderr ("Paragraph 3 is read by Ava…"; the app logs it). With no recognizer installed for the
+(cut off or run on), or when nothing is heard. A failed paragraph is rendered again with the next seed. One that
+fails again is also read by the best Apple voice for the language (converted to 24 kHz), and that reading is heard
+back the same way: it replaces the better of the two takes only when its word error rate is at least 15 points lower
+(`NaturalSpeechRenderer.fallbackMargin`); otherwise, or when its reading cannot be checked, the natural voice keeps
+the paragraph. Technical text (code names, paths, units, arrows) is heard wrong whichever voice reads it: on a
+45-paragraph onboarding guide (2026-10-28) 11 paragraphs went to Ava before this comparison, and Ava was heard no
+better than Alba on any of them (worse on 7), so none does now. A paragraph the model cannot make at all is read by
+the Apple voice unchecked. The tool says what it chose on stderr ("Paragraph 3 is read by Ava…", "Paragraph 3 keeps
+the natural voice: Ava … was heard with 40% of its words wrong, against 31%."; the app logs it). With no recognizer installed for the
 language the check is skipped (said once, and not looked for again by the same renderer: a book's parts in
 `voiceislocal read`; the app logs the note once per launch), and a recognizer error is said per paragraph and keeps the take;
 `HOLOS_NATURAL_CHECK=0` turns it off. The locale is the first of the language's whose assets are installed, the

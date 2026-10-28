@@ -38,7 +38,7 @@ enum NaturalVoicesCLI {
             case .checked(let paragraph, let take, let verdict, _) where !verdict.passed:
                 Console.error(String(format: "Paragraph %d did not sound right (take %d, %.0f%% of its words heard "
                     + "wrong); %@", paragraph, take, verdict.wordErrorRate * 100,
-                    take == 1 ? "rendering it again." : "reading it with a system voice."))
+                    take == 1 ? "rendering it again." : "trying a system voice."))
             case .checked:
                 break
             case .checkUnavailable(let language):
@@ -48,6 +48,11 @@ enum NaturalVoicesCLI {
                 Console.error("Note: paragraph \(paragraph) could not be checked: \(reason)")
             case .fellBack(let paragraph, let voice, let reason):
                 Console.error("Paragraph \(paragraph) is read by \(voice): \(reason).")
+            case .keptNatural(let paragraph, let voice, let natural, let fallback):
+                Console.error("Paragraph \(paragraph) keeps the natural voice: " + (fallback.map {
+                    String(format: "%@ was heard with %.0f%% of its words wrong, against %.0f%%.", voice, $0 * 100,
+                           natural * 100)
+                } ?? "\(voice) could not be checked."))
             }
         }
         return renderer

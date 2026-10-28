@@ -47,9 +47,14 @@ private actor FakeBackend: NaturalSpeechBackend {
 /// Hears what it is told for each call in turn (then the last answer again); nil answers mean "no recognizer".
 private final class FakeChecker: SpeechChunkChecker, Sendable {
     private let count = Mutex(0)
-    let heard: @Sendable (Int) -> String?
+    let heard: @Sendable (Int, [Float]) -> String?
 
     init(_ heard: @escaping @Sendable (Int) -> String?) {
+        self.heard = { call, _ in heard(call) }
+    }
+
+    /// Answers from the samples as well: the system voice's (`FakeFallback`, 0.5) differ from a take's (0.25).
+    init(samples heard: @escaping @Sendable (Int, [Float]) -> String?) {
         self.heard = heard
     }
 
@@ -60,7 +65,7 @@ private final class FakeChecker: SpeechChunkChecker, Sendable {
             value += 1
             return value
         }
-        return heard(call)
+        return heard(call, samples)
     }
 }
 
@@ -157,11 +162,12 @@ private final class FakeChecker: SpeechChunkChecker, Sendable {
     @Test func aParagraphThatFailsTwiceIsReadByTheSystemVoice() async throws {
         let backend = FakeBackend()
         let fallback = FakeFallback()
-        // The first answer is right; then two wrong takes of the second paragraph.
+        // The first answer is right; then two wrong takes of the second paragraph, and the system voice heard right.
         let answers = FakeChecker { call in
             switch call {
             case 1: "a heading"
             case 2, 3: "nothing like it at all"
+            case 4: "the first paragraph has six words"
             default: "the second has four"
             }
         }
@@ -172,12 +178,75 @@ private final class FakeChecker: SpeechChunkChecker, Sendable {
                                                to: folder.appendingPathComponent("fallback.caf"))
         #expect(fallback.texts == ["The first paragraph has six words."])
         #expect(events.contains { event in
-            if case .fellBack(2, "Ava (Premium)", _) = event { return true }
+            if case .fellBack(2, "Ava (Premium)", let reason) = event { return reason.hasSuffix("Ava (Premium) with 0%") }
             return false
         })
         #expect(renderer.lastStats.fallbacks == 1)
+        #expect(renderer.lastStats.keptNatural == 0)
         // 0.2 s heading, 0.2 s of system voice, 0.4 s second paragraph, and the pauses.
         #expect(abs(result.duration - (0.2 + 0.2 + 0.4 + 1.5)) < 0.01)
+    }
+
+    @Test func aSystemVoiceHeardNoClearlyBetterLeavesTheNaturalVoicesBetterTake() async throws {
+        let fallback = FakeFallback()
+        // The second paragraph's takes are heard with 100 % and 50 % of six words wrong; the system voice with 50 %,
+        // which is not 15 points better.
+        let answers = FakeChecker { call in
+            switch call {
+            case 1: "a heading"
+            case 2: "nothing like it at all"
+            case 3: "the first paragraph is five verbs"
+            case 4: "the first chapter is five words"
+            default: "the second has four"
+            }
+        }
+        let renderer = renderer(FakeBackend(), checker: answers, fallback: fallback)
+        var events: [NaturalSpeechEvent] = []
+        renderer.onEvent = { events.append($0) }
+        let result = try await renderer.render(text: text, voiceIdentifier: alba, rate: nil,
+                                               to: folder.appendingPathComponent("kept.caf"))
+        #expect(fallback.texts == ["The first paragraph has six words."])
+        #expect(events.contains(.keptNatural(paragraph: 2, voice: "Ava (Premium)", naturalErrorRate: 0.5,
+                                             fallbackErrorRate: 0.5)))
+        #expect(!events.contains { if case .fellBack = $0 { true } else { false } })
+        #expect(renderer.lastStats.keptNatural == 1)
+        #expect(renderer.lastStats.fallbacks == 0)
+        // The natural take's 0.6 s, not the system voice's 0.2 s.
+        #expect(abs(result.duration - (0.2 + 0.6 + 0.4 + 1.5)) < 0.01)
+    }
+
+    @Test func aSystemVoiceHeardAtTheMarginReadsTheParagraph() async throws {
+        // Takes at 100 % and 50 %; the system voice at 33 % (two of six words), 17 points better.
+        let answers = FakeChecker { call in
+            switch call {
+            case 1: "a heading"
+            case 2: "nothing like it at all"
+            case 3: "the first paragraph is five verbs"
+            case 4: "the first paragraph is five words"
+            default: "the second has four"
+            }
+        }
+        let renderer = renderer(FakeBackend(), checker: answers)
+        _ = try await renderer.render(text: text, voiceIdentifier: alba, rate: nil,
+                                      to: folder.appendingPathComponent("margin.caf"))
+        #expect(renderer.lastStats.fallbacks == 1)
+        #expect(renderer.lastStats.keptNatural == 0)
+    }
+
+    @Test func aSystemVoiceThatCannotBeCheckedLeavesTheNaturalTake() async throws {
+        // The recognizer answers for the takes, not for the system voice's reading.
+        let answers = FakeChecker(samples: { call, samples in
+            if samples.first == 0.5 { return nil }
+            return call == 1 ? "a heading" : call <= 3 ? "nothing like it at all" : "the second has four"
+        })
+        let renderer = renderer(FakeBackend(), checker: answers)
+        var events: [NaturalSpeechEvent] = []
+        renderer.onEvent = { events.append($0) }
+        _ = try await renderer.render(text: text, voiceIdentifier: alba, rate: nil,
+                                      to: folder.appendingPathComponent("unheard.caf"))
+        #expect(events.contains(.keptNatural(paragraph: 2, voice: "Ava (Premium)", naturalErrorRate: 1,
+                                             fallbackErrorRate: nil)))
+        #expect(renderer.lastStats.fallbacks == 0)
     }
 
     @Test func aVoiceThatFailsIsRetriedThenReplaced() async throws {
@@ -459,13 +528,14 @@ private actor CountingBackend: NaturalSpeechBackend {
         let long = Array(repeating: sentence, count: 60).joined(separator: " ")
         let groups = NaturalSpeechPlan.blocks(long).count
         #expect(groups > 1)
-        // Every take is heard wrong, so every block is read by the system voice and named in an event.
+        // Every take and the system voice are heard equally wrong, so every block keeps the natural voice and is named
+        // in an event.
         let fallback = FakeFallback()
         let renderer = NaturalSpeechRenderer(backend: CountingBackend(), checker: FakeChecker { _ in "nothing alike" },
                                              fallback: fallback, installedPacks: { [.english] })
         var named: [Int] = []
         renderer.onEvent = { event in
-            if case .fellBack(let paragraph, _, _) = event { named.append(paragraph) }
+            if case .keptNatural(let paragraph, _, _, _) = event { named.append(paragraph) }
         }
         _ = try await renderer.render(text: "This opening paragraph has several plain words in it.\n\n" + long
                                           + "\n\nThis closing paragraph ends the part quite plainly.",
@@ -506,7 +576,8 @@ private actor CountingBackend: NaturalSpeechBackend {
         #expect(NaturalRenderSettings(values: unchecked.values) == unchecked)
         _ = try await renderer.render(text: "Another paragraph with words.", voiceIdentifier: "pocket:en:alba",
                                       rate: nil, settings: unchecked, to: try folder().appendingPathComponent("b.caf"))
-        #expect(checker.calls == 2)
+        // Two takes and the system voice's reading of the first text; nothing of the second.
+        #expect(checker.calls == 3)
         #expect(fallback.texts.count == 1)
     }
 

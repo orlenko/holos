@@ -161,6 +161,9 @@ public enum NaturalSpeechEvent: Sendable, Equatable {
     case checkFailed(paragraph: Int, reason: String)
     /// The paragraph failed twice (or could not be made) and was read by a system voice instead.
     case fellBack(paragraph: Int, voice: String, reason: String)
+    /// The paragraph failed twice, but the system voice `voice` was heard no clearly better (`fallbackErrorRate`; nil
+    /// when its reading could not be checked), so the natural voice's best take (`naturalErrorRate`) is kept.
+    case keptNatural(paragraph: Int, voice: String, naturalErrorRate: Double, fallbackErrorRate: Double?)
 }
 
 /// Timings of the last render, for the log and for measuring the check's cost.
@@ -171,13 +174,17 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     public var checkSeconds = 0.0
     public var rerenders = 0
     public var fallbacks = 0
+    /// Paragraphs that failed twice and kept the natural voice, the system voice being heard no clearly better.
+    public var keptNatural = 0
 }
 
 /// Renders text with a natural voice into one audio file (`voiceislocal say`, a part of `voiceislocal read`; the app's
 /// parts go through `say`), paragraph by paragraph (see
 /// `NaturalSpeechPlan`), each with the same fixed seed so the same text always sounds the same.
 /// Each paragraph is heard back (`SpeechChunkCheck`) when a checker is given: one that fails is rendered again with
-/// another seed, and one that fails again is read by a system voice (`ParagraphFallback`), and logged.
+/// another seed. One that fails again is read by a system voice (`ParagraphFallback`), and that reading is heard back
+/// too: it replaces the better take only when heard with `fallbackMargin` fewer of its words wrong (text that no voice
+/// is heard right on, such as code names and paths, stays in the natural voice). Either outcome is logged.
 ///
 /// Invariants:
 /// 1. One render at a time: `render` fails at once while another render of this renderer runs (`rendering`), so
@@ -191,6 +198,9 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     nonisolated public static let sampleRate = NaturalSpeechFormat.sampleRate
     /// Every paragraph's first take uses this seed; the re-render uses the next one.
     nonisolated public static let seed = NaturalSpeechFormat.seed
+    /// How much lower the system voice's word error rate must be than the natural voice's best take for it to read a
+    /// paragraph that failed twice (0.15: 15 points, the check's own tolerance).
+    nonisolated public static let fallbackMargin = SpeechChunkCheck.maximumWordErrorRate
 
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "reading")
 
@@ -324,10 +334,12 @@ public struct NaturalSpeechStats: Sendable, Equatable {
                              sampleRate: Self.sampleRate)
     }
 
-    /// One paragraph: rendered, checked, rendered again once with the next seed, else read by a system voice.
+    /// One paragraph: rendered, checked, rendered again once with the next seed, else `replacement`'s choice.
     private func paragraph(_ text: String, index: Int, voice: NaturalVoice, fallbackVoice: String?,
                            checking: inout Bool, stats: inout NaturalSpeechStats) async throws -> [Float] {
         var reason = ""
+        // The failed take heard best (the first on a tie), which a system voice must beat.
+        var best: (speech: [Float], wordErrorRate: Double)?
         for take in 1...2 {
             try Task.checkCancellation()
             let started = ContinuousClock.now
@@ -374,12 +386,49 @@ public struct NaturalSpeechStats: Sendable, Equatable {
                                                    language: voice.pack.languageCode)
             onEvent?(.checked(paragraph: index + 1, take: take, verdict: verdict, seconds: seconds))
             if verdict.passed { return speech }
+            if verdict.wordErrorRate < best?.wordErrorRate ?? .infinity { best = (speech, verdict.wordErrorRate) }
             reason = String(format: "it was heard with %.0f%% of its words wrong", verdict.wordErrorRate * 100)
             Self.log.notice("Paragraph \(index + 1, privacy: .public) failed its check (take \(take, privacy: .public), WER \(verdict.wordErrorRate, privacy: .public))")
             if take == 1 { stats.rerenders += 1 }
         }
-        let fallen = try await fallback.samples(for: text, voice: fallbackVoice, language: voice.pack.languageCode,
+        return try await replacement(text, index: index, language: voice.pack.languageCode,
+                                     fallbackVoice: fallbackVoice, best: best, reason: reason, stats: &stats)
+    }
+
+    /// A paragraph whose takes both failed: the system voice reads it, and is heard back like a take. Its reading is
+    /// used when it is heard with at least `fallbackMargin` fewer of its words wrong than `best`, the better failed
+    /// take; otherwise `best` is kept. With no take to compare (the voice failed or made no sound), the system voice's
+    /// reading is used unchecked.
+    private func replacement(_ text: String, index: Int, language: String, fallbackVoice: String?,
+                             best: (speech: [Float], wordErrorRate: Double)?, reason: String,
+                             stats: inout NaturalSpeechStats) async throws -> [Float] {
+        let fallen = try await fallback.samples(for: text, voice: fallbackVoice, language: language,
                                                 sampleRate: Self.sampleRate)
+        var reason = reason
+        // A failed take means the recognizer answered, so the checker is there.
+        if let best, let checker {
+            let checkStarted = ContinuousClock.now
+            var fallbackRate: Double?
+            do {
+                if let heard = try await checker.transcript(of: fallen.samples, sampleRate: Self.sampleRate,
+                                                            language: language) {
+                    fallbackRate = SpeechChunkCheck.evaluate(expected: text, heard: heard, language: language)
+                        .wordErrorRate
+                }
+            } catch {
+                if error is CancellationError || Task.isCancelled { throw CancellationError() }
+                Self.log.error("System voice check failed to run: \(error.localizedDescription, privacy: .public)")
+            }
+            stats.checkSeconds += (ContinuousClock.now - checkStarted).seconds
+            guard let fallbackRate, fallbackRate <= best.wordErrorRate - Self.fallbackMargin else {
+                stats.keptNatural += 1
+                onEvent?(.keptNatural(paragraph: index + 1, voice: fallen.voice, naturalErrorRate: best.wordErrorRate,
+                                      fallbackErrorRate: fallbackRate))
+                Self.log.notice("Paragraph \(index + 1, privacy: .public) keeps the natural voice: \(fallen.voice, privacy: .public) heard with WER \(fallbackRate ?? -1, privacy: .public)")
+                return best.speech
+            }
+            reason += String(format: ", %@ with %.0f%%", fallen.voice, fallbackRate * 100)
+        }
         stats.fallbacks += 1
         onEvent?(.fellBack(paragraph: index + 1, voice: fallen.voice, reason: reason))
         Self.log.notice("Paragraph \(index + 1, privacy: .public) read by \(fallen.voice, privacy: .public) instead")
