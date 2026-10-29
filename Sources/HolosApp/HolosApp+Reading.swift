@@ -102,6 +102,7 @@ extension HolosAppDelegate {
         // The packs first (off the main actor), so a natural reading continued now finds its voice.
         naturalVoices.refresh { [weak self] in
             self?.readings.start()
+            self?.startReadAloud()
             self?.checkNaturalVoicesInstalled()
             self?.pollNaturalVoiceInstalls()
         }
@@ -120,9 +121,11 @@ extension HolosAppDelegate {
         return naturalVoices.downloads
     }
 
-    /// The Settings action of a Reading row: a pack's download, or the pronunciations editor.
+    /// The Settings action of a Reading row: a pack's download, the pronunciations editor, or the read-aloud shortcut
+    /// turned on or off.
     func performReadingSetup(_ action: SetupAction) {
         if action == .pronunciations { return showPronunciations() }
+        if action == .readSelection { return readAloud.setOn(!readAloud.isOn) }
         toggleNaturalVoiceDownload(action == .naturalVoicesFrench ? .french : .english)
     }
 

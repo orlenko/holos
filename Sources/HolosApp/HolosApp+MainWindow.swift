@@ -48,7 +48,7 @@ extension HolosAppDelegate {
             PeopleLaunch.resumePendingForgetsOnce()
             return PeoplePane()
         case .reading:
-            return ReadingPane(controller: readings)
+            return makeReadingPane()
         case .settings:
             return SettingsPane(callbacks: SettingsPane.Callbacks(
                 perform: { [weak self] action in self?.performSetup(action) },
@@ -167,6 +167,7 @@ extension HolosAppDelegate {
 
     /// The status menu's window items: Open Voice is Local ⌘0, History, Meetings, Settings… ⌘,.
     func addWindowItems(to menu: NSMenu) {
+        addReadAloudItem(to: menu)
         let open = item("Open Voice is Local", #selector(showMainWindowFromMenu(_:)))
         open.keyEquivalent = "0"
         open.keyEquivalentModifierMask = .command

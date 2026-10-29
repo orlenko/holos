@@ -1,11 +1,16 @@
 # HolosDesktop
 
-The two places dictation touches other apps: the global hotkey and putting text into the focused field.
+Where the app touches other apps: dictation's global hotkey and putting text into the focused field, and the
+read-aloud shortcut and reading the selected text.
 
 **Owns**
 - `GlobalHotkeyMonitor` (`@MainActor`): a `CGEvent` tap for the chosen `HotkeyChoice`, reporting `HotkeyAction`s;
   `HotkeyStartError` says why it could not start (Accessibility not granted, tap refused). The press/release logic
   is a pure `HotkeyReducer`.
+- `ChordHotkey` (`@MainActor`): a Carbon hot key for a key chord (`readSelection`, ⌃⌥⌘R), needing no permission;
+  `ChordHotkeyError` says when another app holds it.
+- `SelectedText` (`@MainActor`): the front app's selected text through Accessibility, never through the pasteboard;
+  `SelectedTextError` says why there is none.
 - `TextInsertion` (`@MainActor`): `captureTarget()` snapshots the focused element and selection at key-down as an
   `InsertionTarget`; insertion rechecks it and reports an `InsertionOutcome` (`inserted`, `typed`, `needsCopy`,
   `targetChanged`, `unverified`). `KeystrokeTarget` types into terminals. Secure input is detected and refused.
@@ -23,4 +28,4 @@ writes to the pasteboard: when text cannot be inserted it returns `needsCopy` an
   `InsertionTarget` keeps its `AXUIElement` file-private.
 
 **Tests:** `Tests/HolosDesktopTests` (`HotkeyReducerTests`, `TextInsertionPolicyTests`, `TerminalFocusTests`,
-`HotkeyPermissionTests`): policies and reducers, no events posted to other apps.
+`HotkeyPermissionTests`, `SelectedTextTests`): policies and reducers, no events posted to other apps.

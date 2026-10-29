@@ -3,6 +3,7 @@ import HolosContent
 import HolosCore
 import HolosMeeting
 import HolosSynthesis
+import os
 
 /// The Reading list and the readings being made (docs/design.md "Reading section"): the index
 /// (`ReadingLibraryStore`), one reading at a time through `ReadingWorkQueue`, each loaded with `DocumentLoader` or
@@ -27,6 +28,8 @@ final class ReadingController {
     var onChange: (() -> Void)?
     /// One reading's progress changed.
     var onProgress: ((UUID) -> Void)?
+    /// A reading's work ended: made, failed, or stopped (its entry says which).
+    var onEnded: ((UUID) -> Void)?
 
     /// Every entry of the index, those being deleted included (they are saved marked, so a quit or a crash before
     /// their files are gone finishes the deletion at the next launch).
@@ -154,10 +157,12 @@ final class ReadingController {
     var waitingCount: Int { queue.pending.count }
 
     /// Adds a reading of `source` at the top of the list and queues it. `voice` nil: the best voice for its language.
+    /// `document`: its text, given rather than loaded (a selection), saved before the index names the reading.
     @discardableResult
     /// Refused while the list is not saved (its index could not be read, or a newer build wrote it): a reading made
     /// then would leave the list at the next launch while its cache stayed, with no row to delete it from.
-    func add(_ source: ReadingSource, voice: String?, speed: Double) async throws -> UUID {
+    func add(_ source: ReadingSource, voice: String?, speed: Double, document: ReadableDocument? = nil) async throws
+        -> UUID {
         guard listLoaded else {
             throw HolosError.unavailable("The Reading list is still being read; try again in a moment.")
         }
@@ -171,6 +176,7 @@ final class ReadingController {
         // The folder as it is now: a later change in Settings is for readings added later.
         entry.folder = ReadingPreferences.folder.path
         entry.folderIsDefault = ReadingPreferences.isDefaultFolder
+        if let document { try await saveText(document, for: entry.id) }
         // One addition (or Delete mark) at a time, and other saves wait while it is saved: one that wrote this
         // reading while its own save failed would bring back, at the next launch, a reading the user was told was
         // not added.
@@ -188,6 +194,7 @@ final class ReadingController {
         // list without it is saved over it.
         if !added { save() }
         guard added else {
+            if document != nil { await removeText(of: entry.id) }
             onChange?()
             throw HolosError.io("The reading was not added: " + (notice ?? "the Reading list could not be saved."))
         }
@@ -202,6 +209,29 @@ final class ReadingController {
         let store = store
         return try await Task.detached(priority: .userInitiated) { try store.document(for: id) }.value
     }
+
+    /// Saves a given text (a selection) for reading `id`, off the main actor.
+    private func saveText(_ document: ReadableDocument, for id: UUID) async throws {
+        let store = store
+        do {
+            try await Task.detached(priority: .userInitiated) { try store.saveDocument(document, for: id) }.value
+        } catch {
+            throw HolosError.io("The text to read could not be saved in \(store.folder.path): "
+                + error.localizedDescription)
+        }
+    }
+
+    /// Removes the text saved for a reading the index did not take; one that cannot be removed is logged and left.
+    private func removeText(of id: UUID) async {
+        let store = store
+        do {
+            try await Task.detached(priority: .userInitiated) { try store.removeDocument(for: id) }.value
+        } catch {
+            Self.log.error("A saved text could not be removed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "reading")
 
     /// Stop: a waiting reading leaves the queue, a running one is cancelled; either keeps what it rendered for Resume.
     /// Returns a problem to show when it cannot (a newer build's reading, which is not made here).
@@ -486,6 +516,7 @@ final class ReadingController {
         onChange?()
         refreshFiles()
         if deleteWhenStopped.remove(id) != nil { finishDeleteLater(id) }
+        onEnded?(id)
     }
 
     /// Loads the reading's text (the saved copy, when an earlier run loaded it), fixes its voice and file, and

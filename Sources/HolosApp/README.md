@@ -5,13 +5,15 @@ wiring between them and the library controllers (docs/design.md "Main window").
 
 **Owns**
 - `HolosApp.swift`: `HolosAppMain` (`@main`; `--check` prints a permission report) and `HolosAppDelegate`, the menu
-  bar item and menu, plus 14 `HolosApp+<Area>.swift` extensions (Meeting, DeepTranscription, MeetingSummary,
-  EchoCatchUp, BackgroundJobs, MainWindow, History, People, WordList, Reading, SetupAssistant, MeetingLanguage,
-  DictationLanguage: the dictation languages and the recognizer each needs; Updates: `AppUpdates`, Sparkle) with
-  their state holders (`MeetingAppState`, `DeepTranscriptionAppState`, …). `+BackgroundJobs` wires `HolosMeeting`'s
-  `BackgroundJobCoordinator`, which runs final transcripts, echo analyses and summaries.
+  bar item and menu, plus 15 `HolosApp+<Area>.swift` extensions (Meeting, DeepTranscription, MeetingSummary,
+  EchoCatchUp, BackgroundJobs, MainWindow, History, People, WordList, Reading, ReadAloud, SetupAssistant,
+  MeetingLanguage, DictationLanguage: the dictation languages and the recognizer each needs; Updates:
+  `AppUpdates`, Sparkle) with their state holders (`MeetingAppState`, `DeepTranscriptionAppState`, …).
+  `+BackgroundJobs` wires `HolosMeeting`'s `BackgroundJobCoordinator`, which runs final transcripts, echo analyses
+  and summaries.
 - `MainWindow/`: `MainWindowController` (sidebar window) and the panes (History, Meetings, People, Corrections,
-  Reading, Settings, live meeting view). `ReadingLibrary+Formatting` holds the Reading pane's duration and position
+  Reading, Settings, live meeting view). `ReadingRowView` and `ReadingDropView` are the Reading pane's rows and drop
+  target, `ReadingTextSheet` its Show Text. `ReadingLibrary+Formatting` holds the Reading pane's duration and position
   texts. `ReadingVoicePopup` and `ReadingVoiceBrowser` share the searchable, language-filtered voice picker between
   Reading and Settings. `PronunciationsSheet` is Settings › Reading › Pronunciations' editor (its store calls are
   `HolosApp+WordList.swift`'s, which already imports `HolosStorage`).
@@ -20,8 +22,9 @@ wiring between them and the library controllers (docs/design.md "Main window").
   `ReviewWordEditHost`), `TurnListView` (+WordEditing, +Splitting, +Joining) with its `TurnTableView`,
   `TurnTextView`, `TurnScrollView` and `AssignMenu`, `SpeakerSidebarView`, `ReviewPlayer`, `ScreenTextPanel`. The
   model is `HolosMeeting`'s `ReviewSession`.
-- `Reading/`: `ReadingController`, voice preview, natural voices (`HelperNaturalRenderer` runs each natural part
-  in `voiceislocal say`; `NaturalVoiceDownload` is Settings › Reading's pack rows). Dictation UI:
+- `Reading/`: `ReadingController`, `ReadingPreferences`, `ReadAloud` (the read-aloud shortcut's queue), voice
+  preview, natural voices (`HelperNaturalRenderer` runs each natural part in `voiceislocal say`;
+  `NaturalVoiceDownload` is Settings › Reading's pack rows). Dictation UI:
   `DictationOverlay`, `DictationFixing`, and `DictationSessionNotifications` (paired sleep/session return events). Setup: `SetupAssistantWindow`. Meeting start: `MeetingStartPanel`.
 
 **Must not own:** business logic, session-file layout or locks, decoding `voiceislocal` output by hand. Put

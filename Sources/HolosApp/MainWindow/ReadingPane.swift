@@ -15,7 +15,9 @@ import HolosSynthesis
 final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSource, NSTableViewDelegate,
     NSTextFieldDelegate, NSMenuItemValidation {
     private let controller: ReadingController
-    private let player = ReadingPlayer()
+    private let player: ReadingPlayer
+    /// A reading that keeps playing when the window closes: the one the read-aloud shortcut started.
+    var playsWithoutWindow: (UUID) -> Bool = { _ in false }
     let preview = VoicePreview()
     /// The last Preview's failure while it is shown; a new Preview clears it.
     private var previewProblem: String?
@@ -41,8 +43,10 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     /// The natural voice packs the menu offers (tests set it).
     var installedPacks: () -> Set<NaturalVoicePack> = { NaturalVoicesAppState.shared.installed }
 
-    init(controller: ReadingController) {
+    /// `player`: shared with the read-aloud shortcut (`ReadAloud`), so its readings show as playing here.
+    init(controller: ReadingController, player: ReadingPlayer = ReadingPlayer()) {
         self.controller = controller
+        self.player = player
         super.init(nibName: nil, bundle: nil)
         view = makeContent()
         controller.onChange = { [weak self] in self?.reload() }
@@ -75,12 +79,14 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         controller.recheck()
         reload()
         if windowObserver == nil, let window = view.window {
-            // Nothing keeps playing once the window is closed: its controls are gone with it.
+            // Nothing played from here keeps playing once the window is closed: its controls are gone with it. A
+            // reading the shortcut started does; the menu bar menu's Stop Reading Aloud stops it.
             windowObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    self?.player.stop()
-                    self?.preview.stop()
+                    guard let self else { return }
+                    if !(self.player.entryID.map(self.playsWithoutWindow) ?? false) { self.player.stop() }
+                    self.preview.stop()
                 }
             }
         }
