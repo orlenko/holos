@@ -110,26 +110,32 @@ xcrun notarytool store-credentials voiceislocal-notary --key AuthKey_KEYID.p8 --
 Voice is Local is licensed under the GPL, version 3 or later. Every build given or sold to anyone must have its
 exact source available, so a signed release is built only from a clean checkout of a pushed tag.
 
-### In one command
+### With the script
 
 On the Mac that holds the Developer ID key, in its own session (not over SSH, so the keychain can ask), on a clean
-`main`:
+`main`. `main` takes changes only through pull requests, so a release takes two runs with a merge between them:
 
 ```sh
-./scripts/release.sh            # the next patch version: 1.0.1 → 1.0.2
-./scripts/release.sh minor      # 1.0.1 → 1.1.0; also major, or an exact version such as 1.2.0
-./scripts/release.sh 1.0.1      # a version already tagged: build that tag again
+./scripts/release.sh            # the next patch version, 1.0.2 → 1.0.3: opens its pull request
+./scripts/release.sh minor      # 1.0.2 → 1.1.0; also major, or an exact version such as 1.2.0
+./scripts/release.sh 1.0.3      # after that pull request is merged: tag 1.0.3 and build it
+./scripts/release.sh 1.0.2      # a version already tagged: build that tag again
 ```
 
 `scripts/release.sh` stops before changing anything when the signing identity is not in the keychain, the Sparkle
-key in the keychain is missing or is not `SUPublicEDKey` (see "Updates"), the working tree is not clean, `main` is
-not checked out or has commits `origin/main` lacks, or `main` has nothing new since the last release tag. Otherwise it fast-forwards `main`, sets the version in the three places below, and checks that
-the commit changes only those three lines. It commits "Set the version to X" directly to `main` without a pull
-request, tags it `vX`, pushes both at once (`git push --atomic`), and runs `scripts/release-app.sh` with the
-identity, the `voiceislocal-notary` profile, and `BUILD` set to the number of release tags (1.0.0 was build 1,
-1.0.1 build 2). `DEVELOPER_ID`, `NOTARY_PROFILE`, and `BUILD` override those defaults. If the build or notarization
-fails after the push, fix the cause and run it again with the same version: the tag exists, so it builds that tag
-without a new commit.
+key in the keychain is missing or is not `SUPublicEDKey` (see "Updates"), or the working tree is not clean.
+
+The first run also stops when `main` is not checked out or has commits `origin/main` lacks, or has nothing new
+since the last release tag. Otherwise it fast-forwards `main`, sets the version in the three places below, and
+checks that the change touches only those three lines. It commits "Set the version to X" on a new branch
+`release/vX`, pushes the branch, and opens a pull request for it with `gh`. Merge it by any method.
+
+The second run, given the version that `origin/main` now has, tags the newest commit on `origin/main` that changed
+the version line `vX`, pushes the tag, and runs `scripts/release-app.sh` with the identity, the
+`voiceislocal-notary` profile, and `BUILD` set to the number of release tags (1.0.0 was build 1, 1.0.1 build 2).
+`DEVELOPER_ID`, `NOTARY_PROFILE`, and `BUILD` override those defaults. If the build or notarization fails after the
+tag is pushed, fix the cause and run it again with the same version: the tag exists, so it builds that tag without a
+new commit.
 
 ### By hand
 
@@ -259,6 +265,10 @@ notices reproduce too. Apple's speech assets are downloaded by macOS. When a dep
    [orlenko/homebrew-tap](https://github.com/orlenko/homebrew-tap): its `version` and `sha256`. Users install with
    `brew install --cask orlenko/tap/voiceislocal`.
 5. Keep a short changelog per version.
+6. Publish a GitHub release for the tag with the DMG and that changelog, its SHA-256, and the requirements:
+   `gh release create v<version> build/release/VoiceIsLocal-<version>.dmg --verify-tag --title "Voice is Local
+   <version>" --notes-file <notes>`. GitHub's digest for the asset (`gh release view v<version> --json assets`) must
+   match the SHA-256 on the website. The appcast stays on the website only.
 
 ## Updates
 

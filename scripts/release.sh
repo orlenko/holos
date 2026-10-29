@@ -1,18 +1,21 @@
 #!/bin/sh
-# Releases Voice is Local in one command, on the Mac that holds the Developer ID key: sets the next version, commits
-# and tags it on main, pushes both, and builds, signs, and notarizes the DMG with scripts/release-app.sh.
+# Releases Voice is Local in two runs, on the Mac that holds the Developer ID key. The first sets the next version
+# and opens a pull request for it; once that is merged, the second tags the version commit, pushes the tag, and
+# builds, signs, and notarizes the DMG with scripts/release-app.sh.
 #
 #   scripts/release.sh [patch|minor|major|<version>]
 #
-# patch (the default), minor, or major raises the version in Resources/App-Info.plist. A version whose tag v<version>
-# already exists (on origin, at the same commit) is built again without a new commit: use it to resume after a failed
-# build or notarization.
+# patch (the default), minor, or major raises the version in Resources/App-Info.plist and opens the pull request.
+# <version> opens it too, unless origin/main already has that version: then the commit that set it is tagged
+# v<version> and built. A version whose tag v<version> already exists (on origin, at the same commit) is built again
+# without a new commit: use it to resume after a failed build or notarization.
 #   DEVELOPER_ID    signing identity; default "Developer ID Application: Bjola Software Inc. (LC28ZF5453)".
 #   NOTARY_PROFILE  notarytool keychain profile; default voiceislocal-notary.
 #   BUILD           CFBundleVersion; default the number of v* release tags, this one included (1.0.0 was 1).
 # A new version starts from a clean main that matches origin/main. The version commit changes only the three
-# version lines (both Info.plists and `voiceislocal --version`) and goes to main without a pull request. Run it in
-# the Mac's own session, not over SSH, so the keychain can ask for the signing key. See docs/release.md.
+# version lines (both Info.plists and `voiceislocal --version`) and goes to main through a pull request on
+# release/v<version>, which any merge method may merge. Run it in the Mac's own session, not over SSH, so the keychain
+# can ask for the signing key. See docs/release.md.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -86,13 +89,28 @@ ${local_tag%%=*} ${local_tag#*=}
 done
 
 start_branch=$(git symbolic-ref --quiet --short HEAD || true)
+merged_version=$(git show "origin/main:$app_plist" | plutil -extract CFBundleShortVersionString raw -o - - 2>/dev/null \
+    || true)
 if is_version "$request" && git rev-parse --quiet --verify "refs/tags/v$request" >/dev/null; then
     version=$request
     step "Tag v$version exists; building it again"
     # Back to the starting branch however the build ends: the tag may predate this script, so a retry needs it.
     [ -z "$start_branch" ] || trap 'git switch --quiet "$start_branch"' EXIT
     git switch --quiet --detach "v$version"
+elif is_version "$request" && [ "$request" = "$merged_version" ]; then
+    version=$request
+    # The version pull request is merged, by whatever method: the newest commit on origin/main that changes the
+    # version line is the one that set it.
+    version_commit=$(git log -1 --format=%H -F \
+        -S "<key>CFBundleShortVersionString</key><string>$version</string>" origin/main -- "$app_plist")
+    [ -n "$version_commit" ] || fail "No commit on origin/main sets the version to $version."
+    git tag -a "v$version" -m "Voice is Local $version" "$version_commit"
+    step "Pushing v$version ($(git rev-parse --short "$version_commit"))"
+    git push --quiet origin "v$version"
+    [ -z "$start_branch" ] || trap 'git switch --quiet "$start_branch"' EXIT
+    git switch --quiet --detach "v$version"
 else
+    command -v gh >/dev/null || fail "The GitHub CLI (gh) opens the version pull request; install it first."
     [ "$start_branch" = main ] || fail "Switch to main first (git switch main)."
     [ -z "$(git rev-list origin/main..HEAD)" ] || fail "main has commits origin/main lacks; push or drop them first."
     git merge --quiet --ff-only origin/main
@@ -132,10 +150,19 @@ else
     }
     plutil -lint -s "$app_plist" "$cli_plist" || fail "An Info.plist no longer parses after the version change."
 
+    # main takes changes only through pull requests, so the version commit goes on its own branch.
+    branch=release/v$version
+    git switch --quiet -c "$branch"
     git commit --quiet -m "Set the version to $version" -- "$app_plist" "$cli_plist" "$cli_root"
-    git tag -a "v$version" -m "Voice is Local $version"
-    step "Pushing main and v$version"
-    git push --atomic origin main "v$version"
+    step "Opening the pull request for $version"
+    git push --quiet origin "$branch"
+    git switch --quiet main
+    body="The version commit for Voice is Local $version: the three version lines, nothing else. Once it is merged,
+\`scripts/release.sh $version\` on the release Mac tags it and builds the release."
+    gh pr create --base main --head "$branch" --title "Set the version to $version" --body "$body" \
+        || fail "Opening the pull request failed; $branch is pushed, so open it by hand."
+    printf '\nMerge the pull request, then run scripts/release.sh %s to tag and build %s.\n' "$version" "$version"
+    exit 0
 fi
 
 build_number=${BUILD:-$(git tag --list 'v[0-9]*' --merged HEAD | wc -l | tr -d ' ')}
