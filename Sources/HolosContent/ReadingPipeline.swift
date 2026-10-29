@@ -107,7 +107,8 @@ import HolosSynthesis
                        metadata: AudioBookMetadata, location: ReadingLocation,
                        resume: Bool = false,
                        maxPartUTF16Units: Int = defaultMaxPartUTF16Units,
-                       progress: ((ReadingRenderProgress) -> Void)? = nil) async throws -> ReadingResult {
+                       progress: ((ReadingRenderProgress) -> Void)? = nil,
+                       partMade: ((ReadingMadePart) -> Void)? = nil) async throws -> ReadingResult {
         let directory = location.workDirectory
         let output = location.output
         // Every setting is checked before anything (lock, cache, source, manifest) is created, so
@@ -143,7 +144,8 @@ import HolosSynthesis
         do {
             let result = try await renderPrepared(
                 prepared, planned: planned, voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata,
-                location: location, manifestURL: manifestURL, temporary: temporary, progress: progress)
+                location: location, manifestURL: manifestURL, temporary: temporary, progress: progress,
+                partMade: partMade)
             await Self.release(prepared, temporary: temporary)
             return result
         } catch {
@@ -165,8 +167,8 @@ import HolosSynthesis
     /// `temporary`, and published at the output.
     private func renderPrepared(_ prepared: Prepared, planned: [ReadingScript.Part], voiceIdentifier: String,
                                 rate: Float?, metadata: AudioBookMetadata, location: ReadingLocation,
-                                manifestURL: URL, temporary: URL,
-                                progress: ((ReadingRenderProgress) -> Void)?) async throws -> ReadingResult {
+                                manifestURL: URL, temporary: URL, progress: ((ReadingRenderProgress) -> Void)?,
+                                partMade: ((ReadingMadePart) -> Void)?) async throws -> ReadingResult {
         let directory = location.workDirectory
         let output = location.output
         try Task.checkCancellation()
@@ -250,6 +252,10 @@ import HolosSynthesis
             }
         }
         try await saveManifest(manifest, to: manifestURL)
+        // The parts a resume keeps can be played already.
+        for part in manifest.parts where part.status == "complete" {
+            partMade?(ReadingMadePart(part, of: planned.count, in: directory))
+        }
 
         for part in planned {
             try Task.checkCancellation()
@@ -274,6 +280,7 @@ import HolosSynthesis
                 manifest.parts[part.index].audioSHA256 = try await fileSHA256OffMain(result.url)
                 manifest.parts[part.index].duration = result.duration
                 try await saveManifest(manifest, to: manifestURL)
+                partMade?(ReadingMadePart(manifest.parts[part.index], of: planned.count, in: directory))
             } catch {
                 manifest.status = "incomplete"
                 try? await saveManifest(manifest, to: manifestURL)
@@ -284,8 +291,8 @@ import HolosSynthesis
         try Task.checkCancellation()
         let audioParts = manifest.parts.map { part in
             AudioBookPart(url: directory.appendingPathComponent(part.relativeAudioPath),
-                          silenceBefore: part.index == 0 ? 0
-                              : part.startsSection ? ReadingAudioFormat.chapterGap : ReadingAudioFormat.partGap,
+                          silenceBefore: ReadingAudioFormat.silenceBefore(part: part.index,
+                                                                          startsSection: part.startsSection),
                           chapter: part.chapter)
         }
         let summary: AudioBookSummary

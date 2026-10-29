@@ -642,7 +642,10 @@ and renders with `ReadingPipeline` in this process into the pipeline's cache in
 `Application Support/Holos/Readings/Output-<hash>` (the explicit-output cache of
 `voiceislocal read -o`), resuming it when it exists. The chosen output and cache are saved
 in the index before rendering starts; a save that fails stops the reading. The pipeline reports progress
-(`ReadingRenderProgress`: each part as it starts, then the join) to the row. The pipeline is
+(`ReadingRenderProgress`: each part as it starts, then the join) to the row, and each part once it is made and
+saved (`partMade`, a `ReadingMadePart`: its file in the cache, duration, and the silence the joined file puts before
+it, `ReadingAudioFormat.silenceBefore`; on a resume, the parts it keeps once their checksums are checked again). The
+joiner and anything playing the parts place them by the same rule (`ReadingAudioFormat.silenceFrames`). The pipeline is
 main-actor isolated, so it runs as a task on the main actor: speech synthesis and AAC
 encoding happen on AVFoundation's threads, and a document file is loaded and every part and
 finished file is hashed on a detached task (`DocumentLoader` uses none of AppKit's
