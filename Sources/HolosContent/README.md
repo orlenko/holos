@@ -26,7 +26,8 @@ list (docs/design.md "Reading section", "Text-to-speech").
   decisions about it and its readings' files, in `ReadingLibrary+<Part>.swift` extensions (LaunchPolicy, Location,
   Ownership, FileStatus, Sharing, Deletion, Saved). The list's duration and position texts are the app's
   (`ReadingLibrary+Formatting.swift` in HolosApp). `ReadingWorkQueue` runs readings one at a time; `ReadingPlayer`
-  plays a finished one.
+  plays a finished one from its file, and one being made from its parts (`PartQueuePlayback` on a
+  `ReadingSegmentOutput`, an `AVAudioEngine` in the app), handed over to its file once it is made.
 
 **Must not own:** speech recognition, meetings, session folders. Voice rendering stays in `HolosSynthesis`.
 

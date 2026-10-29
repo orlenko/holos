@@ -42,6 +42,7 @@ import Testing
         func play() -> Bool { isPlaying = true; return true }
         func pause() { isPlaying = false }
         func stop() { isPlaying = false }
+        func seek(to time: TimeInterval) { currentTime = time }
     }
 
     @MainActor struct Fixture {
