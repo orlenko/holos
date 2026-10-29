@@ -94,9 +94,9 @@ struct ReadingIndex: Codable {
     var entries: [ReadingEntry]
 }
 
-/// The Reading list's index: `<support>/ReadingLibrary/library.json` (0600), plus a snapshot of each unfinished
-/// reading's loaded document (`Documents/<id>.json`) so a resume reads exactly the same text without loading the web
-/// page again. Render caches stay where the pipeline keeps them (`<support>/Readings`); the finished files go to the
+/// The Reading list's index: `<support>/ReadingLibrary/library.json` (0600), plus a snapshot of each reading's loaded
+/// document (`Documents/<id>.json`), kept until the reading is deleted, so a resume reads exactly the same text without
+/// loading the web page again, and Show Text shows it. Render caches stay where the pipeline keeps them (`<support>/Readings`); the finished files go to the
 /// output folder (Settings › Reading).
 public final class ReadingLibraryStore: @unchecked Sendable {
     public struct Loaded: Sendable, Equatable {
@@ -304,7 +304,7 @@ public final class ReadingLibraryStore: @unchecked Sendable {
         return try withExtendedLifetime(reservation) { try body() }
     }
 
-    /// Keeps `document`, the text reading `id` reads, until the reading is finished or deleted. Never over a text
+    /// Keeps `document`, the text reading `id` reads, until the reading is deleted. Never over a text
     /// saved for it already (one `document(for:)` could not see, its folder out of reach for a moment): that one is
     /// what the reading reads, and this save fails.
     public func saveDocument(_ document: ReadableDocument, for id: UUID) throws {

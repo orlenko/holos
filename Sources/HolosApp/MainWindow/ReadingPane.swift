@@ -572,6 +572,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
             if let problem = controller.stop(id) { showMessage(problem, problem: true) }
         case .retry:
             if let problem = controller.retry(id) { showMessage(problem, problem: true) }
+        case .showText: showText(id)
         case .share: share(id, from: cell.shareAnchor)
         case .reveal: reveal(id)
         case .delete: confirmDelete(id)
@@ -634,6 +635,25 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
             }
         }
         return true
+    }
+
+    /// Show Text: the reading's saved text in a sheet, read off the main actor (a book's is megabytes).
+    func showText(_ id: UUID) {
+        guard let entry = controller.entry(id) else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                guard let document = try await self.controller.savedText(id) else {
+                    self.showMessage("The text of “\(entry.title)” was not kept: an earlier version of Voice is "
+                        + "Local made it, and kept only its audio.", problem: true)
+                    return
+                }
+                self.presentAsSheet(ReadingTextSheet(title: entry.title, text: document.plainText))
+            } catch {
+                self.showMessage("The text of “\(entry.title)” could not be read: \(error.localizedDescription)",
+                                 problem: true)
+            }
+        }
     }
 
     private func reveal(_ id: UUID) {

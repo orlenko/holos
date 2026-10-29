@@ -122,8 +122,6 @@ final class ReadingController {
         // one whose files cannot be removed comes back, with the reason.
         all = (plan.entries + plan.delete).sorted { $0.created > $1.created }
         if all != loaded.entries { save() }  // never for a newer build's list (`save` checks `writable`)
-        // Saved text a made reading still has (its removal failed, or the save before it did) goes now.
-        if writable { removeFinishedSnapshots() }
         plan.resume.forEach(queue.enqueue)
         plan.delete.forEach { finishDeleteLater($0.id) }
         refreshFiles()
@@ -196,6 +194,13 @@ final class ReadingController {
         onChange?()
         queue.enqueue(entry.id)
         return entry.id
+    }
+
+    /// The text reading `id` reads, as saved when it was loaded, read off the main actor; nil when none is kept (one
+    /// made before readings kept their text, or not loaded yet).
+    func savedText(_ id: UUID) async throws -> ReadableDocument? {
+        let store = store
+        return try await Task.detached(priority: .userInitiated) { try store.document(for: id) }.value
     }
 
     /// Stop: a waiting reading leaves the queue, a running one is cancelled; either keeps what it rendered for Resume.
@@ -576,10 +581,8 @@ final class ReadingController {
             // Bookkeeping that failed after the file was saved (see `ReadingResult.warnings`).
             $0.message = result.warnings.isEmpty ? nil : result.warnings.joined(separator: " ")
         }
-        // The saved text goes only once the index says the reading is made (a successful save removes it), or when
-        // the index keeps nothing: a reading the index still calls unfinished always has its text to resume from.
-        // One kept because the save failed goes after the next save that works (`writeWork`).
-        if writable { save() } else { removeFinishedSnapshots() }
+        // Its saved text stays, for Show Text, until the reading is deleted.
+        save()
         // Its file is checked (off the main actor) for its row; one whose identity could not be read just now (a
         // network volume) is checked by checksum.
         refreshFiles()
@@ -744,43 +747,30 @@ final class ReadingController {
 
     // MARK: Writing the index
 
-    /// What one write of the index did: why it failed (nil: saved, or nothing to save), and what removing the saved
-    /// texts of made readings after it left to tell.
+    /// What one write of the index did: why it failed (nil: saved, or nothing to save).
     private struct WriteResult: Sendable {
         var failure: String?
-        var snapshotProblem: String?
     }
 
-    /// Writes of the index and removals of saved texts, off the main actor (the support folder may be on a slow
-    /// share), one at a time in the order they were asked for: each writes the list as it was when asked, so the
-    /// last one leaves the list as it is.
+    /// Writes of the index, off the main actor (the support folder may be on a slow share), one at a time in the
+    /// order they were asked for: each writes the list as it was when asked, so the last one leaves the list as it
+    /// is.
     private let writes = DispatchQueue(label: "VoiceIsLocal.ReadingIndex", qos: .userInitiated)
     private var writeSequence = 0
     private var appliedSequence = 0
 
-    /// The work of one save of the list as it is now (nil `saving`: only the saved texts are removed). After a save
-    /// that works (or with a list that is not saved at all), the saved text of every reading the list records as made
-    /// is removed: retried after each save, so one kept because a save or a removal failed goes once they work.
+    /// The work of one save of the list as it is now (nil `saving`: nothing to do). A reading's saved text stays
+    /// until the reading is deleted (Show Text reads it).
     private func writeWork(saving: Bool, growing: Bool, entries: [ReadingEntry]? = nil) -> @Sendable () -> WriteResult {
-        let (store, entries, readOnly) = (store, entries ?? all, readOnly)
+        let (store, entries) = (store, entries ?? all)
         return {
-            if saving {
-                do {
-                    try store.save(entries, growing: growing)
-                } catch {
-                    return WriteResult(failure: error.localizedDescription)
-                }
+            guard saving else { return WriteResult() }
+            do {
+                try store.save(entries, growing: growing)
+            } catch {
+                return WriteResult(failure: error.localizedDescription)
             }
-            var problem: String?
-            for entry in entries where entry.state == .done && !readOnly.contains(entry.id)
-                && store.hasDocument(for: entry.id) {
-                do {
-                    try store.removeDocument(for: entry.id)
-                } catch {
-                    problem = "\(Self.snapshotFailure) “\(entry.title)” could not be removed: \(error.localizedDescription)"
-                }
-            }
-            return WriteResult(snapshotProblem: problem)
+            return WriteResult()
         }
     }
 
@@ -812,12 +802,6 @@ final class ReadingController {
             if lastSaveFailed {
                 lastSaveFailed = false
                 if notice?.hasPrefix(Self.saveFailure) == true { notice = nil }
-            }
-            if let problem = result.snapshotProblem {
-                notice = problem
-            } else if notice?.hasPrefix(Self.snapshotFailure) == true {
-                // All gone now: a warning from an earlier try no longer holds.
-                notice = nil
             }
         }
         if notice != before { onChange?() }
@@ -913,11 +897,6 @@ final class ReadingController {
         }
     }
 
-    /// Removes the saved text of the readings the list records as made (see `writeWork`), off the main actor.
-    private func removeFinishedSnapshots() {
-        enqueueWrite(saving: false)
-    }
-
     /// Saves the index again when a quit with nothing rendering comes (a write may have failed meanwhile), so what
     /// the user did since (a Stop, a Delete) is what the next launch finds. False when it cannot be saved.
     func saveBeforeQuit() -> Bool {
@@ -925,6 +904,4 @@ final class ReadingController {
         guard writable, lastSaveFailed || writeSequence > appliedSequence else { return true }
         return saveNow()
     }
-
-    nonisolated static let snapshotFailure = "The saved text of"
 }
