@@ -23,6 +23,8 @@ private final class FakePlayback: ReadingPlayback, @unchecked Sendable {
         isPlaying = false
         stops += 1
     }
+
+    func seek(to time: TimeInterval) { currentTime = time }
 }
 
 @MainActor @Suite struct ReadingPlayerTests {
