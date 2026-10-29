@@ -179,6 +179,19 @@ skips it.
    −43 dBFS (system), p50 −22 and −21; wordless seconds' p50 −64 and −72. Below −50 dBFS
    lay 0.6 % and 0.4 % of the words but 75 % and 92 % of the wordless seconds, and a quiet
    word the live recognizer heard still keeps its segment by the second condition.
+   Before both, speaker labels the model invents are removed (`droppedLabels`,
+   `DeepTranscriptLabels.swift`): Whisper, which learned from transcripts that name their
+   speakers, sometimes starts a passage with a name nobody said ("Jane Doe: Yes.", "Jane Doe,
+   Ph.D.: …", a date, an all-caps word). A label is 1 to 5 words, the last ending in ":", each
+   starting with an uppercase letter or a digit (leading punctuation aside, as Whisper splits
+   "Ph.D.") or a name particle ("de", "van"), at the start of a passage or after a word ending
+   a sentence. It stays when the recorded transcript has every one of its words but titles
+   ("Dr.", "Ph.D.") on the same track within 2 s ("Question: …" said aloud); without a
+   recorded transcript the shape alone decides. Only the label's words go; the passage starts
+   at its first word left, and one that held only a label is dropped. Measured on four
+   meetings' deep transcripts (the user's, numbers only): 46 labels in 5,276 passages, all
+   removed, 1 at a sentence end inside a passage, 1 passage that was only a label; the one
+   real colon near a passage start, after lowercase words, stays.
 6. *Segments.* Words are joined as Whisper spaced them (punctuation it wrote as a word of its
    own joins the word before), each a `TimedWord` with its UTF-16 offset, start, end and
    probability as confidence; a segment without word timings keeps its text untimed. New
@@ -186,7 +199,8 @@ skips it.
    Nothing recognized while the recorded transcript has words keeps the transcript.
 7. *Publication*, as the languages stage: under the writer and speaker locks, the
    edited-labels check again, `deepTranscribed {transcriptID, base, engine, language, tracks,
-   seconds, segments, words, droppedSilent, droppedRepeats, promptTerms, promptTokens}`, then
+   seconds, segments, words, droppedSilent, droppedRepeats, droppedLabels, promptTerms,
+   promptTokens}`, then
    `saveTranscript` (the recorded transcript stays as a revision). Cancellation publishes
    nothing; a cancelled or killed pass starts over next time (it is cheap enough).
 8. *Downstream.* Live text hints (1c), word fixes (1d, whose revisions keep `engine`),
@@ -381,7 +395,9 @@ one of them). A current transcript that cannot be read is an error, never a run 
 reference. An explicit `--language` Whisper has no token for is refused. Each track's render
 needs the same free space as the pass's (the render plus 1 GB), checked before it is written.
 
-**Tests.** `DeepTranscriptionTests` (prompt order and cap; quietest cut; time mapping through
+**Tests.** `DeepTranscriptLabelTests` (invented labels at a passage start and after a sentence,
+their shapes, speech that looks like a label, the recorded transcript's words by track and
+time, untimed passages, labels removed before repeats, the stage summary), `DeepTranscriptionTests` (prompt order and cap; quietest cut; time mapping through
 a shortened gap; word offsets and punctuation; the silence guard needing both conditions,
 tracks, untracked reference segments; repeat runs per track; end to end with a scripted
 transcriber: a new revision relabelled and exported with the recorded one kept, a second run
