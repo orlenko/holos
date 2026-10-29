@@ -68,7 +68,10 @@ public final class EngineSegmentOutput: ReadingSegmentOutput {
         guard !manualRendering else { return }
         observer = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.onInterrupted?() }
+            MainActor.assumeIsolated {
+                _ = self?.playedFrames
+                self?.onInterrupted?()
+            }
         }
     }
 
@@ -82,6 +85,8 @@ public final class EngineSegmentOutput: ReadingSegmentOutput {
     }
 
     public func pause() {
+        // Where it pauses, not where the position was last read.
+        _ = playedFrames
         node.pause()
     }
 

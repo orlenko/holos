@@ -61,6 +61,8 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
     public var onError: ((String) -> Void)?
     /// The reading played to its end (never called for a stop, a pause, or another reading played over it).
     public var onEnded: ((UUID) -> Void)?
+    /// A reading left the player: its end (before `onEnded`), a stop, a failure, or another reading played over it.
+    public var onUnloaded: ((UUID) -> Void)?
 
     public init(open: @escaping Open = ReadingPlayer.openAudio,
                 makeOutput: @escaping @MainActor () -> any ReadingSegmentOutput = { EngineSegmentOutput() }) {
@@ -88,6 +90,9 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
 
     /// The loaded reading waits for a part that is not made yet.
     public var isWaiting: Bool { player?.isWaiting ?? false }
+
+    /// The loaded reading plays from its parts (it is being made), not from its file.
+    public var playsParts: Bool { player is PartQueuePlayback }
 
     /// Pauses or continues reading `id` when it is the one loaded; false when it is not. One that cannot continue is
     /// stopped, and the reason reported.
@@ -228,9 +233,10 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
         ticker = nil
         player?.stop()
         player = nil
-        guard entryID != nil else { return }
+        guard let id = entryID else { return }
         entryID = nil
         onChange?()
+        onUnloaded?(id)
     }
 
     /// Updates the position twice a second while playing.

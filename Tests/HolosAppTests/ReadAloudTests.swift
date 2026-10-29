@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 @testable import HolosContent
 import HolosCore
@@ -25,8 +26,28 @@ import Testing
             return entry.id
         }
 
-        func openFinishedFile(_ entry: ReadingEntry) async -> FileHandle? {
-            try? FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+        /// The parts made of readings being made.
+        var feeds: [UUID: ReadingPartFeed] = [:]
+
+        func canPlay(_ id: UUID) -> Bool {
+            guard let entry = entries[id] else { return false }
+            return entry.state == .rendering ? (feeds[id]?.madeInOrder ?? 0) > 0 : entry.state == .done
+        }
+
+        func play(_ id: UUID, on player: ReadingPlayer) async throws -> Bool {
+            if entries[id]?.state == .rendering, let feed = feeds[id] {
+                try player.play(id, feed: feed, finishedFile: { nil })
+                return true
+            }
+            return try await player.play(id) { try? FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null")) }
+        }
+
+        /// Reading `id`'s first part (of two) is made, its file not on disk (so it is never played).
+        func makeFirstPart(_ id: UUID) {
+            let feed = feeds[id] ?? ReadingPartFeed()
+            feeds[id] = feed
+            feed.add(ReadingMadePart(index: 0, total: 2, audio: URL(fileURLWithPath: "/nonexistent/part0.caf"),
+                                     duration: 1, silenceBefore: 0))
         }
 
         func set(_ id: UUID, _ state: ReadingEntry.State, message: String? = nil) {
@@ -45,9 +66,19 @@ import Testing
         func seek(to time: TimeInterval) { currentTime = time }
     }
 
+    /// Queues nothing anywhere: a reading being made plays nothing aloud.
+    @MainActor final class SilentOutput: ReadingSegmentOutput {
+        var playedFrames: Int64 = 0
+        var onInterrupted: (() -> Void)?
+        func schedule(_ buffer: AVAudioPCMBuffer, played: @escaping @MainActor () -> Void) throws {}
+        func play() throws {}
+        func pause() {}
+        func stop() {}
+    }
+
     @MainActor struct Fixture {
         let list = FakeList()
-        let player = ReadingPlayer(open: { _ in OpenedPlayback(SilentPlayback()) })
+        let player = ReadingPlayer(open: { _ in OpenedPlayback(SilentPlayback()) }, makeOutput: { SilentOutput() })
         let readAloud: ReadAloud
         let defaults: UserDefaults
         let suite = "ReadAloudTests-\(UUID().uuidString)"
@@ -90,6 +121,47 @@ import Testing
         try fixture.finishPlaying()
         #expect(fixture.readAloud.playing == nil)
         #expect(!fixture.readAloud.isActive)
+    }
+
+    /// A selection starts playing once its first part is made, while the rest is made.
+    @Test(.timeLimit(.minutes(1))) func aSelectionPlaysOnceItsFirstPartIsMade() async throws {
+        let fixture = Fixture()
+        fixture.readAloud.pressed()
+        #expect(await eventually { fixture.readAloud.waiting.count == 1 })
+        let id = try #require(fixture.readAloud.waiting.first)
+        fixture.list.set(id, .rendering)
+        fixture.readAloud.readingProgressed(id)
+        #expect(fixture.player.entryID == nil)
+
+        fixture.list.makeFirstPart(id)
+        fixture.readAloud.readingProgressed(id)
+        #expect(await eventually { fixture.player.entryID == id })
+        #expect(fixture.readAloud.playing == id)
+        #expect(fixture.player.isPlaying)
+        #expect(fixture.readAloud.waiting.isEmpty)
+    }
+
+    /// Making fails while it plays: what was made plays, then it leaves the player, the failure is told, and the
+    /// next waiting selection plays.
+    @Test(.timeLimit(.minutes(1))) func aFailureWhilePlayingEndsItAndTheNextPlays() async throws {
+        let fixture = Fixture()
+        for _ in 0..<2 { fixture.readAloud.pressed() }
+        #expect(await eventually { fixture.readAloud.waiting.count == 2 })
+        let ids = fixture.readAloud.waiting
+        fixture.list.set(ids[0], .rendering)
+        fixture.list.makeFirstPart(ids[0])
+        fixture.readAloud.readingProgressed(ids[0])
+        #expect(await eventually { fixture.player.entryID == ids[0] })
+        fixture.list.set(ids[1], .done)
+        fixture.readAloud.readingEnded(ids[1])
+        #expect(fixture.player.entryID == ids[0])
+
+        fixture.list.set(ids[0], .failed, message: "No voice.")
+        fixture.list.feeds[ids[0]]?.finish(.failed("No voice."))
+        fixture.readAloud.readingEnded(ids[0])
+        #expect(fixture.notices.last == "The selection could not be read aloud")
+        #expect(await eventually { fixture.player.entryID == ids[1] })
+        #expect(fixture.readAloud.playing == ids[1])
     }
 
     @Test(.timeLimit(.minutes(1))) func selectionsPlayInTheOrderAskedAndAFailedOneIsSkipped() async throws {

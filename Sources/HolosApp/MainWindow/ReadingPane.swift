@@ -498,8 +498,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     @discardableResult
     private func stopPlaybackOfGoneFile() -> Bool {
         guard let playing = player.entryID else { return false }
-        if let entry = rows.first(where: { $0.id == playing }), entry.state == .done,
-           controller.fileProblem(entry) == nil { return false }
+        let entry = rows.first { $0.id == playing }
+        if controller.keepsPlaying(entry, parts: player.playsParts) { return false }
         player.unload()
         return true
     }
@@ -546,11 +546,13 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         let problem = controller.fileProblem(entry)
         var playback: ReadingRowView.Playback?
         if player.entryID == entry.id {
-            playback = ReadingRowView.Playback(playing: player.isPlaying, current: player.position?.current,
-                                               duration: player.position?.duration)
+            let position = player.position
+            playback = ReadingRowView.Playback(playing: player.isPlaying, waiting: player.isWaiting,
+                current: position?.current, duration: position?.duration, final: position?.isFinal ?? true)
         }
         let size = problem != nil ? nil : controller.finishedFile(entry)?.size
-        cell.show(entry, activity: controller.activity[entry.id], fileProblem: problem, size: size, playback: playback)
+        cell.show(entry, activity: controller.activity[entry.id], fileProblem: problem, size: size, playback: playback,
+                  playable: controller.canPlay(entry.id))
     }
 
     /// The player's state or position changed (twice a second while it plays): only the rows it concerns, the one
@@ -575,7 +577,9 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         switch action {
         case .play: play(id)
         case .stop:
+            // One Stop for a reading being made and played: both end.
             if let problem = controller.stop(id) { showMessage(problem, problem: true) }
+            else if player.entryID == id { player.stop() }
         case .retry:
             if let problem = controller.retry(id) { showMessage(problem, problem: true) }
         case .showText: showText(id)
@@ -594,19 +598,15 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private func play(_ id: UUID) {
         preview.stop()
         if player.toggleLoaded(id) { return }
-        guard let entry = controller.entry(id), entry.state == .done, controller.fileProblem(entry) == nil else {
-            NSSound.beep()
-            return
-        }
-        // Played from the file opened and checked off the main actor, never the path (see
-        // `ReadingController.openFinishedFile`). The player counts the request from now, so a later Play, Stop, or
-        // Pause wins over this one while its file is opened.
+        // A made reading, or one being made once its first part is (`ReadingController+Playing`).
+        guard controller.canPlay(id), let entry = controller.entry(id) else { return NSSound.beep() }
+        // A file is played from the file opened and checked off the main actor, never the path. The player counts the
+        // request from now, so a later Play, Stop, or Pause wins over this one while its file is opened.
         let controller = controller
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let played = try await self.player.play(id) { await controller.openFinishedFile(entry) }
-                if !played { NSSound.beep() }
+                if try await !controller.play(id, on: self.player) { NSSound.beep() }
             } catch {
                 self.showMessage("“\(entry.title)” could not be played: \(error.localizedDescription)", problem: true)
             }

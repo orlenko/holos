@@ -8,20 +8,24 @@ import HolosDesktop
 protocol ReadAloudList: AnyObject {
     func entry(_ id: UUID) -> ReadingEntry?
     func add(_ source: ReadingSource, voice: String?, speed: Double, document: ReadableDocument?) async throws -> UUID
-    func openFinishedFile(_ entry: ReadingEntry) async -> FileHandle?
+    /// It is made, or its first part is (`ReadingController+Playing`).
+    func canPlay(_ id: UUID) -> Bool
+    func play(_ id: UUID, on player: ReadingPlayer) async throws -> Bool
 }
 
 extension ReadingController: ReadAloudList {}
 
 /// Read the selection aloud (docs/design.md "Read the selection aloud"): ⌃⌥⌘R in any app reads the text selected
-/// there, adds it to the Reading list as a reading with Settings › Reading's voice and speed, and plays it once it is
-/// made, after any it added before. The readings stay in the list, with their text (Show Text).
+/// there, adds it to the Reading list as a reading with Settings › Reading's voice and speed, and plays it once its
+/// first part is made (the rest as it is made), after any it added before. The readings stay in the list, with their
+/// text (Show Text).
 ///
 /// Invariants:
 /// 1. `waiting` holds the readings the shortcut added that have not started playing, in the order asked; one that
 ///    fails, is stopped or leaves the list leaves `waiting` too.
-/// 2. The first of `waiting` starts playing only once it is made and the player is not playing; it then moves to
-///    `playing` until it ends, is stopped, or another reading is played over it.
+/// 2. The first of `waiting` starts playing only once it can play (made, or its first part made) and the player is
+///    neither playing nor starting a reading for it; it then moves to `playing` until it leaves the player (its end, a
+///    stop, a failure, or another reading played over it).
 /// 3. The shortcut is registered only while `isOn`, from `start` on; a registration that fails is `problem`.
 @MainActor
 final class ReadAloud {
@@ -38,6 +42,8 @@ final class ReadAloud {
     private var hotkey: ChordHotkey?
     private(set) var waiting: [UUID] = []
     private(set) var playing: UUID?
+    /// A reading is being started (its file opening): nothing else starts meanwhile (invariant 2).
+    private var starting = false
     /// Why the shortcut is not working; nil when it is, or is off.
     private(set) var problem: String?
     /// The state changed (the menu and Settings show it).
@@ -54,6 +60,7 @@ final class ReadAloud {
         self.player = player
         self.defaults = defaults
         player.onEnded = { [weak self] id in self?.ended(playing: id) }
+        player.onUnloaded = { [weak self] id in self?.unloaded(id) }
     }
 
     /// The shortcut is on unless turned off in Settings › Reading.
@@ -141,33 +148,60 @@ final class ReadAloud {
         onChange?()
     }
 
+    /// A part of a reading was made (`ReadingPartFeeds.onPartMade`): the first waiting one may start now.
+    func readingProgressed(_ id: UUID) {
+        if waiting.first == id { advance() }
+    }
+
     private func ended(playing id: UUID) {
         if playing == id { playing = nil }
         advance()
         onChange?()
     }
 
-    /// Invariant 2: plays the first waiting reading once it is made and nothing else plays.
+    /// A reading left the player (invariant 2). One whose making failed while it played (what was made has played) says
+    /// so. The next waiting one is looked at once this turn is over: one played over it is loaded by then.
+    private func unloaded(_ id: UUID) {
+        guard playing == id else { return }
+        playing = nil
+        if let entry = readings.entry(id), entry.state == .failed {
+            notify("The selection could not be read aloud", entry.message ?? "Making its audio failed.")
+        }
+        onChange?()
+        Task { [weak self] in self?.advance() }
+    }
+
+    /// Invariant 2: plays the first waiting reading once it can play and nothing else plays or is starting.
     private func advance() {
-        while let first = waiting.first, readings.entry(first)?.isActive != true, !player.isPlaying {
+        while !starting, !player.isPlaying, let first = waiting.first {
+            guard let entry = readings.entry(first) else {
+                waiting.removeFirst()
+                continue
+            }
+            // Not made enough to play yet: its first part made, or its end, comes back here.
+            if entry.isActive, !readings.canPlay(first) { return }
             waiting.removeFirst()
-            guard let entry = readings.entry(first), entry.state == .done else { continue }
+            guard entry.state == .done || entry.isActive else { continue }
             playing = first
+            starting = true
             onChange?()
-            Task { [weak self] in await self?.play(entry) }
+            Task { [weak self] in await self?.play(first) }
             return
         }
     }
 
-    private func play(_ entry: ReadingEntry) async {
-        let readings = readings
+    private func play(_ id: UUID) async {
         do {
-            if try await player.play(entry.id, file: { await readings.openFinishedFile(entry) }) { return }
+            if try await readings.play(id, on: player) {
+                starting = false
+                return
+            }
             notify("The selection could not be played", "Its audio file is not where it was made.")
         } catch {
             notify("The selection could not be played", error.localizedDescription)
         }
-        if playing == entry.id { playing = nil }
+        starting = false
+        if playing == id { playing = nil }
         advance()
         onChange?()
     }

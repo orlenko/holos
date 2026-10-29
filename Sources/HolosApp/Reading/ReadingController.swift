@@ -12,13 +12,6 @@ import os
 /// readings the user kept rendering over a quit continue.
 @MainActor
 final class ReadingController {
-    /// What a reading being made is doing, for its row.
-    enum Activity: Equatable {
-        case loading
-        case rendering(part: Int, of: Int)
-        case joining(parts: Int)
-    }
-
     /// The list as shown, newest first: without the readings being deleted.
     var entries: [ReadingEntry] { all.filter { $0.deletePending != true } }
     /// What the list should say about its index (see `ReadingLibraryStore.load`).
@@ -30,6 +23,8 @@ final class ReadingController {
     var onProgress: ((UUID) -> Void)?
     /// A reading's work ended: made, failed, or stopped (its entry says which).
     var onEnded: ((UUID) -> Void)?
+    /// The parts of the readings being made, to play before they are finished.
+    let feeds = ReadingPartFeeds()
 
     /// Every entry of the index, those being deleted included (they are saved marked, so a quit or a crash before
     /// their files are gone finishes the deletion at the next launch).
@@ -516,6 +511,7 @@ final class ReadingController {
         onChange?()
         refreshFiles()
         if deleteWhenStopped.remove(id) != nil { finishDeleteLater(id) }
+        feeds.ended(id, as: entry(id))
         onEnded?(id)
     }
 
@@ -599,7 +595,8 @@ final class ReadingController {
 
         let result = try await ReadingPipeline(renderer: renderer).render(
             script: script, voiceIdentifier: voice.id, rate: rate, metadata: metadata, location: location,
-            resume: resume) { [weak self] progress in self?.progressed(id, progress) }
+            resume: resume, progress: { [weak self] progress in self?.progressed(id, progress) },
+            partMade: { [feeds] part in feeds.add(part, to: id) })
         update(id) {
             $0.state = .done
             $0.output = result.output.path
@@ -687,15 +684,6 @@ final class ReadingController {
     }
 
     // MARK: - Storage
-    /// What a Delete came to.
-    enum DeleteOutcome: Equatable {
-        /// The reading is deleted (or will be once its render has stopped); `note` is something the user should know
-        /// (its file had changed, so it was left in place).
-        case deleted(note: String?)
-        /// The reading stays in the list, for the reason given.
-        case kept(String)
-    }
-
     /// Removes a reading marked for deletion once its files are gone; when one cannot be removed, the reading comes
     /// back to the list (unmarked) with the reason. The entry stays marked (hidden, and saved so) while its files are
     /// removed off the main actor; a second call for it meanwhile does nothing.
