@@ -146,7 +146,7 @@ public enum MeetingEventKind {
     /// "Editing words"), journaled before the edited revision is saved; `base` is the revision it was edited from.
     public static let transcriptEdited = "transcriptEdited"
     /// transcriptID, base, engine, language, tracks, seconds, segments, words, droppedSilent, droppedRepeats,
-    /// promptTerms: journaled before a transcript made from the saved audio by the deep transcription pass is saved as
+    /// droppedLabels, promptTerms: journaled before a transcript made from the saved audio by the deep transcription pass is saved as
     /// current; `base` is the recorded transcript it replaced, which is kept (docs/meeting/deep-transcription.md §4.16)
     public static let deepTranscribed = "deepTranscribed"
 }

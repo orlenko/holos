@@ -226,6 +226,7 @@ public enum DeepTranscriptionStage {
             "seconds": String(format: "%.1f", pass.seconds), "segments": String(segments.count),
             "words": String(segments.reduce(0) { $0 + $1.words.count }),
             "droppedSilent": String(guarded.droppedSilent), "droppedRepeats": String(guarded.droppedRepeats),
+            "droppedLabels": String(guarded.droppedLabels),
             "promptTerms": String(prompt.terms.count), "promptTokens": String(prompt.tokens),
         ]
         do {
@@ -235,10 +236,11 @@ public enum DeepTranscriptionStage {
         } catch let error where !(error is CancellationError) {
             return fail("\(keptText) The new transcript could not be saved: \(error.localizedDescription)")
         }
-        log.notice("Session \(request.manifest.id, privacy: .public): deep transcription made \(segments.count, privacy: .public) segments; dropped \(guarded.droppedSilent, privacy: .public) silent and \(guarded.droppedRepeats, privacy: .public) repeated")
+        log.notice("Session \(request.manifest.id, privacy: .public): deep transcription made \(segments.count, privacy: .public) segments; dropped \(guarded.droppedSilent, privacy: .public) silent and \(guarded.droppedRepeats, privacy: .public) repeated, removed \(guarded.droppedLabels, privacy: .public) invented labels")
         recorder.end(.deepTranscription, .succeeded,
                      summary(segments: segments.count, droppedSilent: guarded.droppedSilent,
-                             droppedRepeats: guarded.droppedRepeats, promptTerms: prompt.terms.count),
+                             droppedRepeats: guarded.droppedRepeats, droppedLabels: guarded.droppedLabels,
+                             promptTerms: prompt.terms.count),
                      since: started)
         return Outcome(transcript: deep, note: note)
     }
@@ -247,8 +249,9 @@ public enum DeepTranscriptionStage {
     static let note = "Transcribed again with \(DeepTranscriptionModel.displayName)."
 
     /// "Transcribed again with Whisper large-v3 turbo: 412 passages, with 18 words from the vocabulary in its prompt;
-    /// left out 3 passages over silence and 2 repeats."
-    static func summary(segments: Int, droppedSilent: Int, droppedRepeats: Int, promptTerms: Int) -> String {
+    /// left out 3 passages over silence and 2 repeats; removed 5 speaker labels nobody said."
+    static func summary(segments: Int, droppedSilent: Int, droppedRepeats: Int, droppedLabels: Int = 0,
+                        promptTerms: Int) -> String {
         var text = "Transcribed again with \(DeepTranscriptionModel.displayName): "
             + (segments == 1 ? "1 passage" : "\(segments) passages")
         if promptTerms > 0 {
@@ -260,6 +263,10 @@ public enum DeepTranscriptionStage {
         }
         if droppedRepeats > 0 { dropped.append(droppedRepeats == 1 ? "1 repeat" : "\(droppedRepeats) repeats") }
         if !dropped.isEmpty { text += "; left out " + dropped.joined(separator: " and ") }
+        if droppedLabels > 0 {
+            text += "; removed " + (droppedLabels == 1 ? "1 speaker label" : "\(droppedLabels) speaker labels")
+                + " nobody said"
+        }
         return text + "."
     }
 
