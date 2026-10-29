@@ -214,13 +214,22 @@ final class ReadingRowView: NSTableCellView {
         case .failed:
             status.stringValue = entry.message ?? "The reading failed."
             status.textColor = .systemOrange
-            setPrimary("Try Again", .retry, help: "Make it again; parts already rendered are kept")
+            if playback != nil {
+                // What was made before it failed still plays; Try Again once it stops.
+                setPlay(playback)
+            } else {
+                setPrimary("Try Again", .retry, help: "Make it again; parts already rendered are kept")
+            }
             buttons = [primary, deleteButton]
         case .stopped:
             var text = "Stopped"
             if let part = entry.part, let parts = entry.parts { text += " at part \(part) of \(parts)" }
             status.stringValue = text + (entry.message.map { ". \($0)" } ?? ".")
-            setPrimary("Resume", .retry, help: "Continue where it stopped")
+            if playback != nil {
+                setPlay(playback)
+            } else {
+                setPrimary("Resume", .retry, help: "Continue where it stopped")
+            }
             buttons = [primary, deleteButton]
         }
         for button in [primary, stopButton, textButton, shareButton, revealButton, deleteButton] {

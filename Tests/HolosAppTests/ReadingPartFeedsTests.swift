@@ -41,4 +41,24 @@ import Testing
         // A reading with no part made has no feed to end.
         feeds.ended(UUID(), as: entry)
     }
+
+    /// The Reading pane keeps a reading playing from its parts while it is in the list, whatever its state: making
+    /// that failed or stopped ends that playback itself once what was made has played, saying why. Playing from its
+    /// file, it keeps playing only while that file is the one made, or is being checked.
+    @Test func aReadingPlayingFromItsPartsKeepsPlayingWhileInTheList() {
+        let controller = ReadingController()
+        var entry = ReadingEntry(source: .selection(app: nil), requestedVoice: nil, speed: 1)
+        for state in [ReadingEntry.State.rendering, .failed, .stopped, .done] {
+            entry.state = state
+            #expect(controller.keepsPlaying(entry, parts: true), "\(state)")
+        }
+        #expect(!controller.keepsPlaying(nil, parts: true))
+        // From its file: made (not checked yet counts as the one made), never failed or being made.
+        entry.state = .done
+        #expect(controller.keepsPlaying(entry, parts: false))
+        for state in [ReadingEntry.State.failed, .rendering] {
+            entry.state = state
+            #expect(!controller.keepsPlaying(entry, parts: false), "\(state)")
+        }
+    }
 }

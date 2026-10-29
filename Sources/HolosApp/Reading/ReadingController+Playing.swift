@@ -22,6 +22,15 @@ extension ReadingController {
         return try await player.play(id) { await self.openFinishedFile(entry) }
     }
 
+    /// Whether the reading loaded in the player (`entry`, nil once it left the list) keeps playing: from its parts
+    /// whatever its state (making that failed or stopped ends that playback itself, after what was made), else from
+    /// its file while that is the one made (or is being checked, as right after it is made).
+    func keepsPlaying(_ entry: ReadingEntry?, parts: Bool) -> Bool {
+        guard let entry else { return false }
+        if parts { return true }
+        return entry.state == .done && [nil, .checking].contains(fileProblem(entry))
+    }
+
     /// The reading's finished file opened (see `openFinishedFile`), as the reading is now: one being made when Play
     /// was pressed is looked up again once made.
     func openFinishedFile(id: UUID) async -> FileHandle? {

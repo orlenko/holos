@@ -91,6 +91,9 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
     /// The loaded reading waits for a part that is not made yet.
     public var isWaiting: Bool { player?.isWaiting ?? false }
 
+    /// The loaded reading plays from its parts (it is being made), not from its file.
+    public var playsParts: Bool { player is PartQueuePlayback }
+
     /// Pauses or continues reading `id` when it is the one loaded; false when it is not. One that cannot continue is
     /// stopped, and the reason reported.
     public func toggleLoaded(_ id: UUID) -> Bool {

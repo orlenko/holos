@@ -204,6 +204,16 @@ struct MainWindowNarrowTests {
             == ["▶ Play", "Stop"])
         row.show(entry, activity: .rendering(part: 1, of: 5), fileProblem: nil, size: nil, playback: nil)
         #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHidden }.map(\.title) == ["Stop"])
+
+        // Making failed while it plays what was made: Pause until that stops, then Try Again.
+        entry.state = .failed
+        row.show(entry, activity: nil, fileProblem: nil, size: nil,
+                 playback: .init(playing: true, current: 30, duration: 40, final: false))
+        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHidden }.map(\.title).first
+            == "❚❚ Pause")
+        row.show(entry, activity: nil, fileProblem: nil, size: nil, playback: nil)
+        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHidden }.map(\.title).first
+            == "Try Again")
     }
 
     /// People with a person selected whose (made-up) name is long: the name goes into the suggestion checkbox,

@@ -498,8 +498,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     @discardableResult
     private func stopPlaybackOfGoneFile() -> Bool {
         guard let playing = player.entryID else { return false }
-        if let entry = rows.first(where: { $0.id == playing }), entry.state == .rendering
-            || entry.state == .done && [nil, .checking].contains(controller.fileProblem(entry)) { return false }
+        let entry = rows.first { $0.id == playing }
+        if controller.keepsPlaying(entry, parts: player.playsParts) { return false }
         player.unload()
         return true
     }
