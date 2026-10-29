@@ -104,11 +104,15 @@ import Testing
         let file = ReadingSource.file(URL(fileURLWithPath: "/Users/me/Downloads/Paper.pdf"))
         #expect(file.label == "Paper.pdf")
         #expect(file.fallbackName == "Paper")
+        #expect(ReadingSource.selection(app: "Notes").label == "Selected in Notes")
+        #expect(ReadingSource.selection(app: nil).label == "Selected text")
+        #expect(ReadingSource.selection(app: "Notes").fieldText.isEmpty)
     }
 
     @Test func sourcesRoundTripThroughJSON() throws {
         for source in [ReadingSource.web(URL(string: "https://example.com/a")!),
-                       .file(URL(fileURLWithPath: "/Users/me/Café notes.md"))] {
+                       .file(URL(fileURLWithPath: "/Users/me/Café notes.md")), .selection(app: "Notes"),
+                       .selection(app: nil)] {
             let data = try JSONEncoder().encode(source)
             #expect(try JSONDecoder().decode(ReadingSource.self, from: data) == source)
         }

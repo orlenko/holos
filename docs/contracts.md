@@ -83,7 +83,8 @@ The main protocols that exist, and what implements them (not exhaustive; search 
     (post-processing with a newer `echo/mask.json`).
   - Line files keep going: the speaker edit journal skips and counts newer lines; the forget journal skips them
     when reading and keeps them when compacting; dictation history keeps them unshown and loads the rest.
-  - The reading library shows a newer `library.json` read-only. The deep-transcription queue (`UserDefaults`) is
+  - The reading library shows a newer `library.json` read-only (version 2 added selections as a source, so
+    builds that know only version 1 show such a list without changing it). The deep-transcription queue (`UserDefaults`) is
     dropped unless its version is 1.
   - HolosEvaluation's records under `eval/` carry `schemaVersion`, but most are read without checking it
     (`EvalStore.read`; a cloud run's `run.json` is decoded and rewritten when the run resumes). Local run records

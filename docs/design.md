@@ -593,7 +593,9 @@ measured.
 Each reading is a `ReadingEntry` (source, title, requested and actual voice, speed, output
 path, render cache, state, progress, duration, chapters) in an index,
 `Application Support/Holos/ReadingLibrary/library.json` (0600, written atomically;
-`ReadingLibraryStore`). An index that cannot be decoded is renamed aside
+`ReadingLibraryStore`; schema version 2, which adds text selected in another app as a source, kept only as the
+reading's saved text; a version 1 index is read as it is and saved as version 2). An index that
+cannot be decoded is renamed aside
 (`library.json.unreadable-<date>`) and a new list starts; one a newer build wrote (a higher
 schema version) is shown exactly as saved: nothing in it is continued, changed, or
 deleted, and its rows refuse Try Again, Resume, and Delete (`ReadingLibrary.launchPlan`).
