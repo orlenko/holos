@@ -265,6 +265,10 @@ notices reproduce too. Apple's speech assets are downloaded by macOS. When a dep
    [orlenko/homebrew-tap](https://github.com/orlenko/homebrew-tap): its `version` and `sha256`. Users install with
    `brew install --cask orlenko/tap/voiceislocal`.
 5. Keep a short changelog per version.
+6. Publish a GitHub release for the tag with the DMG and that changelog, its SHA-256, and the requirements:
+   `gh release create v<version> build/release/VoiceIsLocal-<version>.dmg --verify-tag --title "Voice is Local
+   <version>" --notes-file <notes>`. GitHub's digest for the asset (`gh release view v<version> --json assets`) must
+   match the SHA-256 on the website. The appcast stays on the website only.
 
 ## Updates
 
