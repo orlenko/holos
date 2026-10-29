@@ -13,6 +13,18 @@ public enum ReadingAudioFormat {
     /// Silence added between rendered parts, and before a part that starts a chapter.
     public static let partGap: Double = 0.5
     public static let chapterGap: Double = 1.0
+
+    /// The silence before part `index` of a reading: none before the first, `chapterGap` before one that starts a
+    /// section, else `partGap`.
+    public static func silenceBefore(part index: Int, startsSection: Bool) -> Double {
+        index == 0 ? 0 : startsSection ? chapterGap : partGap
+    }
+
+    /// `seconds` of silence in frames at `rate`, as the joined file holds it: the writer and a player that plays the
+    /// parts before they are joined place every part at the same frame.
+    public static func silenceFrames(_ seconds: Double, rate: Double) -> Int64 {
+        Int64((seconds * rate).rounded())
+    }
 }
 
 public struct AudioBookPart: Sendable, Equatable {
@@ -208,7 +220,7 @@ public enum AudioBookWriter {
             position = sum
         }
         for (part, length) in zip(parts, lengths) {
-            let silence = Int64((part.silenceBefore * rate).rounded())
+            let silence = ReadingAudioFormat.silenceFrames(part.silenceBefore, rate: rate)
             silences.append(silence)
             try advance(silence)
             starts.append(position)
