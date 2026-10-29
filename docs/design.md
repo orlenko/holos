@@ -693,7 +693,21 @@ Share… open the file off the main actor; a FIFO or device put at a reading's p
 index, saved text, manifest, or a document to read) is refused at once, never waited on.
 Playback that fails (a file that cannot be decoded, or that does not continue after a pause)
 says so; a Play whose file opens slowly is dropped when another Play, a Pause, or a Stop comes
-first. A file whose checksum cannot be read, or that changed while it was read, is shown
+first.
+
+A reading plays while it is made, once its first part is made (`ReadingController+Playing`): its row offers
+**▶ Play** beside Stop, and Play, Space and the read-aloud shortcut start it. Its parts play in order as the pipeline
+makes them (`ReadingPartFeeds` collects them from `partMade`; `PartQueuePlayback` reads each into memory two parts
+ahead and plays it through an `AVAudioEngine`, `EngineSegmentOutput`), each after the silence the finished file puts
+before it, so the timeline is the file's frame for frame. When playing catches up with making, it waits: the row says
+"Waiting for part N of M…", still offers Pause, and goes on when the part is made; it is neither an error nor the end.
+The position shows the length made so far with "…" ("1:23 / 4:10…") until every part is made. Once the reading is
+made, what was not queued yet plays from its finished file, opened and checked as for any Play, from the start of the
+next part's silence (`AVAudioPlayer`, sought there), playing or paused as it was; the parts are no longer needed, so
+the pipeline removing them is harmless. Stop on its row stops both the making and the playing; Pause only silences
+it. When making fails, what was made plays, then playback stops and says why ("Playback stopped at part N of M: …"),
+never as the end of the reading. An audio device change pauses it, and Play continues. Nothing of this is saved: the
+parts are the render cache's, as before. A file whose checksum cannot be read, or that changed while it was read, is shown
 unavailable and read again at the next check (a file is read once per version: its identity,
 size, and last change). One whose folder cannot be reached says
 "Unavailable — the drive or share “<name>” is not connected" (`ReadingOutput.unreachableReason`:
@@ -776,9 +790,11 @@ The selection becomes a reading in the Reading list (see "Reading section"): its
 `ReadableDocument.selection` (paragraphs as in a plain text file, `PlainTextReader`; titled by
 a first line that looks like a title, else by its first 8 words), saved before the index names
 the reading, since it is the only copy. It is made with Settings › Reading's voice and speed,
-like any other reading, and plays in the app as soon as it is made, after the readings the
-shortcut added before it: they play in the order asked, each once it is made and nothing else
-plays; one that fails or is stopped is skipped (a failure says so). A short notice under the
+like any other reading, and plays in the app as soon as its first part is made (the rest as it
+is made, see "Reading section"), after the readings the shortcut added before it: they play in
+the order asked, each once its first part is made and nothing else plays; one that fails or is
+stopped before it plays is skipped, and one whose making fails while it plays stops once what
+was made has played (a failure says so either way). A short notice under the
 pointer, like dictation's, says "Making audio…" with its title, or why nothing is read. The
 readings stay in the list with their text (Show Text), file, and row like any other.
 
