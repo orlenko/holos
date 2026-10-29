@@ -140,15 +140,15 @@ struct PartFiles {
     }
 
     /// Once making has finished, nothing more is queued: at the end of the parts queued, the place where the next
-    /// part's silence starts is handed over, with whether it was playing.
+    /// part's silence starts is handed over; until stopped, play and pause only say whether the file is to play.
     @Test func theRestIsHandedOverOnceMakingHasFinished() async throws {
         let files = try PartFiles()
         defer { files.remove() }
         let feed = ReadingPartFeed()
         let output = QueueOutput()
         let playback = PartQueuePlayback(feed: feed, output: output)
-        var handoffs: [(TimeInterval, Bool)] = []
-        playback.onHandoff = { handoffs.append(($0, $1)) }
+        var handoffs: [TimeInterval] = []
+        playback.onHandoff = { handoffs.append($0) }
         for index in 0..<3 { feed.add(try files.part(index, of: 3, seconds: 1)) }
         #expect(playback.play())
         // Two parts ahead: part 0, then part 1 with its silence.
@@ -158,10 +158,15 @@ struct PartFiles {
         output.playNext()
         #expect(handoffs.isEmpty)
         output.playNext()
-        #expect(handoffs.count == 1)
-        #expect(handoffs.first?.0 == 2.5)
-        #expect(handoffs.first?.1 == true)
+        #expect(handoffs == [2.5])
+        #expect(playback.isPlaying)
         #expect(output.queued.isEmpty)
+        playback.pause()
+        #expect(!playback.isPlaying)
+        #expect(playback.play())
+        #expect(playback.isPlaying)
+        playback.stop()
+        #expect(!playback.play())
     }
 
     /// A part gone from the cache (the reading was published meanwhile) is waited on, never an error, and the rest
@@ -175,7 +180,7 @@ struct PartFiles {
         var ends: [PartQueuePlayback.End] = []
         var handoffs: [TimeInterval] = []
         playback.onEnd = { ends.append($0) }
-        playback.onHandoff = { place, _ in handoffs.append(place) }
+        playback.onHandoff = { handoffs.append($0) }
         feed.add(try files.part(0, of: 2, seconds: 1))
         let second = try files.part(1, of: 2, seconds: 1)
         try FileManager.default.removeItem(at: second.audio)
@@ -186,7 +191,8 @@ struct PartFiles {
         #expect(await eventually { playback.isWaiting })
         #expect(ends.isEmpty)
         feed.finish(.finished)
-        #expect(handoffs == [1])
+        // Once the read of the gone part has come back.
+        #expect(await eventually { handoffs == [1] })
         #expect(ends.isEmpty)
     }
 

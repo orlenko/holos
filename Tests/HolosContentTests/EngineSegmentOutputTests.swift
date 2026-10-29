@@ -44,6 +44,27 @@ import Testing
         #expect(await eventually { ends == [.finished] })
     }
 
+    /// Paused, the position stays where playing stopped (a paused node has no player time); a stop starts it again
+    /// from 0 and lets the engine (the audio device) go.
+    @Test(.timeLimit(.minutes(1))) func aPauseKeepsThePosition() async throws {
+        let files = try PartFiles()
+        defer { files.remove() }
+        let output = EngineSegmentOutput(manualRendering: true)
+        let feed = ReadingPartFeed()
+        let playback = PartQueuePlayback(feed: feed, output: output)
+        feed.add(try files.part(0, of: 2, seconds: 1, rate: Self.rate))
+        #expect(playback.play())
+        #expect(await eventually { playback.next == 1 })
+        _ = try output.renderManually(frames: 11_025)
+        #expect(abs(playback.currentTime - 0.5) < 0.01)
+        playback.pause()
+        #expect(abs(playback.currentTime - 0.5) < 0.01)
+        #expect(output.isEngineRunning)
+        output.stop()
+        #expect(output.playedFrames == 0)
+        #expect(!output.isEngineRunning)
+    }
+
     /// The joined `.m4a` (AAC, its encoder delay included) is silent across each gap where the parts' timeline puts
     /// it, and sounds right before and after: playing the file from a gap's start, as the handoff does, lands in that
     /// gap's silence.

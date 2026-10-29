@@ -152,9 +152,7 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
         let parts = PartQueuePlayback(feed: feed, output: makeOutput())
         let loaded = ObjectIdentifier(parts)
         parts.onEnd = { [weak self] end in self?.partsEnded(loaded, end) }
-        parts.onHandoff = { [weak self] place, playing in
-            self?.handOff(loaded, id: id, at: place, playing: playing, file: finishedFile)
-        }
+        parts.onHandoff = { [weak self] place in self?.handOff(loaded, id: id, at: place, file: finishedFile) }
         parts.onChange = { [weak self] in
             self?.tick()
             self?.onChange?()
@@ -177,8 +175,9 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
     }
 
     /// Making finished while its parts played: the rest plays from the finished file (`file`), from `place`, playing or
-    /// paused as the parts were. Dropped when another reading was loaded meanwhile.
-    private func handOff(_ loaded: ObjectIdentifier, id: UUID, at place: TimeInterval, playing wasPlaying: Bool,
+    /// paused as the parts are once it is open (Space while it opens changes that, see `PartQueuePlayback`). Dropped
+    /// when another reading was loaded meanwhile.
+    private func handOff(_ loaded: ObjectIdentifier, id: UUID, at place: TimeInterval,
                          file: @escaping () async -> FileHandle?) {
         guard let current = player, ObjectIdentifier(current) == loaded else { return }
         let open = self.open
@@ -194,6 +193,8 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
                 return
             }
             guard let opened else { return self.fail("The finished audio file could not be opened.") }
+            let wasPlaying = current.isPlaying
+            current.stop()
             let playback = opened.playback
             (playback as? AVAudioPlayer)?.delegate = self
             playback.seek(to: place)

@@ -12,7 +12,7 @@ public protocol ReadingSegmentOutput: AnyObject {
     /// Starts, or continues after `pause`.
     func play() throws
     func pause()
-    /// Stops and drops what is queued; `playedFrames` starts again from 0.
+    /// Stops and drops what is queued, and lets the audio device go; `playedFrames` starts again from 0.
     func stop()
     /// The frames played since the last `stop` (or the start), at the buffers' rate; a pause keeps it.
     var playedFrames: Int64 { get }
@@ -30,6 +30,8 @@ public final class EngineSegmentOutput: ReadingSegmentOutput {
     private let manualRendering: Bool
     /// Counts the stops, so a buffer's callback that arrives after one is dropped.
     private var generation = 0
+    /// The frames played as last seen while playing: a paused node has no player time.
+    private var lastPlayed: Int64 = 0
     private var observer: (any NSObjectProtocol)?
     public var onInterrupted: (() -> Void)?
 
@@ -86,12 +88,20 @@ public final class EngineSegmentOutput: ReadingSegmentOutput {
     public func stop() {
         generation += 1
         node.stop()
+        // An idle engine left running keeps the audio device open; `play` starts it again.
+        engine.stop()
+        lastPlayed = 0
     }
 
     public var playedFrames: Int64 {
-        guard let time = node.lastRenderTime, let played = node.playerTime(forNodeTime: time) else { return 0 }
-        return max(0, played.sampleTime)
+        if node.isPlaying, let time = node.lastRenderTime, let played = node.playerTime(forNodeTime: time) {
+            lastPlayed = max(0, played.sampleTime)
+        }
+        return lastPlayed
     }
+
+    /// The engine runs (and holds the audio device), for tests.
+    var isEngineRunning: Bool { engine.isRunning }
 
     /// Renders `frames` offline (`manualRendering` only), for tests.
     func renderManually(frames: AVAudioFrameCount) throws -> AVAudioPCMBuffer {

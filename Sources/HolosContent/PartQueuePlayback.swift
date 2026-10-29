@@ -23,8 +23,8 @@ final class ReadPart: @unchecked Sendable {
 /// 3. `onEnd` is called once: `.finished` once the last part has played, `.failed` once the made parts have played
 ///    after making failed (or a part could not be read), `.stopped` once making was stopped; never after `stop`.
 /// 4. Once making has finished, what is not queued yet plays from the finished file: at the end of the parts queued
-///    (the start of the next part's silence), `onHandoff` gives that place in seconds and whether it was playing,
-///    and this playback is done.
+///    (the start of the next part's silence), `onHandoff` gives that place in seconds. Until `stop`, play and pause
+///    only change whether the file is to play (`isPlaying`), with no error.
 @MainActor
 public final class PartQueuePlayback {
     public enum End: Equatable, Sendable {
@@ -49,6 +49,8 @@ public final class PartQueuePlayback {
     /// The part `next` was not found where it was made: wait for making to end (it was published, or it failed).
     private var missing = false
     private var done = false
+    /// Handed over (invariant 4): the finished file is being opened.
+    private var handingOver = false
     /// The parts' rate, from the first read.
     private var rate: Double?
     /// The timeline frame where the output's count of played frames starts (invariant 2), and the frames queued since.
@@ -56,7 +58,7 @@ public final class PartQueuePlayback {
     private var queuedFrames: Int64 = 0
 
     var onEnd: ((End) -> Void)?
-    var onHandoff: ((_ place: TimeInterval, _ playing: Bool) -> Void)?
+    var onHandoff: ((TimeInterval) -> Void)?
     /// It started or stopped waiting for a part.
     var onChange: (() -> Void)?
 
@@ -88,6 +90,10 @@ public final class PartQueuePlayback {
     public func play() -> Bool {
         guard !done else { return false }
         engaged = true
+        if handingOver {
+            onChange?()
+            return true
+        }
         if queued > 0 {
             do { try output.play() } catch { return false }
         }
@@ -98,7 +104,7 @@ public final class PartQueuePlayback {
 
     public func pause() {
         engaged = false
-        output.pause()
+        if !handingOver { output.pause() }
         onChange?()
     }
 
@@ -119,7 +125,7 @@ public final class PartQueuePlayback {
 
     /// Queues what can be queued (invariant 1), or ends, hands off, or waits once nothing is left to queue.
     private func fill() {
-        guard !done, !reading else { return }
+        guard !done, !handingOver, !reading else { return }
         let total = feed.total ?? Int.max
         if case .finished? = feed.end, next < total {
             // Invariant 4: the rest comes from the finished file once the parts queued have played.
@@ -147,7 +153,7 @@ public final class PartQueuePlayback {
         let read = self.read
         Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) { Result { try read(part.audio) } }.value
-            guard let self, !self.done else { return }
+            guard let self, !self.done, !self.handingOver else { return }
             self.reading = false
             switch result {
             case .success(let read):
@@ -191,7 +197,7 @@ public final class PartQueuePlayback {
     }
 
     private func played() {
-        guard !done else { return }
+        guard !done, !handingOver else { return }
         queued -= 1
         if queued == 0 {
             // Run dry (invariant 2): the count of played frames starts again where the parts queued end.
@@ -204,9 +210,11 @@ public final class PartQueuePlayback {
 
     private func handOff() {
         let place = Double(base + queuedFrames) / (rate ?? ReadingAudioFormat.sampleRate)
-        let playing = engaged
-        stop()
-        onHandoff?(place, playing)
+        handingOver = true
+        feed.onChange = nil
+        output.onInterrupted = nil
+        output.stop()
+        onHandoff?(place)
     }
 
     private func end(_ end: End) {
@@ -216,7 +224,7 @@ public final class PartQueuePlayback {
 
     /// The audio device changed and the engine stopped: paused where it was, what is queued kept for Play.
     private func interrupted() {
-        guard !done, engaged else { return }
+        guard !done, !handingOver, engaged else { return }
         engaged = false
         output.pause()
         onChange?()

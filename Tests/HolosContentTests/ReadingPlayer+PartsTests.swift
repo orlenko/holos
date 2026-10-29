@@ -83,6 +83,36 @@ private final class FinishedPlayback: ReadingPlayback, @unchecked Sendable {
         #expect(finished.isPlaying)
     }
 
+    /// Space while the finished file opens (a slow drive) pauses or continues what plays once it is open: no error.
+    @Test func spaceWhileTheFileOpensSetsWhetherItPlays() async throws {
+        let files = try PartFiles()
+        defer { files.remove() }
+        let output = QueueOutput()
+        let finished = FinishedPlayback()
+        let player = ReadingPlayer(open: { _ in OpenedPlayback(finished) }, makeOutput: { output })
+        var errors: [String] = []
+        player.onError = { errors.append($0) }
+        let (opening, open) = AsyncStream.makeStream(of: Void.self)
+        let feed = ReadingPartFeed()
+        feed.add(try files.part(0, of: 2, seconds: 1))
+        let id = UUID()
+        try player.play(id, feed: feed, finishedFile: {
+            for await _ in opening { break }
+            return self.file()
+        })
+        #expect(await eventually { output.queued.count == 1 })
+        feed.finish(.finished)
+        output.playNext()
+        #expect(player.toggleLoaded(id))
+        #expect(!player.isPlaying)
+        #expect(player.entryID == id)
+        open.yield()
+        #expect(await eventually { player.loaded === finished })
+        #expect(!finished.isPlaying)
+        #expect(finished.currentTime == 1)
+        #expect(errors.isEmpty)
+    }
+
     /// Making failed: the made parts play, then the failure is told and the reading unloaded; no end is reported.
     @Test func aFailureWhileMakingIsToldNotTakenForTheEnd() async throws {
         let files = try PartFiles()
