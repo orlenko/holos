@@ -41,6 +41,7 @@ extension HolosAppDelegate {
             self?.showSummaryAlert("The meeting was not summarized.", message)
         }
         let cleanup = audioCleanupJobs(root: controller.root)
+        meeting.deep.audioCleanup = cleanup
         // Kinds in their order when two picks have the same priority: final transcripts, echo analyses, summaries,
         // the audio cleanup.
         meeting.deep.coordinator = BackgroundJobCoordinator(runner: commands,

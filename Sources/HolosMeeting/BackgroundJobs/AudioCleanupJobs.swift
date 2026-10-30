@@ -38,7 +38,8 @@ public enum AudioCleanupPolicy {
     }
 
     /// Why the meeting's files do not show that its audio may go, or nil when they do. Positive evidence only: what
-    /// cannot be read or established keeps the audio. The files must show a manifest; an event journal that is there
+    /// cannot be read or established keeps the audio. The files must show a manifest; a meeting.json of this meeting
+    /// (a missing one reads as a one-language meeting, which is not evidence); an event journal that is there
     /// and reads whole (no torn tail, no unreadable line; the catalog reads a missing or unreadable one as no language
     /// work left); a current transcript not rebuilt without transcribing audio it leaves out
     /// (`TranscriptRebuilder.leftAudioUntranscribed`, `session recover --no-transcribe`); and speaker labels made for
@@ -46,6 +47,12 @@ public enum AudioCleanupPolicy {
     public static func audioNeeded(session: URL, transcriptID: String?) -> String? {
         guard let transcriptID else { return "no readable transcript" }
         guard let manifest = try? SessionArchive.readManifest(at: session) else { return "its manifest cannot be read" }
+        // A missing meeting.json reads as an inferred one-language meeting; only one that is there says so.
+        guard FileManager.default.fileExists(atPath: SessionPaths.meetingInfo(session).path),
+              let info = try? SessionFiles.meetingInfo(session: session, manifest: manifest),
+              info.sessionID == manifest.id else {
+            return "its meeting.json is missing or cannot be read"
+        }
         guard FileManager.default.fileExists(atPath: SessionPaths.events(session).path),
               let journal = try? SessionArchive.readEvents(at: session),
               journal.unreadableLines == 0, !journal.tornTail else {

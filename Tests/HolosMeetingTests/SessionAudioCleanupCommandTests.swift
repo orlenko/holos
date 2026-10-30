@@ -102,13 +102,16 @@ struct SessionAudioCleanupCommandTests {
         defer { temp.remove() }
         let (session, id) = try await Self.meeting(temp)
         #expect(AudioCleanupPolicy.audioNeeded(session: session, transcriptID: nil) == "no readable transcript")
+        // No meeting.json: it reads as a one-language meeting, which is not evidence.
+        #expect(AudioCleanupPolicy.audioNeeded(session: session, transcriptID: "t")
+            == "its meeting.json is missing or cannot be read")
+        var info = MeetingInfo(sessionID: id, mode: .call, othersInRoom: false)
+        info.languages = ["en-CA", "fr-CA"]
+        try AtomicFile.writeJSON(info, to: SessionPaths.meetingInfo(session))
         // A whole journal, but no speaker labels made for the transcript.
         #expect(AudioCleanupPolicy.audioNeeded(session: session, transcriptID: "t")
             == "its speaker labels are not for its transcript")
         // A meeting in several languages whose journal cannot be read: the catalog would show no language work left.
-        var info = MeetingInfo(sessionID: id, mode: .call, othersInRoom: false)
-        info.languages = ["en-CA", "fr-CA"]
-        try AtomicFile.writeJSON(info, to: SessionPaths.meetingInfo(session))
         try FileManager.default.removeItem(at: SessionPaths.events(session))
         #expect(AudioCleanupPolicy.audioNeeded(session: session, transcriptID: "t")
             == "its event journal is missing or damaged", "A missing journal reads as empty; it is not evidence.")
@@ -127,6 +130,16 @@ struct SessionAudioCleanupCommandTests {
         let (session, _) = try await Self.meeting(temp)
         try Data("not json".utf8).write(to: SessionPaths.manifest(session))
         #expect(AudioCleanupPolicy.audioNeeded(session: session, transcriptID: "t") == "its manifest cannot be read")
+    }
+
+    @Test func aMeetingJsonOfAnotherMeetingKeepsTheAudio() async throws {
+        let temp = try TemporaryDirectory("clean-audio-other-info", permissions: 0o700)
+        defer { temp.remove() }
+        let (session, _) = try await Self.meeting(temp)
+        try AtomicFile.writeJSON(MeetingInfo(sessionID: "someone-else", mode: .call, othersInRoom: false),
+                                 to: SessionPaths.meetingInfo(session))
+        #expect(AudioCleanupPolicy.audioNeeded(session: session, transcriptID: "t")
+            == "its meeting.json is missing or cannot be read")
     }
 
     @Test func labelsForATranscriptItWasCorrectedFromAreItsLabels() {

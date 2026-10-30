@@ -1635,7 +1635,8 @@ its speakers labelled with no language left to detect, and no final transcript (
 on, or a Make Final Transcript Now whose languages are being read) or echo analysis is queued on it;
 never while it records, is worked on by any command, or is open. Only positive evidence lets the audio
 go (`AudioCleanupPolicy.audioNeeded`, read off the main actor and again under the lease): a readable
-manifest; an event journal that is there and reads whole, with no torn or unreadable line (the catalog
+manifest; a meeting.json of this meeting (a missing one reads as a one-language meeting, so meetings from
+before meeting.json keep their audio); an event journal that is there and reads whole, with no torn or unreadable line (the catalog
 reads a missing or unreadable one as no language work left); a current transcript not rebuilt without
 transcribing audio it leaves out (`session recover --no-transcribe`, a `recovered` meeting;
 `TranscriptRebuilder.leftAudioUntranscribed`); and speaker labels made for that transcript or one it was
@@ -1644,14 +1645,16 @@ Anything that cannot be read or established keeps the audio.
 
 It runs as automatic background work (`AudioCleanupJobs`: after final transcripts, echo analyses and
 summaries, one meeting at a time, oldest first, and nothing before the launch's final-transcript
-reconciliation ends or while one runs, as summaries wait), from a scan of the sessions folder made
+reconciliation ends or while one runs, as summaries wait; a reconciliation that starts stops a cleanup
+running then), from a scan of the sessions folder made
 at launch, hourly while the app runs, and when the setting changes. Each pick is read again off the
 main actor, then checked again on it just before it starts (the setting unchanged, nothing queued on
 the meeting meanwhile unless its deletion is under way). The command, `voiceislocal session clean-audio <session> --older-than N`
 (`SessionAudioCleanupCommand`), holds the background-job lock (kind `audioCleanup`) for its whole
 run and decides again under the meeting's processing lease, so nothing that changed the meeting
 since the scan is missed; it exits 0 once the audio is gone and 3 when it keeps it (with the reason).
-`--dry-run` decides the same way, under the same locks, and deletes nothing.
+`--dry-run` decides the same way, under the same locks, and deletes nothing (nor does it finish a
+pending forget of voices first, `ForgetResumeScope`).
 A review open on the meeting is held read-only and reread afterwards, as for Delete Audio.
 
 A deletion that began and did not finish (a meeting started and stopped it, or the app quit), as the
