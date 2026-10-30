@@ -116,9 +116,9 @@ public enum SpokenCode {
     /// its bundle identifier when it has none), for Run Again: a code token typed into a terminal is never wrapped in
     /// backticks.
     public static let terminalAppNames: Set<String> = [
-        "terminal", "iterm", "iterm2", "ghostty", "wezterm", "kitty", "alacritty", "warp",
+        "terminal", "iterm", "iterm2", "ghostty", "wezterm", "kitty", "alacritty", "warp", "rex", "rex beta",
         "com.apple.terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "com.github.wez.wezterm",
-        "net.kovidgoyal.kitty", "org.alacritty", "dev.warp.warp-stable",
+        "net.kovidgoyal.kitty", "org.alacritty", "dev.warp.warp-stable", "com.superlogical.rex",
     ]
 
     public static func isTerminal(appName: String?) -> Bool {

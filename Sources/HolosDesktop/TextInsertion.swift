@@ -420,7 +420,7 @@ struct AXHandle: Equatable {
 
     static let terminalBundleIDs: Set<String> = [
         "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "com.github.wez.wezterm",
-        "net.kovidgoyal.kitty", "org.alacritty", "dev.warp.Warp-Stable",
+        "net.kovidgoyal.kitty", "org.alacritty", "dev.warp.Warp-Stable", "com.superlogical.rex",
     ]
 
     public let pid: pid_t

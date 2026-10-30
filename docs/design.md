@@ -226,7 +226,7 @@ available for another attempt in the meeting start panel and dictation setup.
 Settings › Dictation › **Write spoken paths and commands as code** (on by default)
 writes "scripts slash restart dash app dot es aytch" as `scripts/restart-app.sh` and
 "slash Q C" as `/qc`; **Wrap them in backticks** (on by default) adds the backticks,
-never for a terminal (Terminal, iTerm2, Ghostty, WezTerm, kitty, Alacritty, Warp),
+never for a terminal (Terminal, iTerm2, Ghostty, WezTerm, kitty, Alacritty, Warp, Rex),
 which gets the token itself. It is its own step (`SpokenCodeFormatter`), after
 learned corrections and before Apple Intelligence's fix, on each committed chunk and
 on the rest at release; Run Again runs it with the current settings (without
