@@ -279,7 +279,7 @@ replacement, attempted only when the focused field is a supported writable,
 non-secure plain text field and the app, field, selection, text length, and nearby
 text still match the snapshot taken at key-down or after the previous chunk. Each
 write is read back. For a known terminal app (Terminal, iTerm2, Ghostty, WezTerm,
-kitty, Alacritty, Warp), which has no writable text field, chunks are typed as
+kitty, Alacritty, Warp, Rex), which has no writable text field, chunks are typed as
 keystrokes posted only to the terminal that was frontmost at key-down, and only
 while the terminal session focused at key-down still has focus: before each chunk
 (and every 16 characters within one) Voice is Local checks that the terminal is
@@ -425,7 +425,7 @@ behavior, and permission owner for each row.
 | TextEdit plain text, empty caret and selected text | One insertion/replacement, with no extra newline or duplicate text. |
 | Browser text field and rich editor (e.g. ChatGPT in Chrome) | Phrases are typed as you pause while that field keeps focus; moving focus stops typing and keeps the rest for Copy Result. |
 | Native field without direct Accessibility writes | Typed into while it keeps focus; a field that fails a safety check (large selection, unreadable range) is not typed into and its text is kept for Copy Result. |
-| Terminal input (shell prompt and a TUI such as Claude Code) | Phrases are typed as you pause; never a Return; Secure Keyboard Entry refuses. Switching tab, split pane or window while speaking stops typing; nothing lands in the new session, and the rest is kept for Copy Result. Check Terminal and iTerm2 (tabs and split panes), and one of Ghostty, WezTerm, kitty, Alacritty or Warp (the log line "focus tracked by session/window/app" shows which level that terminal supports). |
+| Terminal input (shell prompt and a TUI such as Claude Code) | Phrases are typed as you pause; never a Return; Secure Keyboard Entry refuses. Switching tab, split pane or window while speaking stops typing; nothing lands in the new session, and the rest is kept for Copy Result. Check Terminal and iTerm2 (tabs and split panes), and one of Ghostty, WezTerm, kitty, Alacritty, Warp or Rex (the log line "focus tracked by session/window/app" shows which level that terminal supports). |
 | Accidental press after a dictation that left text for Copy Result | Tap the shortcut and release before Listening, press and Esc, or hold without speaking: Copy Result, Copy Original and Discard still offer the earlier text, which still expires ten minutes after its own dictation. A later dictation that recognizes words replaces it. |
 | Learn "bull request" → "pull request", then dictate it | Corrected in preview and in the field; "bull market" unchanged. |
 | Long utterance with pauses in TextEdit | Finalized phrases appear while speaking, the tail on release, no duplicates or missing spaces. |

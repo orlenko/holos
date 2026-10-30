@@ -515,10 +515,11 @@ private func codeModel(_ spans: [String: String], asked: Asked? = nil) -> Spoken
 }
 
 @Test func terminalsAreKnownByName() {
-    for name in ["Terminal", "iTerm2", "Ghostty", "WezTerm", "kitty", "Alacritty", "Warp"] {
+    for name in ["Terminal", "iTerm2", "Ghostty", "WezTerm", "kitty", "Alacritty", "Warp", "Rex", "Rex Beta"] {
         #expect(SpokenCode.isTerminal(appName: name))
     }
     #expect(SpokenCode.isTerminal(appName: "com.apple.Terminal"))
+    #expect(SpokenCode.isTerminal(appName: "com.superlogical.rex"))
     #expect(!SpokenCode.isTerminal(appName: "Notes"))
     #expect(!SpokenCode.isTerminal(appName: nil))
 }
