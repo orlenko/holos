@@ -20,8 +20,10 @@ extension MeetingsPane {
         { [weak self] kind in self?.rowAction(kind, sessionID: sessionID) }
     }
 
-    /// A row's button, on that row's meeting whatever is selected.
+    /// A row's button, on that row's meeting whatever is selected. A button's click does not go through the table, so
+    /// it cancels a pending rename here (`MeetingListState` invariant 2).
     func rowAction(_ kind: MeetingRowActionsView.Kind, sessionID: String) {
+        listState.cancelPendingRename()
         guard let summary = sessions.first(where: { $0.id == sessionID }) else { return }
         switch kind {
         case .open:
