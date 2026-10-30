@@ -1631,8 +1631,11 @@ screen captures gone for good, the transcript, speaker labels and transcript fil
 voice samples waiting to be learned from the meeting forgotten. A meeting qualifies
 (`AudioCleanupPolicy.eligible`) once it is at least that many days old, has audio, is complete or
 recovered with a readable transcript, has its speakers labelled with no language left to detect,
-and no final transcript or echo analysis is queued on it; never while it records, is worked on by
-any command, or is open. It runs as automatic background work (`AudioCleanupJobs`, after final
+and no final transcript (queued, or a Make Final Transcript Now whose languages are being read) or
+echo analysis is queued on it; never while it records, is worked on by any command, or is open.
+A deletion that began and did not finish (a meeting started and stopped it, or the app quit), marked
+deleted while its `audio/` folder is still there, is finished first, whatever the meeting's age or
+state, as soon as nothing records or works on it; Delete Audio keeps the marker and removes the rest. It runs as automatic background work (`AudioCleanupJobs`, after final
 transcripts, echo analyses and summaries, one meeting at a time, oldest first), from a scan of the
 sessions folder made at launch, hourly while the app runs, and when the setting changes; each
 meeting is read again just before its audio goes. A meeting whose cleanup failed is tried again at

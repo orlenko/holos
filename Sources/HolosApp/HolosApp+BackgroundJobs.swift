@@ -57,7 +57,9 @@ extension HolosAppDelegate {
         cleanup.olderThanDays = { MeetingAudioPreferences().cleanupAfterDays }
         cleanup.pending = { [weak self] in
             guard let self else { return [] }
-            return Set(self.meeting.deep.jobs.queue.items.map(\.sessionID)).union(self.meeting.echo.queue.map(\.sessionID))
+            let deep = self.meeting.deep.jobs.queue
+            // A Make Final Transcript Now whose languages are being read waits in `pending`, not `items`.
+            return Set((deep.items + deep.pending).map(\.sessionID)).union(self.meeting.echo.queue.map(\.sessionID))
         }
         cleanup.onScanned = { [weak self] in self?.scheduleBackgroundJobs() }
         // No voice can be learned from the meeting any more, as after Delete Audio.

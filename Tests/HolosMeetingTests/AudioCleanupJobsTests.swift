@@ -39,10 +39,11 @@ struct AudioCleanupJobsTests {
         BackgroundJobHolds(inUse: inUse, now: now)
     }
 
-    private static func jobs(_ meetings: [SessionSummary], days: Int? = 7) async -> AudioCleanupJobs {
+    private static func jobs(_ meetings: [SessionSummary], days: Int? = 7,
+                             audioLeft: Set<String> = []) async -> AudioCleanupJobs {
         let jobs = AudioCleanupJobs(list: { _, _ in meetings }, read: { session, _ in
             meetings.first { $0.directory == session } ?? meeting("missing", daysOld: 0, chunks: 0)
-        })
+        }, audioLeft: { session in audioLeft.contains(session.deletingPathExtension().lastPathComponent) })
         jobs.root = URL(fileURLWithPath: "/nowhere")
         jobs.olderThanDays = { days }
         var scanned = false
@@ -86,5 +87,39 @@ struct AudioCleanupJobsTests {
         jobs.pending = { ["a"] }
         #expect(jobs.preparation(for: pick)?() == false, "A final transcript was queued on it since the scan.")
         #expect(jobs.nothingToDo("a") == .finished)
+    }
+
+    @Test func aDeletionLeftPartWayIsFinishedFirst() async throws {
+        // Marked deleted with its audio still there (a quit during a deletion): young and unlabelled, it is finished
+        // anyway, before an old meeting's new deletion.
+        let leftover = Self.meeting("leftover", daysOld: 1, speakers: .notLabelled, audioDeleted: true)
+        let jobs = await Self.jobs([Self.meeting("old", daysOld: 30), leftover], audioLeft: ["leftover"])
+        #expect(jobs.unfinished == ["leftover"])
+        let pick = try #require(jobs.next(Self.holds()))
+        #expect(pick.sessionID == "leftover")
+        #expect(jobs.preparation(for: pick)?() == true)
+        #expect(jobs.ended("leftover", result: CommandResult(code: 0, outcome: .init(deleted: "audio")),
+                           preempted: false) == .finished)
+        #expect(jobs.unfinished.isEmpty)
+        #expect(jobs.next(Self.holds())?.sessionID == "old")
+    }
+
+    @Test func aDeletionStoppedByAMeetingIsFinishedNextTime() async throws {
+        let jobs = await Self.jobs([Self.meeting("a", daysOld: 30)])
+        let pick = try #require(jobs.next(Self.holds()))
+        #expect(jobs.ended(pick.sessionID, result: CommandResult(code: 143, outcome: nil), preempted: true) == .stopped)
+        #expect(jobs.unfinished == ["a"], "Its marker may be written already, which the policy refuses.")
+        #expect(jobs.next(Self.holds())?.sessionID == "a")
+        #expect(jobs.next(Self.holds(inUse: ["a"])) == nil, "Never while the app works on it.")
+    }
+
+    @Test func aDeletionLeftPartWayWaitsWhileTheMeetingIsLive() async {
+        let live = Self.meeting("live", daysOld: 30, audioDeleted: true, liveness: .maintenance)
+        let jobs = await Self.jobs([live], audioLeft: ["live"])
+        #expect(jobs.unfinished == ["live"])
+        #expect(jobs.next(Self.holds()) == nil)
+        #expect(!AudioCleanupPolicy.finishes(live, audioLeft: true))
+        #expect(!AudioCleanupPolicy.finishes(Self.meeting("done", daysOld: 30, audioDeleted: true), audioLeft: false),
+                "Nothing left: nothing to finish.")
     }
 }
