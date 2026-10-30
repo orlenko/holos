@@ -5,11 +5,11 @@ import HolosStorage
 /// The Meetings grid's row buttons, Copy Path, and the rename a click on a selected meeting's name starts.
 extension MeetingsPane {
     /// The row buttons each meeting offers (`MeetingRowActionsView`): Open and Copy Path always, View with a saved
-    /// transcript whose files were written, Delete Audio when `MeetingActionPolicy` allows it. Read from the catalog's
-    /// snapshot only, since rows are drawn on the main actor; View checks the file when clicked.
+    /// transcript, Delete Audio when `MeetingActionPolicy` allows it. Read from the catalog's snapshot only, since rows
+    /// are drawn on the main actor; View checks the file when clicked.
     func rowActions(_ summary: SessionSummary) -> Set<MeetingRowActionsView.Kind> {
         var kinds: Set<MeetingRowActionsView.Kind> = [.open, .copyPath]
-        if summary.transcriptID != nil, summary.exportsProblem == nil { kinds.insert(.view) }
+        if summary.transcriptID != nil { kinds.insert(.view) }
         if MeetingActionPolicy.enabled(summary, inUse: isBusy(summary), hasExport: false, transcriptFiles: false)
             .contains(.deleteAudio) { kinds.insert(.deleteAudio) }
         return kinds
@@ -60,8 +60,9 @@ extension MeetingsPane {
         let id = summary.id
         listState.pendingRename = Task { [weak self] in
             try? await Task.sleep(for: .seconds(NSEvent.doubleClickInterval))
-            // Leaving the list (another section, the search field) cancels it, as moving focus does in the Finder.
-            guard let self, !Task.isCancelled, self.live == nil, self.view.window?.firstResponder === self.table,
+            // Leaving the list (another section, the search field, another app) cancels it, as in the Finder.
+            guard let self, !Task.isCancelled, self.live == nil, self.view.window?.isKeyWindow == true,
+                  self.view.window?.firstResponder === self.table,
                   self.selectedSession?.id == id,
                   let current = self.sessions.first(where: { $0.id == id }),
                   self.enabledActions(current).contains(.rename) else { return }
