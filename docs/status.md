@@ -491,9 +491,10 @@ timeline and a larger local-model benchmark are follow-ups.
   on copies of three real meetings (52–80 min; numbers only): 6, 6 and 9 model calls, 32–53 s
   each, no failures; the titles and summaries named the meetings' topics and their facts were in
   the transcripts, with recognition errors in names and jargon carried over.
-- Meetings list (docs/design.md "Meetings list"): rich rows grouped by Today, Yesterday, This
-  Week and month, with the title, start, length, people, the summary, and badges instead of
-  columns; a search field filters by title, summary and people. Open and Delete are primary;
+- Meetings list (docs/design.md "Meetings list"): a grid, one line per meeting under Today,
+  Yesterday, This Week and month headers: Name (with badges, renamed by a click on the selected
+  meeting's name), When, Description, and Open, View, Delete Audio and Copy Path buttons on each
+  row; a search field filters by title, summary and people. Open and Delete are primary;
   Start Recording… opens the menu bar's start panel; Advanced contains exports and maintenance
   actions. Open, Return, and double-click enter
   the same meeting screen inside the main window. Recording, processing, saved transcript,

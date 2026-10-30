@@ -1522,27 +1522,41 @@ docs/meeting/deep-transcription.md §4.16 has the stage, files, thresholds and m
 
 ### Meetings list
 
-The Meetings section lists the meetings as rich rows in a source-list style, grouped under
-Today, Yesterday, This Week, then by month, newest first (the meeting being recorded or saved
-first). Each row has the meeting's title in bold, with small badges at its right; below it when
-it started (the time alone today and yesterday, the weekday this week, else the date), how long
-it is, and the people its speaker labels name ("Alex, Sam and 2 others"); then a one- or
-two-line summary. Badges replace the former State and Speakers columns and appear only when
-there is something to say: ● Recording (red), ● Paused, Starting…, Saving…, what a command is
-doing ("Labelling speakers…", "Final transcript queued", "Writing summary…"), Interrupted,
-Failed, Damaged, Transcript incomplete, Audio only, No audio, Speakers not labelled, Speaker
-labels failed, Language missing. The size and the state are in the row's tooltip; the footer
-keeps the total and free space. A search field above the list (⌘F) filters by title, name,
-summary, key points, action items and people, ignoring case and accents.
+The Meetings section lists the meetings as a grid, one line per meeting, grouped under day
+headers (Today, Yesterday, This Week, then by month), newest first (the meeting being recorded or
+saved first). The columns are Name (the meeting's title in bold, with small badges at its right),
+When (the start, as the time alone today and yesterday, the weekday this week, else the date, and
+the length), Description (the first line of the summary, else the people its speaker labels name,
+"Alex, Sam and 2 others"; the whole of both on hover), and four buttons that act on their own row
+whatever is selected: Open (pencil: the meeting screen, where speakers are named), View
+(magnifying glass: exports/transcript.md in the app that opens Markdown; off without a saved
+transcript, and a beep when the file is missing), Delete
+Audio (speaker with a slash; off when `MeetingActionPolicy` refuses it, for example while the meeting
+records, is worked on, or has no audio), and Copy Path (the meeting's folder, for an agent or
+Terminal). The buttons' states come from the catalog read, so drawing a row reads no files. Where
+the list is narrower than 470 points (beside a call's window) the When column is
+hidden; the day headers still say when. Badges appear only when there is something to say:
+● Recording (red), ● Paused, Starting…, Saving…, what a command is doing ("Labelling speakers…",
+"Final transcript queued", "Writing summary…"), Interrupted, Failed, Damaged, Transcript incomplete,
+Audio only, No audio, Speakers not labelled, Speaker labels failed, Language missing; a squeezed
+badge ends in "…" and shows its text on hover. The size and the state are in the name's tooltip,
+and VoiceOver reads the whole row from the name; the footer keeps the total and free space. A
+search field above the list (⌘F) filters by title, name, summary, key points, action items and
+people, ignoring case and accents.
+
+Delete Audio on one meeting (its row's button or the menu) asks first, with "Don't ask again"
+(`MeetingAudioPreferences`, UserDefaults `confirmMeetingAudioDeletion`); Delete Audio of several
+meetings always asks, since it names the meetings it skips.
 
 The title is the name the user gave the meeting (in the start panel, `--name`, or by renaming
 it), else the title Apple Intelligence wrote for the current transcript, else the default name
 ("Meeting 2026-10-03 14:00"); a generated title never replaces a name the user gave. The
 Markdown transcript file's heading follows the same rule.
 
-A meeting is renamed in its row: Advanced › Rename… (⌘R in the list) turns the
-title into a text field spanning the line, with the title selected. Double-clicking any part
-of the row opens the meeting. Inside the meeting, the three-dot menu's Rename… opens a name
+A meeting is renamed in its row: a click on the title text of the meeting already selected alone
+(once no second click follows and nothing opened a meeting meanwhile, as in the Finder), or Advanced › Rename… (⌘R in the list), turns
+the title into a text field spanning the Name cell, with the title selected. Double-clicking any
+part of the row opens the meeting. Inside the meeting, the three-dot menu's Rename… opens a name
 sheet on the main window. In the list, Return saves it, Escape
 cancels, and clicking elsewhere saves it, as in the Finder. The name is one line of at most 60
 characters (a longer one is cut as titles are, at a space when it can be); leaving the field
@@ -1571,7 +1585,7 @@ It is available while the recorder is idle or failed; recording, starting, and s
 The list offers Open, Delete Meeting…, and Advanced. Open, Return, and double-click all
 enter the same meeting screen inside the main window. The row context menu keeps Open
 and Delete Meeting… at the top; Advanced contains export, transcript-file preview, Finder,
-rename, summaries, final transcription, recovery, speaker labelling, and audio deletion.
+Copy Path, rename, summaries, final transcription, recovery, speaker labelling, and audio deletion.
 The meeting screen's three-dot button exposes these advanced actions too. Editable review
 keeps its playback, correction, speaker, and export controls inside that screen. Right-clicking
 a row selects it. A processing state changes which advanced actions are available, not how
