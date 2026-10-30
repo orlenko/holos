@@ -1,5 +1,6 @@
 import Foundation
 import HolosCore
+import HolosStorage
 import os
 
 /// Which meetings lose their audio on their own (Settings › Meetings, docs/design.md "Automatic audio cleanup"). Pure.
@@ -16,16 +17,11 @@ public enum AudioCleanupPolicy {
         return !pending.contains(summary.id)
     }
 
-    /// A deletion of `summary`'s audio that began and did not finish (stopped by a meeting starting, or a quit): it is
-    /// marked deleted (`audio-deleted.json` is written first) while `audioLeft` still finds its audio. Finishing it
-    /// needs only that nothing records or works on it; Delete Audio is idempotent and keeps the marker.
-    public static func finishes(_ summary: SessionSummary, audioLeft: Bool) -> Bool {
-        summary.audioDeleted && audioLeft && !MeetingActionPolicy.isLive(summary)
-    }
-
-    /// The folder Delete Audio removes last is still there.
-    public static func audioLeft(session: URL) -> Bool {
-        FileManager.default.fileExists(atPath: session.appendingPathComponent("audio", isDirectory: true).path)
+    /// A deletion of `summary`'s audio that began and did not finish (`unfinished`,
+    /// `SessionDeletion.audioDeletionUnfinished`) may be finished now: nothing records or works on the meeting.
+    /// Delete Audio is idempotent and keeps the marker.
+    public static func finishes(_ summary: SessionSummary, unfinished: Bool) -> Bool {
+        summary.audioDeleted && unfinished && !MeetingActionPolicy.isLive(summary)
     }
 }
 
@@ -76,16 +72,21 @@ public enum AudioCleanupPolicy {
 
     private let list: @Sendable (URL, Date) -> [SessionSummary]
     private let read: @Sendable (URL, Date) -> SessionSummary
-    private let audioLeft: @Sendable (URL) -> Bool
+    private let deletionUnfinished: @Sendable (URL) -> Bool
+    /// The time just before a command runs (tests pin it).
+    private let clock: @Sendable () -> Date
 
     public init(list: @escaping @Sendable (URL, Date) -> [SessionSummary] = { SessionCatalog.list(root: $0, now: $1) },
                 read: @escaping @Sendable (URL, Date) -> SessionSummary = {
                     SessionCatalog.summary(session: $0, now: $1)
                 },
-                audioLeft: @escaping @Sendable (URL) -> Bool = { AudioCleanupPolicy.audioLeft(session: $0) }) {
+                deletionUnfinished: @escaping @Sendable (URL) -> Bool = {
+                    SessionDeletion.audioDeletionUnfinished(session: $0)
+                }, clock: @escaping @Sendable () -> Date = { Date() }) {
         self.list = list
         self.read = read
-        self.audioLeft = audioLeft
+        self.deletionUnfinished = deletionUnfinished
+        self.clock = clock
     }
 
     /// The next look scans again (the setting changed).
@@ -97,11 +98,11 @@ public enum AudioCleanupPolicy {
         guard olderThanDays() != nil, let root, !scanning else { return }
         if let scannedAt, holds.now.timeIntervalSince(scannedAt) < Self.rescanAfter { return }
         scanning = true
-        let list = list, audioLeft = audioLeft, now = holds.now
+        let list = list, deletionUnfinished = deletionUnfinished, now = holds.now
         Task { [weak self] in
             let (found, unfinished) = await Task.detached { () -> ([SessionSummary], Set<String>) in
                 let found = list(root, now)
-                let unfinished = found.filter { $0.audioDeleted && audioLeft($0.directory) }.map(\.id)
+                let unfinished = found.filter { $0.audioDeleted && deletionUnfinished($0.directory) }.map(\.id)
                 return (found, Set(unfinished))
             }.value
             guard let self else { return }
@@ -137,12 +138,15 @@ public enum AudioCleanupPolicy {
     /// Recover meanwhile turns it down).
     public func preparation(for pick: BackgroundJobPick) -> (@Sendable () -> Bool)? {
         guard let days = olderThanDays() else { return { false } }
-        let read = read, audioLeft = audioLeft, pending = pending(), session = URL(fileURLWithPath: pick.path)
-        let finishing = unfinished.contains(pick.sessionID)
+        let read = read, deletionUnfinished = deletionUnfinished, clock = clock, pending = pending()
+        let session = URL(fileURLWithPath: pick.path), finishing = unfinished.contains(pick.sessionID)
         return {
-            let summary = read(session, Date())
-            if finishing { return AudioCleanupPolicy.finishes(summary, audioLeft: audioLeft(session)) }
-            return AudioCleanupPolicy.eligible(summary, now: Date(), days: days, pending: pending)
+            let now = clock(), summary = read(session, now)
+            // A run stopped before it wrote the marker left nothing to finish: the meeting is judged as any other.
+            if finishing, summary.audioDeleted {
+                return AudioCleanupPolicy.finishes(summary, unfinished: deletionUnfinished(session))
+            }
+            return AudioCleanupPolicy.eligible(summary, now: now, days: days, pending: pending)
         }
     }
 

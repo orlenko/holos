@@ -1635,7 +1635,9 @@ and no final transcript (queued, or a Make Final Transcript Now whose languages 
 echo analysis is queued on it; never while it records, is worked on by any command, or is open.
 A deletion that began and did not finish (a meeting started and stopped it, or the app quit), marked
 deleted while its `audio/` folder is still there, is finished first, whatever the meeting's age or
-state, as soon as nothing records or works on it; Delete Audio keeps the marker and removes the rest. It runs as automatic background work (`AudioCleanupJobs`, after final
+state, as soon as nothing records or works on it; Delete Audio keeps the marker and removes the rest
+(`SessionDeletion.audioDeletionUnfinished`). A run stopped before it wrote the marker left nothing to
+finish, and its meeting is judged again like any other. It runs as automatic background work (`AudioCleanupJobs`, after final
 transcripts, echo analyses and summaries, one meeting at a time, oldest first), from a scan of the
 sessions folder made at launch, hourly while the app runs, and when the setting changes; each
 meeting is read again just before its audio goes. A meeting whose cleanup failed is tried again at
