@@ -567,6 +567,10 @@ same states. `voiceislocal session delete <session> --yes` moves a session to th
 (a damaged one too) and deletes its recorder log; with `--audio-only` it deletes only the audio (for
 good), keeping the transcript, speaker labels, and exports. Both refuse while the
 session is recording or another Voice is Local command is working on it.
+`voiceislocal session clean-audio <session> --older-than N` is what the automatic audio
+cleanup runs: it deletes the audio only if the meeting is at least N days old and finished
+(transcript readable, speakers labelled), deciding under the meeting's lock, and exits 3 with
+the reason when it keeps it.
 
 `say` accepts text arguments or UTF-8 stdin and can play speech or save `.m4a`,
 `.wav`, or `.caf`. `read` turns a local .txt, .md, .html, .pdf, .rtf, .rtfd, .docx,

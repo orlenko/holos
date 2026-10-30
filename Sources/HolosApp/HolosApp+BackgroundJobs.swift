@@ -58,8 +58,16 @@ extension HolosAppDelegate {
         cleanup.pending = { [weak self] in
             guard let self else { return [] }
             let deep = self.meeting.deep.jobs.queue
-            // A Make Final Transcript Now whose languages are being read waits in `pending`, not `items`.
-            return Set((deep.items + deep.pending).map(\.sessionID)).union(self.meeting.echo.queue.map(\.sessionID))
+            // A Make Final Transcript Now whose languages are being read waits in `pending`, not `items`; a meeting
+            // being decided on (`deciding`) may be queued next, as summaries treat it.
+            return Set((deep.items + deep.pending).map(\.sessionID)).union(self.meeting.deep.deciding)
+                .union(self.meeting.echo.queue.map(\.sessionID))
+        }
+        // As summaries: meetings saved while the app was closed are queued for final transcripts by the launch's
+        // reconciliation, so nothing is deleted before it ends.
+        cleanup.waiting = { [weak self] in
+            guard let jobs = self?.meeting.summaries.jobs else { return true }
+            return !jobs.launchReady || jobs.reconciling > 0
         }
         cleanup.onScanned = { [weak self] in self?.scheduleBackgroundJobs() }
         // No voice can be learned from the meeting any more, as after Delete Audio.

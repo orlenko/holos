@@ -25,6 +25,8 @@ public enum DeepTranscriptionLock {
         public static let summaryKind = "summary"
         /// `voiceislocal session echo-analyze` (the app's echo catch-up, or a run in Terminal).
         public static let echoKind = "echo"
+        /// `voiceislocal session clean-audio` (the app's automatic audio cleanup).
+        public static let audioCleanupKind = "audioCleanup"
 
         public init(pid: Int32, sessionID: String, force: Bool, kind: String? = nil) {
             self.pid = pid; self.sessionID = sessionID; self.force = force; self.kind = kind

@@ -1626,23 +1626,33 @@ another row selects that row and acts on it alone, as in the Finder.
 
 Settings › Meetings › "Delete the audio of meetings older than [7] days" (off by default; 1 to 365
 days, saved in `MeetingAudioPreferences`) deletes the audio of old meetings on its own, as Delete
-Audio does: `voiceislocal session delete --audio-only` holding the meeting's lease, the audio and
-screen captures gone for good, the transcript, speaker labels and transcript files kept, and the
-voice samples waiting to be learned from the meeting forgotten. A meeting qualifies
-(`AudioCleanupPolicy.eligible`) once it is at least that many days old, has audio, is complete or
-recovered with a readable transcript, has its speakers labelled with no language left to detect,
-and no final transcript (queued, or a Make Final Transcript Now whose languages are being read) or
-echo analysis is queued on it; never while it records, is worked on by any command, or is open.
+Audio does: the audio and screen captures gone for good, the transcript, speaker labels and
+transcript files kept, and the voice samples waiting to be learned from the meeting forgotten.
+
+A meeting qualifies (`AudioCleanupPolicy.refusal` names why not) once it is at least that many days
+old, has audio, is complete or recovered with a readable transcript and a readable meeting.json, has
+its speakers labelled with no language left to detect, and no final transcript (queued, being decided
+on, or a Make Final Transcript Now whose languages are being read) or echo analysis is queued on it;
+never while it records, is worked on by any command, or is open. Unknown is never eligible.
+
+It runs as automatic background work (`AudioCleanupJobs`: after final transcripts, echo analyses and
+summaries, one meeting at a time, oldest first, and nothing before the launch's final-transcript
+reconciliation ends or while one runs, as summaries wait), from a scan of the sessions folder made
+at launch, hourly while the app runs, and when the setting changes. Each pick is read again off the
+main actor, then checked again on it just before it starts (the setting unchanged, nothing queued on
+the meeting meanwhile). The command, `voiceislocal session clean-audio <session> --older-than N`
+(`SessionAudioCleanupCommand`), holds the background-job lock (kind `audioCleanup`) for its whole
+run and decides again under the meeting's processing lease, so nothing that changed the meeting
+since the scan is missed; it exits 0 once the audio is gone and 3 when it keeps it (with the reason).
+A review open on the meeting is held read-only and reread afterwards, as for Delete Audio.
+
 A deletion that began and did not finish (a meeting started and stopped it, or the app quit), marked
-deleted while its `audio/` folder is still there, is finished first, whatever the meeting's age or
-state, as soon as nothing records or works on it; Delete Audio keeps the marker and removes the rest
-(`SessionDeletion.audioDeletionUnfinished`). A run stopped before it wrote the marker left nothing to
-finish, and its meeting is judged again like any other. It runs as automatic background work (`AudioCleanupJobs`, after final
-transcripts, echo analyses and summaries, one meeting at a time, oldest first), from a scan of the
-sessions folder made at launch, hourly while the app runs, and when the setting changes; each
-meeting is read again just before its audio goes. A meeting whose cleanup failed is tried again at
-the next launch. The same Settings card has "Ask before deleting a meeting's audio", which turns
-back on the confirmation that "Don't ask again" turned off.
+deleted while its `audio/` folder is still there (`SessionDeletion.audioDeletionUnfinished`), is
+finished first, whatever the meeting's age or state, as soon as nothing records or works on it;
+Delete Audio keeps the marker and removes the rest. A run stopped before it wrote the marker left
+nothing to finish, and its meeting is judged again like any other. A meeting whose cleanup failed is
+tried again at the next launch. The same Settings card has "Ask before deleting a meeting's audio",
+which turns back on the confirmation that "Don't ask again" turned off.
 
 ### Meetings
 

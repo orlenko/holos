@@ -31,6 +31,9 @@ struct AudioCleanupJobsTests {
         #expect(!eligible(Self.meeting("gone", daysOld: 30, audioDeleted: true)))
         #expect(!eligible(Self.meeting("none", daysOld: 30, chunks: 0)))
         #expect(!eligible(Self.meeting("busy", daysOld: 30, liveness: .maintenance)), "Another command holds it.")
+        var unreadable = Self.meeting("unreadable", daysOld: 30)
+        unreadable.metadataProblem = "damaged"
+        #expect(!eligible(unreadable), "Unknown language or naming state keeps the audio.")
         #expect(!eligible(Self.meeting("queued", daysOld: 30), pending: ["queued"]),
                 "A final transcript or echo analysis still queued needs the audio.")
     }
@@ -69,11 +72,11 @@ struct AudioCleanupJobsTests {
         let pick = try #require(jobs.next(Self.holds(inUse: ["open"])))
         #expect(pick.sessionID == "oldest", "The open meeting is skipped, and the oldest of the rest goes first.")
         #expect(pick.priority == .automatic)
-        #expect(pick.command.arguments == ["session", "delete", "/nowhere/oldest.holos", "--audio-only", "--yes", "--json"])
-        #expect(pick.command.arguments.contains("--audio-only"), "Never the whole meeting.")
+        #expect(pick.command.arguments == ["session", "clean-audio", "/nowhere/oldest.holos", "--older-than", "7", "--json"],
+                "The command decides again under the meeting's lease.")
         var deleted: [String] = []
         jobs.onDeleted = { deleted.append($0) }
-        #expect(jobs.ended("oldest", result: CommandResult(code: 0, outcome: .init(deleted: "audio")),
+        #expect(jobs.ended("oldest", result: CommandResult(code: 0, outcome: .init(sessionID: "x", result: .deleted)),
                            preempted: false) == .finished)
         #expect(deleted == ["oldest"])
         #expect(jobs.next(Self.holds(inUse: ["open"]))?.sessionID == "recent")
@@ -99,7 +102,7 @@ struct AudioCleanupJobsTests {
         let pick = try #require(jobs.next(Self.holds()))
         #expect(pick.sessionID == "leftover")
         #expect(jobs.preparation(for: pick)?() == true)
-        #expect(jobs.ended("leftover", result: CommandResult(code: 0, outcome: .init(deleted: "audio")),
+        #expect(jobs.ended("leftover", result: CommandResult(code: 0, outcome: .init(sessionID: "x", result: .deleted)),
                            preempted: false) == .finished)
         #expect(jobs.unfinished.isEmpty)
         #expect(jobs.next(Self.holds())?.sessionID == "old")
@@ -125,5 +128,23 @@ struct AudioCleanupJobsTests {
         #expect(!AudioCleanupPolicy.finishes(live, unfinished: true))
         #expect(!AudioCleanupPolicy.finishes(Self.meeting("done", daysOld: 30, audioDeleted: true), unfinished: false),
                 "Nothing left: nothing to finish.")
+    }
+
+    @Test func nothingIsPickedBeforeTheLaunchReconcilesAndAChangedSettingStopsAPick() async throws {
+        let jobs = await Self.jobs([Self.meeting("a", daysOld: 30)])
+        #expect(jobs.reviewHold == .deleteAudio, "A review open on it is held as for Delete Audio.")
+        var waiting = true
+        jobs.waiting = { waiting }
+        #expect(jobs.next(Self.holds()) == nil, "Final transcripts may still be queued for meetings saved meanwhile.")
+        waiting = false
+        let pick = try #require(jobs.next(Self.holds()))
+        #expect(jobs.stillWanted(pick))
+        jobs.olderThanDays = { 14 }
+        #expect(!jobs.stillWanted(pick), "The days changed while the meeting was read.")
+        jobs.olderThanDays = { nil }
+        #expect(!jobs.stillWanted(pick), "The cleanup was turned off.")
+        jobs.olderThanDays = { 7 }
+        jobs.pending = { ["a"] }
+        #expect(!jobs.stillWanted(pick), "A final transcript was queued on it.")
     }
 }

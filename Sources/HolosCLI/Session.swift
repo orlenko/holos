@@ -19,6 +19,7 @@ struct Session: AsyncParsableCommand {
             Export.self,
             Score.self,
             Delete.self,
+            CleanAudio.self,
             Languages.self,
             FixWords.self,
             DeepTranscribe.self,
