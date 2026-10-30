@@ -1622,6 +1622,23 @@ meeting is skipped by Delete Audio as damaged, since its audio may still be ther
 all of it (Show N in Finder, Delete Audio of N Meetings…, Delete N Meetings…); a right-click on
 another row selects that row and acts on it alone, as in the Finder.
 
+### Automatic audio cleanup
+
+Settings › Meetings › "Delete the audio of meetings older than [7] days" (off by default; 1 to 365
+days, saved in `MeetingAudioPreferences`) deletes the audio of old meetings on its own, as Delete
+Audio does: `voiceislocal session delete --audio-only` holding the meeting's lease, the audio and
+screen captures gone for good, the transcript, speaker labels and transcript files kept, and the
+voice samples waiting to be learned from the meeting forgotten. A meeting qualifies
+(`AudioCleanupPolicy.eligible`) once it is at least that many days old, has audio, is complete or
+recovered with a readable transcript, has its speakers labelled with no language left to detect,
+and no final transcript or echo analysis is queued on it; never while it records, is worked on by
+any command, or is open. It runs as automatic background work (`AudioCleanupJobs`, after final
+transcripts, echo analyses and summaries, one meeting at a time, oldest first), from a scan of the
+sessions folder made at launch, hourly while the app runs, and when the setting changes; each
+meeting is read again just before its audio goes. A meeting whose cleanup failed is tried again at
+the next launch. The same Settings card has "Ask before deleting a meeting's audio", which turns
+back on the confirmation that "Don't ask again" turned off.
+
 ### Meetings
 
 Record the microphone and remote/system audio into **separate timed tracks**. A

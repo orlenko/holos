@@ -1,9 +1,10 @@
 import Foundation
+import HolosAppModel
 import HolosMeeting
 
 /// The wiring of `BackgroundJobCoordinator` (docs/meeting/deep-transcription.md §4.16 "App", docs/meeting/titles-summaries.md §4.17, docs/meeting/online-calls-echo.md §5.11 "Catching up in the
-/// app"): final transcripts (`meeting.deep.jobs`), echo analyses (`meeting.echo`) and summaries
-/// (`meeting.summaries.jobs`), one job at a time.
+/// app"): final transcripts (`meeting.deep.jobs`), echo analyses (`meeting.echo`), summaries
+/// (`meeting.summaries.jobs`) and the audio cleanup (docs/design.md "Automatic audio cleanup"), one job at a time.
 extension HolosAppDelegate {
     /// Creates the coordinator once the meeting controller and the maintenance launcher exist.
     func setUpBackgroundJobs() {
@@ -39,11 +40,39 @@ extension HolosAppDelegate {
         summaries.onRequestFailed = { [weak self] _, message in
             self?.showSummaryAlert("The meeting was not summarized.", message)
         }
-        // Kinds in their order when two picks have the same priority: final transcripts, echo analyses, summaries.
+        let cleanup = audioCleanupJobs(root: controller.root)
+        // Kinds in their order when two picks have the same priority: final transcripts, echo analyses, summaries,
+        // the audio cleanup.
         meeting.deep.coordinator = BackgroundJobCoordinator(runner: commands,
-                                                            kinds: [meeting.deep.jobs, meeting.echo, summaries],
+                                                            kinds: [meeting.deep.jobs, meeting.echo, summaries, cleanup],
                                                             environment: environment)
         meeting.deep.jobs.onEnded = { [weak self] report in self?.deepTranscriptionEnded(report) }
+    }
+
+    /// The audio cleanup, looked for at launch, hourly (a meeting grows old while the app runs) and when Settings
+    /// changes it. A final transcript or echo analysis still queued on a meeting keeps its audio.
+    private func audioCleanupJobs(root: URL) -> AudioCleanupJobs {
+        let cleanup = AudioCleanupJobs()
+        cleanup.root = root
+        cleanup.olderThanDays = { MeetingAudioPreferences().cleanupAfterDays }
+        cleanup.pending = { [weak self] in
+            guard let self else { return [] }
+            return Set(self.meeting.deep.jobs.queue.items.map(\.sessionID)).union(self.meeting.echo.queue.map(\.sessionID))
+        }
+        cleanup.onScanned = { [weak self] in self?.scheduleBackgroundJobs() }
+        // No voice can be learned from the meeting any more, as after Delete Audio.
+        cleanup.onDeleted = { PendingVoiceSamples().clear($0) }
+        NotificationCenter.default.addObserver(forName: MeetingAudioPreferences.cleanupChanged, object: nil,
+                                               queue: .main) { [weak self, weak cleanup] _ in
+            MainActor.assumeIsolated {
+                cleanup?.rescan()
+                self?.scheduleBackgroundJobs()
+            }
+        }
+        Timer.scheduledTimer(withTimeInterval: AudioCleanupJobs.rescanAfter, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleBackgroundJobs() }
+        }
+        return cleanup
     }
 
     /// Starts the next final transcript, echo analysis or summary when one may start (a summary after its scan).

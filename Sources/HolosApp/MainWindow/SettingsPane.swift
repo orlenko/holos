@@ -157,10 +157,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
                          deepTranscriptionToggle, meetingSummariesToggle, historyAudioToggle] {
             Self.wrapsTitle(checkbox)
         }
-        let stack = NSStackView(views: [
-            noMatches, generalCard(), permissionsCard(), dictationCard(), meetingsCard(), readingCard(), historyCard(),
-            assistantFooter(),
-        ])
+        let stack = NSStackView(views: [noMatches, generalCard(), permissionsCard(), dictationCard(), meetingsCard(),
+                                        readingCard(), historyCard(), assistantFooter()])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 22
@@ -430,9 +428,10 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         addRowItem(.meetings, .speakerModels, keywords: ["diarization", "speakers", "who spoke", "install"])
         addRowItem(.meetings, .deepTranscriptionModel, keywords: ["whisper", "model", "download"])
         addRowItem(.meetings, .people, keywords: ["people", "voices", "names", "voice profiles"])
+        let audio = meetingAudioSettings()
         return card(.meetings, [recordSystemAudioToggle, detail, screenCaptureToggle, screenDetail,
-                                deepTranscriptionToggle, deepDetail, meetingSummariesToggle, summariesDetail, grid],
-                    widths: [detail, screenDetail, deepDetail, summariesDetail, grid])
+                                deepTranscriptionToggle, deepDetail, meetingSummariesToggle, summariesDetail, audio, grid],
+                    widths: [detail, screenDetail, deepDetail, summariesDetail, audio, grid])
     }
 
     /// Settings › Reading: what new readings in the Reading section start with, and where their files go.
@@ -639,8 +638,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
 
     /// A setting made of a card's views (a checkbox and its note); `context`: views shown along with it;
     /// `titledBy`: a checkbox whose title changes at run time, searched as shown.
-    private func addItem(_ chapter: SettingsChapter?, _ title: String, caption: String, keywords: [String],
-                         views: [NSView], focus: NSView?, context: [NSView] = [], titledBy checkbox: NSButton? = nil) {
+    func addItem(_ chapter: SettingsChapter?, _ title: String, caption: String, keywords: [String],
+                 views: [NSView], focus: NSView?, context: [NSView] = [], titledBy checkbox: NSButton? = nil) {
         var liveTitle: (@MainActor () -> String)?
         if let checkbox { liveTitle = { checkbox.title } }
         items.append(SearchItem(chapter: chapter, entry: SettingsSearch.Entry(title: title, caption: caption,

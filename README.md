@@ -365,6 +365,12 @@ speakers again; names carry over; for an English meeting only, checked again whe
 Cancel Final Transcript. Meetings saved while the app is closed are queued the next time it
 opens.
 
+Audio takes most of a meeting's space. Settings › Meetings › "Delete the audio of meetings older
+than [7] days" (off until you turn it on) deletes it on its own once a meeting is that old and
+finished: its final transcript made, its speakers labelled, and nothing open or working on it.
+The transcript, speaker names and transcript files stay. Each meeting's row also has a Delete
+Audio button.
+
 ### Meeting titles and summaries
 
 Apple Intelligence's on-device model writes a short title, a one- or two-sentence summary,
