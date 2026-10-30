@@ -22,12 +22,11 @@ struct ReviewWindowEmbeddingTests {
         pane.show([summary], people: [:], freeBytes: nil)
         pane.showLive(sessionID: id, directory: session)
         #expect(pane.installReview(review))
+        // One layout pass, with no display cycle after it: the window's own pass may never come (a display that's
+        // off), and the cell made in the review's window must already fit.
         host.contentView?.layoutSubtreeIfNeeded()
-        let cellFits = await eventually {
-            host.contentView?.layoutSubtreeIfNeeded()
-            let cell = review.turnList.table.view(atColumn: 0, row: 0, makeIfNecessary: true)
-            return (cell?.frame.width ?? .infinity) <= review.turnList.bounds.width + 1
-        }
+        let cell = review.turnList.table.view(atColumn: 0, row: 0, makeIfNecessary: true)
+        let cellFits = (cell?.frame.width ?? .infinity) <= review.turnList.bounds.width + 1
         SettingsEmbeddingTests.render(host, name: "inline-review-\(Int(size.width))")
         #expect(cellFits, "Cell \(review.turnList.table.view(atColumn: 0, row: 0, makeIfNecessary: true)?.frame.width ?? -1), list \(review.turnList.bounds.width), column \(review.turnList.table.tableColumns.first?.width ?? -1), table \(review.turnList.table.frame.width)")
         #expect(review.window === host)

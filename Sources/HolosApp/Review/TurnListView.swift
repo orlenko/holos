@@ -13,6 +13,7 @@ import HolosSpeakers
 /// Invariants:
 /// 1. Row heights use the same width-dependent text geometry as their cells.
 /// 2. Word editing carries the revision and word moves of the displayed projection.
+/// 3. After a layout that changes the column width, every visible cell is as wide as the column.
 @MainActor
 final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// A timestamp or a word was clicked: play from this session time.
@@ -481,7 +482,21 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         table.setFrameSize(NSSize(width: width, height: table.frame.height))
         table.sizeLastColumnToFit()
         refreshHeights()
+        reloadCellsOffTheColumnWidth()
         repositionWordEdit()
+    }
+
+    /// AppKit can leave a cell at its old width when the column narrows right after the list moved to another window
+    /// (the review embedded in the main window): its text then wraps at the old width, clipped, until some later
+    /// layout. Reloading those rows makes their cells again, at the column's width.
+    private func reloadCellsOffTheColumnWidth() {
+        guard let width = table.tableColumns.first?.width else { return }
+        let visible = table.rows(in: table.visibleRect)
+        let stale = IndexSet((visible.lowerBound..<visible.upperBound).filter { row in
+            guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) else { return false }
+            return abs(cell.frame.width - width) > 0.5
+        })
+        if !stale.isEmpty { table.reloadData(forRowIndexes: stale, columnIndexes: [0]) }
     }
 
     private func refreshHeights() {
