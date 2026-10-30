@@ -1,6 +1,9 @@
 import Foundation
 
 /// What the user chose about deleting a meeting's audio, kept in UserDefaults, free of AppKit so it can be tested.
+///
+/// Invariants:
+/// 1. A missing or unreadable value reads as asking first.
 public struct MeetingAudioPreferences {
     /// UserDefaults key: Delete Audio on one meeting asks first. Absent means yes; "Don't ask again" in the
     /// confirmation sets it to false.

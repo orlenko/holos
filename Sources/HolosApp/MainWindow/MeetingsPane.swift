@@ -632,7 +632,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     }
 
     /// Voice is Local works on the meeting (`running`): a command, or it waits in a deletion of several.
-    private func isBusy(_ summary: SessionSummary) -> Bool {
+    func isBusy(_ summary: SessionSummary) -> Bool {
         running[summary.id] != nil
     }
 
@@ -1520,6 +1520,9 @@ final class MeetingGroupView: NSTableCellView {
 /// A meeting's Name cell: its title (bold) with its badges; VoiceOver also reads when it was, who spoke, and its
 /// summary. While the meeting is renamed, an editor takes the place of the title and its badges: Return (or leaving
 /// it) saves, Escape cancels.
+///
+/// Invariants:
+/// 1. A rename ends once: `commit` or `cancel` is called at most once, and a reused cell cancels it unsaved.
 @MainActor
 final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
     struct Content: Equatable {

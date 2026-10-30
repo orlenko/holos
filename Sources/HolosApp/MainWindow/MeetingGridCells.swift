@@ -55,6 +55,9 @@ enum MeetingGridColumn: String, CaseIterable {
 }
 
 /// One line of secondary text: the When and Description cells. The whole text is in the tooltip when it is cut.
+///
+/// Invariants:
+/// 1. The label, tooltip and VoiceOver label are those of the last `showing` call.
 @MainActor
 final class MeetingTextCell: NSTableCellView {
     private let label = NSTextField(labelWithString: "")
@@ -91,6 +94,11 @@ final class MeetingTextCell: NSTableCellView {
 /// The row's buttons: Open (the meeting screen, where speakers are named), View (the Markdown transcript in the app
 /// that opens Markdown), Delete Audio, and Copy Path (the meeting's folder, for an agent or Terminal). Each button
 /// acts on its own row, whatever is selected.
+///
+/// Invariants:
+/// 1. A click calls the `onAction` of the meeting the cell was last shown for; a reused cell calls none until shown
+///    again.
+/// 2. Each button is on exactly when the last `show(enabled:)` named it.
 @MainActor
 final class MeetingRowActionsView: NSTableCellView {
     enum Kind: CaseIterable {

@@ -4,12 +4,14 @@ import HolosStorage
 
 /// The Meetings grid's row buttons, Copy Path, and the rename a click on a selected meeting's name starts.
 extension MeetingsPane {
-    /// The row buttons each meeting offers (`MeetingRowActionsView`): Open and Copy Path always, View with a Markdown
-    /// transcript, Delete Audio when `MeetingActionPolicy` allows it.
+    /// The row buttons each meeting offers (`MeetingRowActionsView`): Open and Copy Path always, View with a saved
+    /// transcript whose files were written, Delete Audio when `MeetingActionPolicy` allows it. Read from the catalog's
+    /// snapshot only, since rows are drawn on the main actor; View checks the file when clicked.
     func rowActions(_ summary: SessionSummary) -> Set<MeetingRowActionsView.Kind> {
         var kinds: Set<MeetingRowActionsView.Kind> = [.open, .copyPath]
-        if hasExport(summary) { kinds.insert(.view) }
-        if enabledActions(summary).contains(.deleteAudio) { kinds.insert(.deleteAudio) }
+        if summary.transcriptID != nil, summary.exportsProblem == nil { kinds.insert(.view) }
+        if MeetingActionPolicy.enabled(summary, inUse: isBusy(summary), hasExport: false, transcriptFiles: false)
+            .contains(.deleteAudio) { kinds.insert(.deleteAudio) }
         return kinds
     }
 
@@ -36,8 +38,9 @@ extension MeetingsPane {
         }
     }
 
-    /// A click on the name of the meeting that was already the only one selected renames it once no second click
-    /// follows, as in the Finder; a double-click opens it instead.
+    /// A click on the title of the meeting that was already the only one selected renames it once no second click
+    /// follows, as in the Finder; a double-click opens it instead, and so does anything that opens a meeting
+    /// meanwhile (Return, a row's Open).
     @objc func rowClicked() {
         listState.cancelPendingRename()
         let candidate = listState.renameCandidate
@@ -46,11 +49,13 @@ extension MeetingsPane {
         guard NSApp.currentEvent?.clickCount == 1, column >= 0, column < table.tableColumns.count,
               MeetingGridColumn(table.tableColumns[column]) == .name,
               let summary = session(at: table.clickedRow), summary.id == candidate,
-              table.selectedRowIndexes.count == 1 else { return }
+              table.selectedRowIndexes.count == 1, let point = NSApp.currentEvent?.locationInWindow,
+              let cell = table.view(atColumn: column, row: table.clickedRow, makeIfNecessary: false) as? MeetingRowView,
+              cell.titleTextContains(point) else { return }
         let id = summary.id
         listState.pendingRename = Task { [weak self] in
             try? await Task.sleep(for: .seconds(NSEvent.doubleClickInterval))
-            guard let self, !Task.isCancelled, self.selectedSession?.id == id,
+            guard let self, !Task.isCancelled, self.live == nil, self.selectedSession?.id == id,
                   let current = self.sessions.first(where: { $0.id == id }),
                   self.enabledActions(current).contains(.rename) else { return }
             self.listState.pendingRename = nil

@@ -9,12 +9,13 @@ import Testing
 
 @MainActor
 struct MeetingsPaneGridTests {
-    private static func meeting(_ id: String, in root: URL, chunks: Int = 3) throws -> SessionSummary {
+    private static func meeting(_ id: String, in root: URL, chunks: Int = 3,
+                                transcript: String? = "t") throws -> SessionSummary {
         let directory = root.appendingPathComponent("\(id).holos", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return SessionSummary(id: id, directory: directory, name: "Planning \(id)", createdAt: .now, source: .system,
                               state: .complete, manifestStatus: "complete", savedSeconds: 600, chunkCount: chunks,
-                              transcriptID: "t-\(id)", speakerState: .labelled, liveness: .exited)
+                              transcriptID: transcript, speakerState: .labelled, liveness: .exited)
     }
 
     private static func actions(_ pane: MeetingsPane, _ id: String) throws -> MeetingRowActionsView {
@@ -77,7 +78,7 @@ struct MeetingsPaneGridTests {
         let (_, pane) = try LiveMeetingViewTests.meetings(size: .init(width: 1000, height: 700), root: temp.url,
                                                           perform: { performed.append(($0, $1.id)) })
         let withAudio = try Self.meeting("a", in: temp.url)
-        let withoutAudio = try Self.meeting("b", in: temp.url, chunks: 0)
+        let withoutAudio = try Self.meeting("b", in: temp.url, chunks: 0, transcript: nil)
         let exports = SessionPaths.exports(withAudio.directory)
         try FileManager.default.createDirectory(at: exports, withIntermediateDirectories: true)
         try Data("# Planning\n".utf8).write(to: SessionPaths.export("md", in: withAudio.directory))
@@ -87,7 +88,7 @@ struct MeetingsPaneGridTests {
         #expect(audio.button(.view)?.isEnabled == true)
         #expect(audio.button(.deleteAudio)?.isEnabled == true)
         let none = try Self.actions(pane, withoutAudio.id)
-        #expect(none.button(.view)?.isEnabled == false, "No Markdown transcript to view.")
+        #expect(none.button(.view)?.isEnabled == false, "No transcript to view.")
         #expect(none.button(.deleteAudio)?.isEnabled == false, "No audio to delete.")
         #expect(none.button(.open)?.isEnabled == true)
         #expect(none.button(.copyPath)?.isEnabled == true)

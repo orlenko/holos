@@ -6,6 +6,8 @@ import HolosMeeting
 ///
 /// Invariants:
 /// 1. A catalog read publishes its progress together with its meeting rows.
+/// 2. At most one rename waits to start (`pendingRename`); a new click or a double-click cancels it, and it does not
+///    start once a meeting is open.
 @MainActor
 final class MeetingListState {
     let filesCache = TranscriptFilesCache()

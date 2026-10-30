@@ -1529,10 +1529,12 @@ When (the start, as the time alone today and yesterday, the weekday this week, e
 the length), Description (the first line of the summary, else the people its speaker labels name,
 "Alex, Sam and 2 others"; the whole of both on hover), and four buttons that act on their own row
 whatever is selected: Open (pencil: the meeting screen, where speakers are named), View
-(magnifying glass: exports/transcript.md in the app that opens Markdown; off without one), Delete
+(magnifying glass: exports/transcript.md in the app that opens Markdown; off without a saved
+transcript, and a beep when the file is missing), Delete
 Audio (speaker with a slash; off when `MeetingActionPolicy` refuses it, for example while the meeting
 records, is worked on, or has no audio), and Copy Path (the meeting's folder, for an agent or
-Terminal). Where the list is narrower than 470 points (beside a call's window) the When column is
+Terminal). The buttons' states come from the catalog read, so drawing a row reads no files. Where
+the list is narrower than 470 points (beside a call's window) the When column is
 hidden; the day headers still say when. Badges appear only when there is something to say:
 ● Recording (red), ● Paused, Starting…, Saving…, what a command is doing ("Labelling speakers…",
 "Final transcript queued", "Writing summary…"), Interrupted, Failed, Damaged, Transcript incomplete,
@@ -1551,8 +1553,8 @@ it), else the title Apple Intelligence wrote for the current transcript, else th
 ("Meeting 2026-10-03 14:00"); a generated title never replaces a name the user gave. The
 Markdown transcript file's heading follows the same rule.
 
-A meeting is renamed in its row: a click on the name of the meeting already selected alone
-(once no second click follows, as in the Finder), or Advanced › Rename… (⌘R in the list), turns
+A meeting is renamed in its row: a click on the title text of the meeting already selected alone
+(once no second click follows and nothing opened a meeting meanwhile, as in the Finder), or Advanced › Rename… (⌘R in the list), turns
 the title into a text field spanning the Name cell, with the title selected. Double-clicking any
 part of the row opens the meeting. Inside the meeting, the three-dot menu's Rename… opens a name
 sheet on the main window. In the list, Return saves it, Escape
