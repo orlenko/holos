@@ -9,7 +9,7 @@
 731 Sources/HolosApp/MainWindow/MainWindowController.swift
 1756 Sources/HolosApp/MainWindow/MeetingsPane.swift
 737 Sources/HolosApp/MainWindow/ReadingPane.swift
-1351 Sources/HolosApp/MainWindow/SettingsPane.swift
+1350 Sources/HolosApp/MainWindow/SettingsPane.swift
 938 Sources/HolosApp/Reading/ReadingController.swift
 1756 Sources/HolosApp/Review/ReviewWindow.swift
 737 Sources/HolosAudio/MeetingScreenCapture.swift
@@ -32,7 +32,7 @@
 815 Sources/HolosMeeting/PostProcessing/LanguageStage.swift
 748 Sources/HolosMeeting/PostProcessing/SpeakerTranscriptRetarget.swift
 776 Sources/HolosMeeting/PostProcessing/TranscriptWordEdit.swift
-834 Sources/HolosMeeting/PostProcessing/WordFixStage.swift
+825 Sources/HolosMeeting/PostProcessing/WordFixStage.swift
 664 Sources/HolosMeeting/RecorderLauncher.swift
 652 Sources/HolosMeeting/RecorderMachine.swift
 811 Sources/HolosMeeting/RecordingWorkflow.swift

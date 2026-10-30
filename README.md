@@ -569,8 +569,8 @@ good), keeping the transcript, speaker labels, and exports. Both refuse while th
 session is recording or another Voice is Local command is working on it.
 `voiceislocal session clean-audio <session> --older-than N` is what the automatic audio
 cleanup runs: it deletes the audio only if the meeting is at least N days old and finished
-(transcript readable, speakers labelled), deciding under the meeting's lock, and exits 3 with
-the reason when it keeps it.
+(transcript readable and whole, speakers labelled for it), deciding under the meeting's lock,
+and exits 3 with the reason when it keeps it; `--dry-run` says what it would do and deletes nothing.
 
 `say` accepts text arguments or UTF-8 stdin and can play speech or save `.m4a`,
 `.wav`, or `.caf`. `read` turns a local .txt, .md, .html, .pdf, .rtf, .rtfd, .docx,

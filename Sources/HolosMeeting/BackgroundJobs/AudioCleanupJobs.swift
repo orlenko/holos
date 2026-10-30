@@ -37,18 +37,27 @@ public enum AudioCleanupPolicy {
         return nil
     }
 
-    /// Why the meeting's files show its audio is still needed, or nil: the manifest or the event journal cannot be read
-    /// (the catalog reads an unreadable journal as no language work left, `LanguageStage.pendingLanguages`), or the
-    /// current transcript was rebuilt without transcribing audio it leaves out
-    /// (`TranscriptRebuilder.leftAudioUntranscribed`, a `recovered` meeting from `session recover --no-transcribe`).
-    /// Reads files: off the main actor.
+    /// Why the meeting's files do not show that its audio may go, or nil when they do. Positive evidence only: what
+    /// cannot be read or established keeps the audio. The files must show a manifest; an event journal that is there
+    /// and reads whole (no torn tail, no unreadable line; the catalog reads a missing or unreadable one as no language
+    /// work left); a current transcript not rebuilt without transcribing audio it leaves out
+    /// (`TranscriptRebuilder.leftAudioUntranscribed`, `session recover --no-transcribe`); and speaker labels made for
+    /// that transcript or one it was corrected from (`WordFixStage.correctionChain`). Reads files: off the main actor.
     public static func audioNeeded(session: URL, transcriptID: String?) -> String? {
-        guard let manifest = try? SessionArchive.readManifest(at: session),
-              let events = try? SessionArchive.readEvents(at: session).events else {
-            return "its manifest or event journal cannot be read"
+        guard let transcriptID else { return "no readable transcript" }
+        guard let manifest = try? SessionArchive.readManifest(at: session) else { return "its manifest cannot be read" }
+        guard FileManager.default.fileExists(atPath: SessionPaths.events(session).path),
+              let journal = try? SessionArchive.readEvents(at: session),
+              journal.unreadableLines == 0, !journal.tornTail else {
+            return "its event journal is missing or damaged"
         }
-        if let transcriptID, TranscriptRebuilder.leftAudioUntranscribed(transcriptID, events: events, manifest: manifest) {
+        if TranscriptRebuilder.leftAudioUntranscribed(transcriptID, events: journal.events, manifest: manifest) {
             return "part of its audio was never transcribed"
+        }
+        guard let head = try? SessionSpeakerStore.readHead(session: session),
+              let run = try? SessionSpeakerStore.readRun(id: head.runID, session: session),
+              WordFixStage.correctionChain(transcriptID, events: journal.events).contains(run.transcriptID) else {
+            return "its speaker labels are not for its transcript"
         }
         return nil
     }
@@ -70,9 +79,10 @@ public enum AudioCleanupPolicy {
 /// Invariants:
 /// 1. Nothing runs while `olderThanDays` is nil (the cleanup is off).
 /// 2. A meeting whose run ended in this launch is not run again before the next launch; a run stopped part-way (a
-///    meeting started) is not an end.
-/// 3. A deletion that began and did not finish (`unfinished`) is finished before any new one starts, whatever the
-///    meeting's age or state, as long as nothing records or works on it.
+///    meeting started) is not an end, and the next look scans again.
+/// 3. A deletion that began and did not finish, as the files show it (`unfinished`: marked deleted with its audio
+///    still there, from a scan), is finished before any new one starts, whatever the meeting's age, state or queued
+///    work, as long as nothing records or works on it. Nothing else is assumed under way.
 /// 4. Nothing is picked before the launch's final-transcript reconciliation ended or while one runs (`waiting`), and a
 ///    pick starts only if the setting is still what it was when it was picked (`stillWanted`).
 @MainActor public final class AudioCleanupJobs: BackgroundJobKind {
@@ -187,7 +197,8 @@ public enum AudioCleanupPolicy {
     /// unless its deletion is under way (invariant 4).
     public func stillWanted(_ pick: BackgroundJobPick) -> Bool {
         guard let days = olderThanDays(), days == pickedDays[pick.sessionID], !waiting() else { return false }
-        // Finishing a deletion under way takes nothing from queued work: that audio is going anyway (invariant 3).
+        // Finishing a deletion the files show under way takes nothing from queued work: that audio is going anyway
+        // (invariant 3).
         return unfinished.contains(pick.sessionID) || !pending().contains(pick.sessionID)
     }
 
@@ -197,11 +208,12 @@ public enum AudioCleanupPolicy {
         guard let days = olderThanDays() else { return { false } }
         let read = read, deletionUnfinished = deletionUnfinished, clock = clock, audioNeeded = audioNeeded
         let pending = pending()
-        let session = URL(fileURLWithPath: pick.path), finishing = unfinished.contains(pick.sessionID)
+        let session = URL(fileURLWithPath: pick.path)
         return {
             let now = clock(), summary = read(session, now)
-            // A run stopped before it wrote the marker left nothing to finish: the meeting is judged as any other.
-            if finishing, summary.audioDeleted {
+            // Marked deleted: only a deletion the files show unfinished goes on. Otherwise (a run stopped before the
+            // marker left nothing to finish) the meeting is judged as any other.
+            if summary.audioDeleted {
                 return AudioCleanupPolicy.finishes(summary, unfinished: deletionUnfinished(session))
             }
             return AudioCleanupPolicy.eligible(summary, now: now, days: days, pending: pending,
@@ -213,8 +225,8 @@ public enum AudioCleanupPolicy {
 
     public func ended(_ sessionID: String, result: CommandResult<Outcome>, preempted: Bool) -> BackgroundJobEnd {
         if preempted {
-            // The marker may be written already, which the policy refuses: finished on the next pick (invariant 3).
-            unfinished.insert(sessionID)
+            // The marker may be written already: the next scan reads the files and finds out (invariants 2 and 3).
+            rescan()
             return .stopped
         }
         if result.code == 0 {

@@ -16,9 +16,12 @@ public enum SessionAudioCleanupCommand {
         /// (tests).
         public var jobLock: URL?
         public var now: Date
+        /// Decide as a run would, and delete nothing (`wouldDelete`, `wouldFinish`).
+        public var dryRun: Bool
 
-        public init(session: URL, olderThanDays: Int, jobLock: URL? = nil, now: Date = Date()) {
+        public init(session: URL, olderThanDays: Int, jobLock: URL? = nil, now: Date = Date(), dryRun: Bool = false) {
             self.session = session; self.olderThanDays = olderThanDays; self.jobLock = jobLock; self.now = now
+            self.dryRun = dryRun
         }
     }
 
@@ -31,6 +34,8 @@ public enum SessionAudioCleanupCommand {
             case finished
             /// The audio stays (`reason`).
             case kept
+            /// A dry run: the audio would be deleted, or a deletion left part-way would be finished.
+            case wouldDelete, wouldFinish
         }
 
         public var sessionID: String
@@ -51,6 +56,8 @@ public enum SessionAudioCleanupCommand {
             case .deleted: "Deleted the audio; the transcript, speaker labels and transcript files are kept."
             case .finished: "Finished deleting the audio that an earlier deletion left."
             case .kept: "Kept the audio: \(reason ?? "the meeting does not qualify")."
+            case .wouldDelete: "Would delete the audio (dry run; nothing changed)."
+            case .wouldFinish: "Would finish deleting the audio an earlier deletion left (dry run; nothing changed)."
             }
         }
     }
@@ -59,8 +66,10 @@ public enum SessionAudioCleanupCommand {
     /// changed, when another job holds the lock (`DeepTranscriptionLock.busyMessage`), the meeting records, or its
     /// lease is held.
     public static func run(_ request: Request,
-                           read: (URL, Date) -> SessionSummary = { SessionCatalog.summary(session: $0, now: $1) })
-        throws -> Outcome {
+                           read: (URL, Date) -> SessionSummary = { SessionCatalog.summary(session: $0, now: $1) },
+                           audioNeeded: (URL, String?) -> String? = {
+                               AudioCleanupPolicy.audioNeeded(session: $0, transcriptID: $1)
+                           }) throws -> Outcome {
         let session = request.session
         let sessionID = (try? SessionArchive.readManifest(at: session).id)
             ?? session.deletingPathExtension().lastPathComponent
@@ -79,7 +88,8 @@ public enum SessionAudioCleanupCommand {
         }
         let lease = try SessionArchive.acquireProcessingLease(at: session)
         defer { lease.release() }
-        // Decided under the lease: no relabel, recovery or other command can change the meeting from here on.
+        // Decided under the lease, on positive evidence only (`AudioCleanupPolicy.audioNeeded`): no relabel, recovery or
+        // other command can change the meeting from here on.
         let summary = read(session, request.now)
         let result: Outcome.Result
         if summary.audioDeleted {
@@ -89,10 +99,13 @@ public enum SessionAudioCleanupCommand {
             result = .finished
         } else if let reason = AudioCleanupPolicy.refusal(
             summary, now: request.now, days: request.olderThanDays, pending: [], underOwnLease: true,
-            audioNeeded: AudioCleanupPolicy.audioNeeded(session: session, transcriptID: summary.transcriptID)) {
+            audioNeeded: audioNeeded(session, summary.transcriptID)) {
             return Outcome(sessionID: sessionID, result: .kept, reason: reason)
         } else {
             result = .deleted
+        }
+        if request.dryRun {
+            return Outcome(sessionID: sessionID, result: result == .finished ? .wouldFinish : .wouldDelete)
         }
         try SessionDeletion.deleteAudio(session: session, lease: lease)
         return Outcome(sessionID: sessionID, result: result)

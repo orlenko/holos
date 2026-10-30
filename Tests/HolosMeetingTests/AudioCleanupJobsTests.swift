@@ -115,7 +115,7 @@ struct AudioCleanupJobsTests {
         let jobs = await Self.jobs([Self.meeting("a", daysOld: 30)])
         let pick = try #require(jobs.next(Self.holds()))
         #expect(jobs.ended(pick.sessionID, result: CommandResult(code: 143, outcome: nil), preempted: true) == .stopped)
-        #expect(jobs.unfinished == ["a"], "Its marker may be written already, which the policy refuses.")
+        #expect(jobs.unfinished.isEmpty, "Nothing is assumed under way: the next scan reads the files.")
         let again = try #require(jobs.next(Self.holds()))
         #expect(again.sessionID == "a")
         #expect(jobs.preparation(for: again)?() == true,
@@ -149,9 +149,14 @@ struct AudioCleanupJobsTests {
         jobs.olderThanDays = { 7 }
         jobs.pending = { ["a"] }
         #expect(!jobs.stillWanted(pick), "A final transcript was queued on it.")
-        // A deletion under way is finished even so: its audio is going anyway, and leaving it would pick it forever.
+        // A stopped run is not assumed under way: queued work still holds it.
         #expect(jobs.ended("a", result: CommandResult(code: 143, outcome: nil), preempted: true) == .stopped)
-        let again = try #require(jobs.next(Self.holds()))
-        #expect(jobs.stillWanted(again))
+        #expect(jobs.next(Self.holds()) == nil, "Not picked while work is queued on it.")
+        #expect(!jobs.stillWanted(pick))
+        // A deletion the files show unfinished is finished even so: that audio is going anyway, and leaving it would
+        // pick it forever.
+        let leftover = await Self.jobs([Self.meeting("left", daysOld: 30, audioDeleted: true)], unfinished: ["left"])
+        leftover.pending = { ["left"] }
+        #expect(leftover.stillWanted(try #require(leftover.next(Self.holds()))))
     }
 }
