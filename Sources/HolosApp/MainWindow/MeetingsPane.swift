@@ -679,29 +679,26 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             return cell
         case .meeting(let summary):
             guard let column = MeetingGridColumn(tableColumn) else { return nil }
-            func make<Cell: NSView>(_ build: (NSUserInterfaceItemIdentifier) -> Cell) -> Cell {
-                tableView.makeView(withIdentifier: column.identifier, owner: self) as? Cell ?? build(column.identifier)
-            }
-            let names = people[summary.id] ?? []
+            func cell<Cell: NSView & IdentifiedCell>(_: Cell.Type) -> Cell { column.cell(in: tableView) }
+            let names = people[summary.id] ?? [], now = Date()
             switch column {
             case .name:
-                let cell = make(MeetingRowView.init), isLive = MeetingOpenPolicy.isLive(summary, liveSessionID: liveSessionID)
-                let phase = isLive ? LiveMeetingPhase.of(sessionID: summary.id, state: meetingState, summary: summary) : nil
-                cell.show(MeetingRowView.Content(
-                    title: summary.displayTitle,
-                    detail: MeetingListFormat.detailLine(summary, people: names, now: Date()),
+                let isLive = MeetingOpenPolicy.isLive(summary, liveSessionID: liveSessionID)
+                let phase = isLive
+                    ? LiveMeetingPhase.of(sessionID: summary.id, state: meetingState, summary: summary) : nil
+                let row = cell(MeetingRowView.self)
+                row.show(MeetingRowView.Content(
+                    title: summary.displayTitle, detail: MeetingListFormat.detailLine(summary, people: names, now: now),
                     summary: summaryText(summary), badges: badges(summary, livePhase: phase),
                     toolTip: toolTip(summary, isLive: isLive), progress: listState.progress[summary.id]))
-                return cell
+                return row
             case .when:
-                return make(MeetingTextCell.init).showing(MeetingListFormat.detailLine(summary, people: [], now: Date()))
+                return cell(MeetingTextCell.self).showing(MeetingListFormat.detailLine(summary, people: [], now: now))
             case .description:
                 let text = [summaryText(summary), MeetingListFormat.peopleText(names)].compactMap { $0 }
-                return make(MeetingTextCell.init).showing(text.first ?? "", toolTip: text.joined(separator: "\n\n"))
+                return cell(MeetingTextCell.self).showing(text.first ?? "", toolTip: text.joined(separator: "\n\n"))
             case .actions:
-                return make(MeetingRowActionsView.init).showing(rowActions(summary)) { [weak self, id = summary.id] in
-                    self?.rowAction($0, sessionID: id)
-                }
+                return cell(MeetingRowActionsView.self).showing(rowActions(summary), action: actionHandler(summary.id))
             }
         }
     }
@@ -1524,7 +1521,7 @@ final class MeetingGroupView: NSTableCellView {
 /// Invariants:
 /// 1. A rename ends once: `commit` or `cancel` is called at most once, and a reused cell cancels it unsaved.
 @MainActor
-final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
+final class MeetingRowView: NSTableCellView, NSTextFieldDelegate, IdentifiedCell {
     struct Content: Equatable {
         var title: String
         var detail: String
@@ -1556,7 +1553,7 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
         title.font = .systemFont(ofSize: 13, weight: .semibold)
         title.lineBreakMode = .byTruncatingTail
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        title.widthAnchor.constraint(greaterThanOrEqualToConstant: 72).isActive = true
+        MeetingGridColumn.keepWidth(of: title)
         textField = title
         badges.spacing = 6
         badges.distribution = .fill
@@ -1701,6 +1698,9 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
 
 /// A small rounded badge in the colour of its kind: red while recording, orange when paused, the accent colour for
 /// work in progress, orange for what needs attention, grey for a plain fact.
+///
+/// Invariants:
+/// 1. A change of `emphasized` redraws the badge; its text never draws outside its bounds.
 @MainActor
 final class MeetingBadgeView: NSTextField {
     private let kind: MeetingListFormat.Badge.Kind

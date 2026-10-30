@@ -15,6 +15,11 @@ extension MeetingsPane {
         return kinds
     }
 
+    /// What a row's buttons call: `rowAction` on that row's meeting.
+    func actionHandler(_ sessionID: String) -> (MeetingRowActionsView.Kind) -> Void {
+        { [weak self] kind in self?.rowAction(kind, sessionID: sessionID) }
+    }
+
     /// A row's button, on that row's meeting whatever is selected.
     func rowAction(_ kind: MeetingRowActionsView.Kind, sessionID: String) {
         guard let summary = sessions.first(where: { $0.id == sessionID }) else { return }
@@ -55,7 +60,9 @@ extension MeetingsPane {
         let id = summary.id
         listState.pendingRename = Task { [weak self] in
             try? await Task.sleep(for: .seconds(NSEvent.doubleClickInterval))
-            guard let self, !Task.isCancelled, self.live == nil, self.selectedSession?.id == id,
+            // Leaving the list (another section, the search field) cancels it, as moving focus does in the Finder.
+            guard let self, !Task.isCancelled, self.live == nil, self.view.window?.firstResponder === self.table,
+                  self.selectedSession?.id == id,
                   let current = self.sessions.first(where: { $0.id == id }),
                   self.enabledActions(current).contains(.rename) else { return }
             self.listState.pendingRename = nil

@@ -41,6 +41,20 @@ enum MeetingGridColumn: String, CaseIterable {
         return column
     }
 
+    /// The Name cell's title keeps 72 points above this priority: badges shrink first, and a progress bar's fixed width
+    /// wins at the narrowest column.
+    static let titleKept = NSLayoutConstraint.Priority.defaultHigh + 10
+
+    /// Keeps the Name cell's `title` at least 72 points wide at `titleKept`.
+    static func keepWidth(of title: NSView) {
+        title.widthAnchor.constraint(greaterThanOrEqualToConstant: 72).prioritized(titleKept).isActive = true
+    }
+
+    /// The cell of this column for a row: a reused one, else a new one.
+    func cell<Cell: NSView & IdentifiedCell>(in table: NSTableView) -> Cell {
+        table.makeView(withIdentifier: identifier, owner: nil) as? Cell ?? Cell(identifier: identifier)
+    }
+
     /// Below this width of the list, the When column is hidden so the name, the description and the buttons fit
     /// (the day headers still say when).
     static let whenHiddenBelow: CGFloat = 470
@@ -54,12 +68,26 @@ enum MeetingGridColumn: String, CaseIterable {
     }
 }
 
+/// A grid cell made for a column's identifier.
+@MainActor
+protocol IdentifiedCell {
+    init(identifier: NSUserInterfaceItemIdentifier)
+}
+
+extension NSLayoutConstraint {
+    /// The constraint at `priority`, for activating in one expression.
+    func prioritized(_ priority: Priority) -> NSLayoutConstraint {
+        self.priority = priority
+        return self
+    }
+}
+
 /// One line of secondary text: the When and Description cells. The whole text is in the tooltip when it is cut.
 ///
 /// Invariants:
 /// 1. The label, tooltip and VoiceOver label are those of the last `showing` call.
 @MainActor
-final class MeetingTextCell: NSTableCellView {
+final class MeetingTextCell: NSTableCellView, IdentifiedCell {
     private let label = NSTextField(labelWithString: "")
 
     init(identifier: NSUserInterfaceItemIdentifier) {
@@ -100,7 +128,7 @@ final class MeetingTextCell: NSTableCellView {
 ///    again.
 /// 2. Each button is on exactly when the last `show(enabled:)` named it.
 @MainActor
-final class MeetingRowActionsView: NSTableCellView {
+final class MeetingRowActionsView: NSTableCellView, IdentifiedCell {
     enum Kind: CaseIterable {
         case open, view, deleteAudio, copyPath
 
