@@ -2,12 +2,12 @@
 # Regenerate with scripts/check-size.sh --update-baseline. A raised entry needs a
 # reason in the PR description (AGENTS.md "Size caps").
 # entries: 42
-1704 Sources/HolosApp/HolosApp+Meeting.swift
+1702 Sources/HolosApp/HolosApp+Meeting.swift
 1604 Sources/HolosApp/HolosApp.swift
 1021 Sources/HolosApp/MainWindow/HistoryPane.swift
 625 Sources/HolosApp/MainWindow/LiveMeetingView.swift
 731 Sources/HolosApp/MainWindow/MainWindowController.swift
-1756 Sources/HolosApp/MainWindow/MeetingsPane.swift
+1753 Sources/HolosApp/MainWindow/MeetingsPane.swift
 737 Sources/HolosApp/MainWindow/ReadingPane.swift
 1351 Sources/HolosApp/MainWindow/SettingsPane.swift
 938 Sources/HolosApp/Reading/ReadingController.swift

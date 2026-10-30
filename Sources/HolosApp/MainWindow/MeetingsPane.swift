@@ -27,7 +27,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     }
 
     private let root: URL
-    private let perform: (Action, SessionSummary) -> Void
+    let perform: (Action, SessionSummary) -> Void
     private let openReview: (SessionSummary) -> Void
     /// `MeetingController.beginUsing` and `endUsing`: Clean Up and Save Transcript As… hold the meeting while they run.
     private let beginUsing: (String, String) -> Bool
@@ -42,7 +42,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     private(set) var live: LiveMeetingViewController?
     private let listView = NSView()
     private let search = NSSearchField()
-    private let table = KeyTableView()
+    let table = KeyTableView()
     private let emptyLabel = NSTextField(wrappingLabelWithString: "")
     private let footer = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
@@ -50,7 +50,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// The rows of `buttons` under the list; they wrap when the section is narrow.
     private var actionRows: [WrappingRowView] = []
     /// Every meeting, in list order (`MeetingOpenPolicy.ordered`).
-    private var sessions: [SessionSummary] = []
+    private(set) var sessions: [SessionSummary] = []
     /// What the table shows: the meetings that match the search, under their day headers.
     private var rows: [Row] = []
     /// The people each meeting's speaker labels name, by session ID.
@@ -146,17 +146,20 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         search.action = #selector(searchChanged)
         search.setAccessibilityLabel("Search meetings")
 
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("meeting"))
-        table.addTableColumn(column)
-        table.headerView = nil
-        table.style = .inset
+        MeetingGridColumn.allCases.forEach { table.addTableColumn($0.makeColumn()) }
+        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        table.allowsColumnReordering = false
+        table.style = .fullWidth
+        table.gridStyleMask = .solidHorizontalGridLineMask
         table.floatsGroupRows = true
         table.dataSource = self
         table.delegate = self
         table.allowsEmptySelection = true
         table.allowsMultipleSelection = true
         table.target = self
+        table.action = #selector(rowClicked)
         table.doubleAction = #selector(openSelected)
+        table.onMouseDown = { [weak self] in self?.listState.renameCandidate = self?.selectedSession?.id }
         table.onReturn = { [weak self] in self?.openSelection() }
         table.onDelete = { [weak self] in self?.deleteMeeting() }
         table.onRename = { [weak self] in self?.renameSelected() }
@@ -171,6 +174,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
+        fitColumnsToWidth()
 
         emptyLabel.alignment = .center
         emptyLabel.textColor = .secondaryLabelColor
@@ -604,7 +608,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         rows.firstIndex { if case .meeting(let summary) = $0 { summary.id == id } else { false } }
     }
 
-    private func session(at row: Int) -> SessionSummary? {
+    func session(at row: Int) -> SessionSummary? {
         guard row >= 0, row < rows.count, case .meeting(let summary) = rows[row] else { return nil }
         return summary
     }
@@ -623,7 +627,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     private var selectedIDs: Set<String> { Set(selectedSessionIDs) }
 
     /// The selected meeting when exactly one is: what the single-meeting actions use.
-    private var selectedSession: SessionSummary? {
+    var selectedSession: SessionSummary? {
         activeMeeting ?? (table.selectedRowIndexes.count == 1 ? session(at: table.selectedRow) : nil)
     }
 
@@ -660,10 +664,11 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         switch rows[row] {
         case .group: return 28
-        case .meeting(let summary): return MeetingRowView.height(hasSummary: summaryText(summary) != nil)
+        case .meeting: return MeetingRowView.height
         }
     }
 
+    /// A day header spans the row (`tableColumn` nil); a meeting has a cell per `MeetingGridColumn`.
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         switch rows[row] {
         case .group(let title):
@@ -673,19 +678,31 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             cell.show(title)
             return cell
         case .meeting(let summary):
-            let identifier = NSUserInterfaceItemIdentifier("meetingRow")
-            let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? MeetingRowView
-                ?? MeetingRowView(identifier: identifier)
+            guard let column = MeetingGridColumn(tableColumn) else { return nil }
+            func make<Cell: NSView>(_ build: (NSUserInterfaceItemIdentifier) -> Cell) -> Cell {
+                tableView.makeView(withIdentifier: column.identifier, owner: self) as? Cell ?? build(column.identifier)
+            }
             let names = people[summary.id] ?? []
-            let isLive = MeetingOpenPolicy.isLive(summary, liveSessionID: liveSessionID)
-            let phase = isLive ? LiveMeetingPhase.of(sessionID: summary.id, state: meetingState, summary: summary) : nil
-            cell.show(MeetingRowView.Content(
-                title: summary.displayTitle,
-                detail: MeetingListFormat.detailLine(summary, people: names, now: Date()),
-                summary: summaryText(summary),
-                badges: badges(summary, livePhase: phase),
-                toolTip: toolTip(summary, isLive: isLive), progress: listState.progress[summary.id]))
-            return cell
+            switch column {
+            case .name:
+                let cell = make(MeetingRowView.init), isLive = MeetingOpenPolicy.isLive(summary, liveSessionID: liveSessionID)
+                let phase = isLive ? LiveMeetingPhase.of(sessionID: summary.id, state: meetingState, summary: summary) : nil
+                cell.show(MeetingRowView.Content(
+                    title: summary.displayTitle,
+                    detail: MeetingListFormat.detailLine(summary, people: names, now: Date()),
+                    summary: summaryText(summary), badges: badges(summary, livePhase: phase),
+                    toolTip: toolTip(summary, isLive: isLive), progress: listState.progress[summary.id]))
+                return cell
+            case .when:
+                return make(MeetingTextCell.init).showing(MeetingListFormat.detailLine(summary, people: [], now: Date()))
+            case .description:
+                let text = [summaryText(summary), MeetingListFormat.peopleText(names)].compactMap { $0 }
+                return make(MeetingTextCell.init).showing(text.first ?? "", toolTip: text.joined(separator: "\n\n"))
+            case .actions:
+                return make(MeetingRowActionsView.init).showing(rowActions(summary)) { [weak self, id = summary.id] in
+                    self?.rowAction($0, sessionID: id)
+                }
+            }
         }
     }
 
@@ -782,14 +799,14 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     /// What `MeetingActionPolicy` enables for `summary` now, the rules of the commands behind the actions. The
     /// buttons show it, and every way to an action (button, menu, ⌫, Return, double-click) checks it again when used.
-    private func enabledActions(_ summary: SessionSummary?) -> Set<MeetingActionPolicy.Action> {
+    func enabledActions(_ summary: SessionSummary?) -> Set<MeetingActionPolicy.Action> {
         MeetingActionPolicy.enabled(summary, inUse: summary.map(isBusy) ?? false,
                                     hasExport: summary.map(hasExport) ?? false,
                                     transcriptFiles: summary.map { SessionExports.hasTranscriptFiles(session: $0.directory) })
     }
 
     /// exports/transcript.md is a regular file.
-    private func hasExport(_ summary: SessionSummary) -> Bool {
+    func hasExport(_ summary: SessionSummary) -> Bool {
         Self.isRegularFile(SessionPaths.export("md", in: summary.directory))
     }
 
@@ -893,6 +910,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     /// Double-click and Return both open the meeting; Rename is an explicit advanced action.
     @objc private func openSelected() {
+        listState.cancelPendingRename()
         let row = table.clickedRow
         guard session(at: row) != nil else { return }
         openSelection()
@@ -1082,7 +1100,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     }
 
     /// Rename uses the visible meeting's sheet or the list row; an empty name restores the generated title.
-    private func beginRename(_ summary: SessionSummary) {
+    func beginRename(_ summary: SessionSummary) {
         if live != nil { renameOnMeetingScreen(summary); return }
         guard renaming == nil, let index = rowIndex(of: summary.id) else { return }
         if table.selectedRowIndexes != IndexSet(integer: index) {
@@ -1188,7 +1206,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     // MARK: - Helpers
 
-    private static func isRegularFile(_ url: URL) -> Bool {
+    static func isRegularFile(_ url: URL) -> Bool {
         var info = stat()
         return lstat(url.path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFREG
     }
@@ -1301,6 +1319,7 @@ extension MeetingsPane: NSMenuDelegate {
         let isLive = MeetingOpenPolicy.isLive(summary, liveSessionID: liveSessionID)
         add("Show Transcript File", #selector(openTranscript), hasExport(summary))
         add("Show in Finder", #selector(showInFinder), enabled.contains(.showInFinder))
+        add("Copy Path", #selector(copyPath), true).representedObject = summary.id
         add("Save Transcript As…", #selector(saveTranscript), enabled.contains(.saveTranscript))
         add("Clean Up", #selector(cleanUp), enabled.contains(.cleanUp))
         addRecordingItems(for: summary, isLive: isLive, to: menu)
@@ -1498,9 +1517,9 @@ final class MeetingGroupView: NSTableCellView {
     }
 }
 
-/// One meeting: its title (bold) with its badges, when and how long and who on the line below, and its summary in up
-/// to two lines. While the meeting is renamed, an editor takes the place of the title and its badges: Return (or
-/// leaving it) saves, Escape cancels.
+/// A meeting's Name cell: its title (bold) with its badges; VoiceOver also reads when it was, who spoke, and its
+/// summary. While the meeting is renamed, an editor takes the place of the title and its badges: Return (or leaving
+/// it) saves, Escape cancels.
 @MainActor
 final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
     struct Content: Equatable {
@@ -1514,8 +1533,6 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
 
     private let title = NSTextField(labelWithString: "")
     private let editor = NSTextField(string: "")
-    private let detail = NSTextField(labelWithString: "")
-    private let summary = NSTextField(wrappingLabelWithString: "")
     private let badges = MeetingRowIndicators()
     /// While renaming: what Return (or leaving the editor) and Escape do. Each is called once per rename.
     private var onCommit: ((String) -> Void)?
@@ -1527,8 +1544,8 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
     /// The editor spans the title line while it shows (set when it is attached to the line).
     private var editorWidth: NSLayoutConstraint?
 
-    /// The row's height: three lines of text and up to two of summary, or two without a summary.
-    static func height(hasSummary: Bool) -> CGFloat { hasSummary ? 84 : 52 }
+    /// The row's height: one line, with room for the editor.
+    static let height: CGFloat = 30
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -1536,20 +1553,13 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
         title.font = .systemFont(ofSize: 13, weight: .semibold)
         title.lineBreakMode = .byTruncatingTail
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        title.widthAnchor.constraint(greaterThanOrEqualToConstant: 72).isActive = true
         textField = title
-        detail.font = .systemFont(ofSize: 11)
-        detail.textColor = .secondaryLabelColor
-        detail.lineBreakMode = .byTruncatingTail
-        detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        summary.font = .systemFont(ofSize: 12)
-        summary.textColor = .secondaryLabelColor
-        summary.maximumNumberOfLines = 2
-        summary.lineBreakMode = .byWordWrapping
-        summary.cell?.truncatesLastVisibleLine = true
         badges.spacing = 6
         badges.distribution = .fill
         badges.setContentHuggingPriority(.required, for: .horizontal)
-        badges.setContentCompressionResistancePriority(.required, for: .horizontal)
+        badges.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        clipsToBounds = true
         editor.font = .systemFont(ofSize: 13, weight: .semibold)
         editor.bezelStyle = .roundedBezel
         editor.lineBreakMode = .byTruncatingTail
@@ -1566,32 +1576,17 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
         header.spacing = 6
         header.alignment = .centerY
         self.header = header
-        let stack = NSStackView(views: [header, detail, summary])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 3
-        stack.setCustomSpacing(5, after: detail)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
+        header.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(header)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            header.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            detail.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
-            summary.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            header.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -4),
+            header.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
-
-    /// The summary wraps at the row's width, set before the layout so two lines are measured in the same pass.
-    override func layout() {
-        let width = max(100, bounds.width - 12)
-        if summary.preferredMaxLayoutWidth != width { summary.preferredMaxLayoutWidth = width }
-        super.layout()
-    }
 
     /// The selected row's text turns white on the accent colour, and so do its badges.
     override var backgroundStyle: NSView.BackgroundStyle {
@@ -1604,9 +1599,6 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
 
     func show(_ content: Content) {
         title.stringValue = content.title
-        detail.stringValue = content.detail
-        summary.stringValue = content.summary ?? ""
-        summary.isHidden = content.summary == nil
         for view in badges.arrangedSubviews {
             badges.removeArrangedSubview(view)
             view.removeFromSuperview()
@@ -1722,7 +1714,9 @@ final class MeetingBadgeView: NSTextField {
         drawsBackground = false
         font = .systemFont(ofSize: 10, weight: .semibold)
         stringValue = badge.text
-        setContentCompressionResistancePriority(.required, for: .horizontal)
+        toolTip = badge.text
+        clipsToBounds = true
+        setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         setAccessibilityLabel(badge.text)
     }
 
@@ -1750,7 +1744,10 @@ final class MeetingBadgeView: NSTextField {
         let text = NSAttributedString(string: stringValue, attributes: [
             .font: font ?? .systemFont(ofSize: 10), .foregroundColor: foreground,
         ])
+        // A badge squeezed by a narrow Name column ends in "…" rather than running over the title.
         let size = text.size()
-        text.draw(at: NSPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2))
+        let width = min(size.width, bounds.width - 10)
+        text.draw(with: NSRect(x: (bounds.width - width) / 2, y: (bounds.height - size.height) / 2, width: width,
+                               height: size.height), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
     }
 }

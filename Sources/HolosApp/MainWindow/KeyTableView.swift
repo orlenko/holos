@@ -11,6 +11,13 @@ final class KeyTableView: NSTableView {
     var onSpace: (() -> Bool)?
     /// ⌘R (Meetings: rename the selected meeting).
     var onRename: (() -> Void)?
+    /// Before a click changes the selection (Meetings: whether the clicked meeting was already selected).
+    var onMouseDown: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        onMouseDown?()
+        super.mouseDown(with: event)
+    }
 
     override func keyDown(with event: NSEvent) {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
