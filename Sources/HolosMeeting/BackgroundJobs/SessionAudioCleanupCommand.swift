@@ -87,8 +87,9 @@ public enum SessionAudioCleanupCommand {
                 return Outcome(sessionID: sessionID, result: .kept, reason: "its audio is already deleted")
             }
             result = .finished
-        } else if let reason = AudioCleanupPolicy.refusal(summary, now: request.now, days: request.olderThanDays,
-                                                         pending: [], underOwnLease: true) {
+        } else if let reason = AudioCleanupPolicy.refusal(
+            summary, now: request.now, days: request.olderThanDays, pending: [], underOwnLease: true,
+            audioNeeded: AudioCleanupPolicy.audioNeeded(session: session, transcriptID: summary.transcriptID)) {
             return Outcome(sessionID: sessionID, result: .kept, reason: reason)
         } else {
             result = .deleted

@@ -80,4 +80,22 @@ struct SessionAudioCleanupCommandTests {
         }
         #expect(!FileManager.default.fileExists(atPath: SessionPaths.audioDeleted(session).path))
     }
+
+    @Test func aMeetingInSeveralLanguagesWithAnUnreadableJournalKeepsItsAudio() async throws {
+        let temp = try TemporaryDirectory("clean-audio-languages", permissions: 0o700)
+        defer { temp.remove() }
+        let (session, id) = try await Self.meeting(temp)
+        var info = MeetingInfo(sessionID: id, mode: .call, othersInRoom: false)
+        info.languages = ["en-CA", "fr-CA"]
+        try AtomicFile.writeJSON(info, to: SessionPaths.meetingInfo(session))
+        #expect(AudioCleanupPolicy.audioNeeded(session: session, transcriptID: nil) == nil, "Its journal reads.")
+        // A journal that cannot be read: the catalog would show no language work left.
+        try FileManager.default.removeItem(at: SessionPaths.events(session))
+        try FileManager.default.createDirectory(at: SessionPaths.events(session), withIntermediateDirectories: false)
+        #expect(AudioCleanupPolicy.audioNeeded(session: session, transcriptID: nil) != nil)
+        let outcome = try SessionAudioCleanupCommand.run(.init(session: session, olderThanDays: 7, now: Self.now),
+                                                         read: { url, _ in Self.summary(url, id: id) })
+        #expect(outcome.result == .kept)
+        #expect(outcome.reason == "its manifest or event journal cannot be read")
+    }
 }

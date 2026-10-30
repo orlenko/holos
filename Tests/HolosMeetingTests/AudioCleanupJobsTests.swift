@@ -34,6 +34,9 @@ struct AudioCleanupJobsTests {
         var unreadable = Self.meeting("unreadable", daysOld: 30)
         unreadable.metadataProblem = "damaged"
         #expect(!eligible(unreadable), "Unknown language or naming state keeps the audio.")
+        #expect(!AudioCleanupPolicy.eligible(Self.meeting("recovered", daysOld: 30), now: Self.now, days: 7, pending: [],
+                                             audioNeeded: "part of its audio was never transcribed"),
+                "What the files show (a transcript leaving audio out, an unreadable journal) keeps the audio.")
         #expect(!eligible(Self.meeting("queued", daysOld: 30), pending: ["queued"]),
                 "A final transcript or echo analysis still queued needs the audio.")
     }
@@ -47,7 +50,7 @@ struct AudioCleanupJobsTests {
         let jobs = AudioCleanupJobs(list: { _, _ in meetings }, read: { session, _ in
             meetings.first { $0.directory == session } ?? meeting("missing", daysOld: 0, chunks: 0)
         }, deletionUnfinished: { session in unfinished.contains(session.deletingPathExtension().lastPathComponent) },
-           clock: { now })
+           clock: { now }, audioNeeded: { _, _ in nil })
         jobs.root = URL(fileURLWithPath: "/nowhere")
         jobs.olderThanDays = { days }
         var scanned = false
@@ -146,5 +149,9 @@ struct AudioCleanupJobsTests {
         jobs.olderThanDays = { 7 }
         jobs.pending = { ["a"] }
         #expect(!jobs.stillWanted(pick), "A final transcript was queued on it.")
+        // A deletion under way is finished even so: its audio is going anyway, and leaving it would pick it forever.
+        #expect(jobs.ended("a", result: CommandResult(code: 143, outcome: nil), preempted: true) == .stopped)
+        let again = try #require(jobs.next(Self.holds()))
+        #expect(jobs.stillWanted(again))
     }
 }

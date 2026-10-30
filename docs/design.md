@@ -1633,14 +1633,18 @@ A meeting qualifies (`AudioCleanupPolicy.refusal` names why not) once it is at l
 old, has audio, is complete or recovered with a readable transcript and a readable meeting.json, has
 its speakers labelled with no language left to detect, and no final transcript (queued, being decided
 on, or a Make Final Transcript Now whose languages are being read) or echo analysis is queued on it;
-never while it records, is worked on by any command, or is open. Unknown is never eligible.
+never while it records, is worked on by any command, or is open. Unknown is never eligible, and the
+meeting's files are read too (`AudioCleanupPolicy.audioNeeded`): a manifest or event journal that cannot
+be read keeps the audio (the catalog would show a meeting in several languages as having no language
+work left), and so does a transcript rebuilt without transcribing audio it leaves out (`session recover
+--no-transcribe`, a `recovered` meeting; `TranscriptRebuilder.leftAudioUntranscribed`).
 
 It runs as automatic background work (`AudioCleanupJobs`: after final transcripts, echo analyses and
 summaries, one meeting at a time, oldest first, and nothing before the launch's final-transcript
 reconciliation ends or while one runs, as summaries wait), from a scan of the sessions folder made
 at launch, hourly while the app runs, and when the setting changes. Each pick is read again off the
 main actor, then checked again on it just before it starts (the setting unchanged, nothing queued on
-the meeting meanwhile). The command, `voiceislocal session clean-audio <session> --older-than N`
+the meeting meanwhile unless its deletion is under way). The command, `voiceislocal session clean-audio <session> --older-than N`
 (`SessionAudioCleanupCommand`), holds the background-job lock (kind `audioCleanup`) for its whole
 run and decides again under the meeting's processing lease, so nothing that changed the meeting
 since the scan is missed; it exits 0 once the audio is gone and 3 when it keeps it (with the reason).

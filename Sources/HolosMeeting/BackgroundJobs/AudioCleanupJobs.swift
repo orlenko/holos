@@ -11,14 +11,16 @@ public enum AudioCleanupPolicy {
     /// `underOwnLease`: read by `SessionAudioCleanupCommand` while it holds the meeting's processing lease, which the
     /// catalog shows as maintenance; a recorder still capturing is refused either way.
     public static func eligible(_ summary: SessionSummary, now: Date, days: Int, pending: Set<String>,
-                                underOwnLease: Bool = false) -> Bool {
-        refusal(summary, now: now, days: days, pending: pending, underOwnLease: underOwnLease) == nil
+                                underOwnLease: Bool = false, audioNeeded: String? = nil) -> Bool {
+        refusal(summary, now: now, days: days, pending: pending, underOwnLease: underOwnLease,
+                audioNeeded: audioNeeded) == nil
     }
 
-    /// Why `summary`'s audio stays, or nil when it may go (`eligible`). Unknown is never eligible: naming metadata or
-    /// a transcript that cannot be read keeps the audio.
+    /// Why `summary`'s audio stays, or nil when it may go (`eligible`). Unknown is never eligible: naming metadata or a
+    /// transcript that cannot be read keeps the audio, and so does what `audioNeeded(session:transcriptID:)` finds on
+    /// disk (`audioNeeded`, its reason).
     public static func refusal(_ summary: SessionSummary, now: Date, days: Int, pending: Set<String>,
-                               underOwnLease: Bool = false) -> String? {
+                               underOwnLease: Bool = false, audioNeeded: String? = nil) -> String? {
         if summary.createdAt.addingTimeInterval(TimeInterval(days) * 86_400) > now { return "younger than \(days) days" }
         if !MeetingActionPolicy.deletesAudio(summary) { return "no audio to delete" }
         if underOwnLease ? summary.liveness == .capturing : MeetingActionPolicy.isLive(summary) {
@@ -30,7 +32,24 @@ public enum AudioCleanupPolicy {
         }
         if summary.metadataProblem != nil { return "meeting.json cannot be read" }
         if summary.speakerState != .labelled || summary.languageWork != nil { return "speakers not labelled" }
+        if let audioNeeded { return audioNeeded }
         if pending.contains(summary.id) { return "a final transcript or echo analysis waits" }
+        return nil
+    }
+
+    /// Why the meeting's files show its audio is still needed, or nil: the manifest or the event journal cannot be read
+    /// (the catalog reads an unreadable journal as no language work left, `LanguageStage.pendingLanguages`), or the
+    /// current transcript was rebuilt without transcribing audio it leaves out
+    /// (`TranscriptRebuilder.leftAudioUntranscribed`, a `recovered` meeting from `session recover --no-transcribe`).
+    /// Reads files: off the main actor.
+    public static func audioNeeded(session: URL, transcriptID: String?) -> String? {
+        guard let manifest = try? SessionArchive.readManifest(at: session),
+              let events = try? SessionArchive.readEvents(at: session).events else {
+            return "its manifest or event journal cannot be read"
+        }
+        if let transcriptID, TranscriptRebuilder.leftAudioUntranscribed(transcriptID, events: events, manifest: manifest) {
+            return "part of its audio was never transcribed"
+        }
         return nil
     }
 
@@ -98,6 +117,7 @@ public enum AudioCleanupPolicy {
     private let deletionUnfinished: @Sendable (URL) -> Bool
     /// The time just before a command runs (tests pin it).
     private let clock: @Sendable () -> Date
+    private let audioNeeded: @Sendable (URL, String?) -> String?
 
     public init(list: @escaping @Sendable (URL, Date) -> [SessionSummary] = { SessionCatalog.list(root: $0, now: $1) },
                 read: @escaping @Sendable (URL, Date) -> SessionSummary = {
@@ -105,11 +125,15 @@ public enum AudioCleanupPolicy {
                 },
                 deletionUnfinished: @escaping @Sendable (URL) -> Bool = {
                     SessionDeletion.audioDeletionUnfinished(session: $0)
-                }, clock: @escaping @Sendable () -> Date = { Date() }) {
+                }, clock: @escaping @Sendable () -> Date = { Date() },
+                audioNeeded: @escaping @Sendable (URL, String?) -> String? = {
+                    AudioCleanupPolicy.audioNeeded(session: $0, transcriptID: $1)
+                }) {
         self.list = list
         self.read = read
         self.deletionUnfinished = deletionUnfinished
         self.clock = clock
+        self.audioNeeded = audioNeeded
     }
 
     /// The next look scans again (the setting changed).
@@ -160,17 +184,19 @@ public enum AudioCleanupPolicy {
     }
 
     /// The cleanup is still on with the days it was picked with, and no work was queued on the meeting meanwhile
-    /// (invariant 4).
+    /// unless its deletion is under way (invariant 4).
     public func stillWanted(_ pick: BackgroundJobPick) -> Bool {
         guard let days = olderThanDays(), days == pickedDays[pick.sessionID], !waiting() else { return false }
-        return !pending().contains(pick.sessionID)
+        // Finishing a deletion under way takes nothing from queued work: that audio is going anyway (invariant 3).
+        return unfinished.contains(pick.sessionID) || !pending().contains(pick.sessionID)
     }
 
     /// The meeting as it is now, since the scan may be an hour old: still allowed (a Delete Audio, a relabel, or a
     /// Recover meanwhile turns it down).
     public func preparation(for pick: BackgroundJobPick) -> (@Sendable () -> Bool)? {
         guard let days = olderThanDays() else { return { false } }
-        let read = read, deletionUnfinished = deletionUnfinished, clock = clock, pending = pending()
+        let read = read, deletionUnfinished = deletionUnfinished, clock = clock, audioNeeded = audioNeeded
+        let pending = pending()
         let session = URL(fileURLWithPath: pick.path), finishing = unfinished.contains(pick.sessionID)
         return {
             let now = clock(), summary = read(session, now)
@@ -178,7 +204,8 @@ public enum AudioCleanupPolicy {
             if finishing, summary.audioDeleted {
                 return AudioCleanupPolicy.finishes(summary, unfinished: deletionUnfinished(session))
             }
-            return AudioCleanupPolicy.eligible(summary, now: now, days: days, pending: pending)
+            return AudioCleanupPolicy.eligible(summary, now: now, days: days, pending: pending,
+                                               audioNeeded: audioNeeded(session, summary.transcriptID))
         }
     }
 
