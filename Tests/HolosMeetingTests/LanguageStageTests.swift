@@ -453,6 +453,9 @@ func aRebuildThatLeftAudioUntranscribedNeverStandsIn() async throws {
     #expect(TranscriptRebuilder.leftAudioUntranscribed(rebuiltID,
                                                         events: try SessionArchive.readEvents(at: session).events,
                                                         manifest: try SessionArchive.readManifest(at: session)))
+    // Nor does the automatic audio cleanup take that audio.
+    #expect(AudioCleanupPolicy.audioNeeded(session: session, transcriptID: rebuiltID)
+        == "part of its audio was never transcribed")
 
     // English cannot be transcribed again, and the incomplete rebuild does not stand in for it: nothing is merged.
     let stage = try #require(outcome.postProcessing.flatMap(languageStageOutcome))

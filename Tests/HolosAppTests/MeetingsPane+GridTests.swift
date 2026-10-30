@@ -107,4 +107,26 @@ struct MeetingsPaneGridTests {
         preferences.confirmsDeletion = false
         #expect(!MeetingAudioPreferences(defaults: defaults).confirmsDeletion)
     }
+
+    @Test func settingsTurnTheCleanupOnAndAskingBackOn() throws {
+        let suite = "holos-test-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preferences = MeetingAudioPreferences(defaults: defaults)
+        preferences.confirmsDeletion = false
+        let view = MeetingAudioSettingsView(preferences: preferences)
+        #expect(view.cleanupToggle.state == .off)
+        #expect(!view.daysStepper.isEnabled, "The days wait for the cleanup to be on.")
+        #expect(view.daysField.integerValue == 7)
+        view.cleanupToggle.performClick(nil)
+        #expect(preferences.cleanupAfterDays == 7)
+        #expect(view.daysStepper.isEnabled)
+        view.daysStepper.integerValue = 14
+        view.daysStepper.sendAction(view.daysStepper.action, to: view.daysStepper.target)
+        #expect(preferences.cleanupAfterDays == 14)
+        #expect(view.daysField.integerValue == 14)
+        #expect(view.confirmToggle.state == .off)
+        view.confirmToggle.performClick(nil)
+        #expect(preferences.confirmsDeletion)
+    }
 }

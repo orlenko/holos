@@ -11,9 +11,12 @@ public enum ForgetResumeScope {
     public static let readOnly: Set<[String]> = [["session", "echo-label-stats"]]
 
     /// Whether the command line `arguments` (without the program name) runs the forget resume first: its first word is
-    /// one of `commands` and its first two words are not one of `readOnly`.
+    /// one of `commands`, its first two words are not one of `readOnly`, and it is not a dry run of `session
+    /// clean-audio`.
     public static func applies(to arguments: [String]) -> Bool {
         guard let command = arguments.first, commands.contains(command) else { return false }
+        // `session clean-audio --dry-run` promises to change nothing.
+        if Array(arguments.prefix(2)) == ["session", "clean-audio"], arguments.contains("--dry-run") { return false }
         return !readOnly.contains(Array(arguments.prefix(2)))
     }
 }

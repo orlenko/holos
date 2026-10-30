@@ -236,8 +236,9 @@ import os
             guard let self else { return }
             if !needed {
                 self.finish(kind, sessionID, kind.nothingToDo(sessionID))
-            } else if self.environment.meetingBusy() {
-                // A meeting started while the check ran: it has the Mac to itself; the job stays queued.
+            } else if self.environment.meetingBusy() || !kind.stillWanted(pick) {
+                // A meeting started while the check ran: it has the Mac to itself; the job stays queued. So does one
+                // whose kind no longer wants it (a setting changed meanwhile).
                 self.finish(kind, sessionID, .stopped)
             } else {
                 self.launch(kind, pick)

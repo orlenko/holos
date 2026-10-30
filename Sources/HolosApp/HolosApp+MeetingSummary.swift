@@ -67,10 +67,13 @@ extension HolosAppDelegate {
     }
 
     /// A final-transcript reconciliation starts: summaries wait for it, and one running now is stopped (it writes
-    /// nothing) and made again afterwards, if its meeting is not queued for a final transcript meanwhile.
+    /// nothing) and made again afterwards, if its meeting is not queued for a final transcript meanwhile. So does an
+    /// audio cleanup (`cleanup.waiting`): one stopped before its marker deleted nothing, one stopped after it is
+    /// finished later as a deletion the files show unfinished.
     func meetingSummaryReconcileStarted() {
         meeting.summaries.jobs.reconcileStarted()
         meeting.deep.coordinator?.preempt(meeting.summaries.jobs)
+        if let cleanup = meeting.deep.audioCleanup { meeting.deep.coordinator?.preempt(cleanup) }
     }
 
     /// The reconciliation ended (its meetings are queued): summaries may start again.

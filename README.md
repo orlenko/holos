@@ -365,6 +365,12 @@ speakers again; names carry over; for an English meeting only, checked again whe
 Cancel Final Transcript. Meetings saved while the app is closed are queued the next time it
 opens.
 
+Audio takes most of a meeting's space. Settings › Meetings › "Delete the audio of meetings older
+than [7] days" (off until you turn it on) deletes it on its own once a meeting is that old and
+finished: its final transcript made, its speakers labelled, and nothing open or working on it.
+The transcript, speaker names and transcript files stay. Each meeting's row also has a Delete
+Audio button.
+
 ### Meeting titles and summaries
 
 Apple Intelligence's on-device model writes a short title, a one- or two-sentence summary,
@@ -561,6 +567,10 @@ same states. `voiceislocal session delete <session> --yes` moves a session to th
 (a damaged one too) and deletes its recorder log; with `--audio-only` it deletes only the audio (for
 good), keeping the transcript, speaker labels, and exports. Both refuse while the
 session is recording or another Voice is Local command is working on it.
+`voiceislocal session clean-audio <session> --older-than N` is what the automatic audio
+cleanup runs: it deletes the audio only if the meeting is at least N days old and finished
+(transcript readable and whole, speakers labelled for it), deciding under the meeting's lock,
+and exits 3 with the reason when it keeps it; `--dry-run` says what it would do and deletes nothing.
 
 `say` accepts text arguments or UTF-8 stdin and can play speech or save `.m4a`,
 `.wav`, or `.caf`. `read` turns a local .txt, .md, .html, .pdf, .rtf, .rtfd, .docx,

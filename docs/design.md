@@ -1622,6 +1622,50 @@ meeting is skipped by Delete Audio as damaged, since its audio may still be ther
 all of it (Show N in Finder, Delete Audio of N Meetings…, Delete N Meetings…); a right-click on
 another row selects that row and acts on it alone, as in the Finder.
 
+### Automatic audio cleanup
+
+Settings › Meetings › "Delete the audio of meetings older than [7] days" (off by default; 1 to 365
+days, saved in `MeetingAudioPreferences`) deletes the audio of old meetings on its own, as Delete
+Audio does: the audio and screen captures gone for good, the transcript, speaker labels and
+transcript files kept, and the voice samples waiting to be learned from the meeting forgotten.
+
+A meeting qualifies (`AudioCleanupPolicy.refusal` names why not) once it is at least that many days
+old, has audio, is complete or recovered with a readable transcript and a readable meeting.json, has
+its speakers labelled with no language left to detect, and no final transcript (queued, being decided
+on, or a Make Final Transcript Now whose languages are being read) or echo analysis is queued on it;
+never while it records, is worked on by any command, or is open. Only positive evidence lets the audio
+go (`AudioCleanupPolicy.audioNeeded`, read off the main actor and again under the lease): a readable
+manifest; a meeting.json of this meeting (a missing one reads as a one-language meeting, so meetings from
+before meeting.json keep their audio); an event journal that is there and reads whole, with no torn or unreadable line (the catalog
+reads a missing or unreadable one as no language work left); a current transcript not rebuilt without
+transcribing audio it leaves out (`session recover --no-transcribe`, a `recovered` meeting;
+`TranscriptRebuilder.leftAudioUntranscribed`); and speaker labels made for that transcript or one it was
+corrected from (`WordFixStage.correctionChain`: Review's edits and automatic fixes keep the labels).
+Anything that cannot be read or established keeps the audio.
+
+It runs as automatic background work (`AudioCleanupJobs`: after final transcripts, echo analyses and
+summaries, one meeting at a time, oldest first, and nothing before the launch's final-transcript
+reconciliation ends or while one runs, as summaries wait; a reconciliation that starts stops a cleanup
+running then), from a scan of the sessions folder made
+at launch, hourly while the app runs, and when the setting changes. Each pick is read again off the
+main actor, then checked again on it just before it starts (the setting unchanged, nothing queued on
+the meeting meanwhile unless its deletion is under way). The command, `voiceislocal session clean-audio <session> --older-than N`
+(`SessionAudioCleanupCommand`), holds the background-job lock (kind `audioCleanup`) for its whole
+run and decides again under the meeting's processing lease, so nothing that changed the meeting
+since the scan is missed; it exits 0 once the audio is gone and 3 when it keeps it (with the reason).
+`--dry-run` decides the same way, under the same locks, and deletes nothing (nor does it finish a
+pending forget of voices first, `ForgetResumeScope`).
+A review open on the meeting is held read-only and reread afterwards, as for Delete Audio.
+
+A deletion that began and did not finish (a meeting started and stopped it, or the app quit), as the
+files show it, marked deleted while its `audio/` folder is still there
+(`SessionDeletion.audioDeletionUnfinished`, read by the scan, which runs again after a stopped run), is
+finished first, whatever the meeting's age or state, as soon as nothing records or works on it;
+Delete Audio keeps the marker and removes the rest. A run stopped before it wrote the marker left
+nothing to finish, and its meeting is judged again like any other. A meeting whose cleanup failed is
+tried again at the next launch. The same Settings card has "Ask before deleting a meeting's audio",
+which turns back on the confirmation that "Don't ask again" turned off.
+
 ### Meetings
 
 Record the microphone and remote/system audio into **separate timed tracks**. A
