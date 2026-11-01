@@ -604,6 +604,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
             // The conversion only: what is ready goes on playing, and Pause is for that.
             if let problem = controller.stop(id) { showMessage(problem, problem: true) }
         case .retry:
+            // What plays is what the stopped run made; the resumed run checks its parts again and reports them anew.
+            if player.entryID == id, player.playsParts { player.unload() }
             if let problem = controller.retry(id) { showMessage(problem, problem: true) }
         case .showText: showText(id)
         case .share: share(id, from: cell.shareAnchor)

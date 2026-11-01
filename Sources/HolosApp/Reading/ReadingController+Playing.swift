@@ -7,8 +7,7 @@ extension ReadingController {
     /// Reading `id` has something to play: its first part made while it is made, else its checked file.
     func canPlay(_ id: UUID) -> Bool {
         guard let entry = entry(id) else { return false }
-        // A stopped run's feed counts once the resumed run has checked its parts and reopened it.
-        if entry.state == .rendering { return feeds.feed(id).map { $0.end == nil && $0.madeInOrder > 0 } ?? false }
+        if entry.state == .rendering { return (feeds.feed(id)?.madeInOrder ?? 0) > 0 }
         return entry.state == .done && fileProblem(entry) == nil
     }
 
@@ -20,7 +19,7 @@ extension ReadingController {
 
     func play(_ id: UUID, from start: Double?, on player: ReadingPlayer) async throws -> Bool {
         guard let entry = entry(id) else { return false }
-        if entry.state == .rendering, let feed = feeds.feed(id), feed.end == nil, feed.madeInOrder > 0 {
+        if entry.state == .rendering, let feed = feeds.feed(id), feed.madeInOrder > 0 {
             try player.play(id, feed: feed) { [weak self] in await self?.openFinishedFile(id: id) }
             return true
         }

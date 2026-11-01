@@ -298,23 +298,6 @@ struct PartFiles {
         #expect(await eventually { output.queued.first?.frames == 4_000 })
     }
 
-    /// A part made anew by a resume takes the old one's place, and a read that had found it gone tries again.
-    @Test func aPartMadeAgainIsPlayedAndTheOldOneIsNot() async throws {
-        let files = try PartFiles()
-        defer { files.remove() }
-        let feed = ReadingPartFeed()
-        let first = try files.part(0, of: 2, seconds: 1)
-        feed.add(first)
-        try FileManager.default.removeItem(at: first.audio)
-        let output = QueueOutput()
-        let playback = PartQueuePlayback(feed: feed, output: output)
-        #expect(playback.play())
-        #expect(await eventually { playback.isWaiting })
-        feed.add(try files.part(0, of: 2, seconds: 2))
-        #expect(await eventually { output.queued.first?.frames == 16_000 })
-        #expect(playback.duration == 2)
-    }
-
     /// A place asked for before the first part is read is gone to once it is.
     @Test func aSeekBeforeTheFirstPartIsReadIsKept() async throws {
         let files = try PartFiles()
@@ -345,27 +328,22 @@ struct PartFiles {
         #expect(playback.currentTime == 3)
     }
 
-    /// Stopped, then resumed while it still plays: the parts made next join what is playing.
-    @Test func aResumedConversionFeedsWhatIsPlaying() async throws {
+    /// A place asked for before any part could be read still counts when the finished file takes over.
+    @Test func aSeekBeforeAnyPartIsReadReachesTheFinishedFile() async throws {
         let files = try PartFiles()
         defer { files.remove() }
         let feed = ReadingPartFeed()
         let output = QueueOutput()
         let playback = PartQueuePlayback(feed: feed, output: output)
-        var ends: [PartQueuePlayback.End] = []
-        playback.onEnd = { ends.append($0) }
-        feed.add(try files.part(0, of: 3, seconds: 1))
+        var handoffs: [TimeInterval] = []
+        playback.onHandoff = { handoffs.append($0) }
+        let first = try files.part(0, of: 2, seconds: 1)
+        feed.add(first)
+        try FileManager.default.removeItem(at: first.audio)
         #expect(playback.play())
-        #expect(await eventually { output.queued.count == 1 })
-        feed.finish(.stopped)
-        feed.reopen()
-        // The resumed run reports what it kept first, then what it makes.
-        #expect(feed.parts.isEmpty)
-        feed.add(try files.part(0, of: 3, seconds: 1))
-        feed.add(try files.part(1, of: 3, seconds: 1))
-        #expect(await eventually { output.queued.count == 3 })
-        output.playNext()
-        #expect(ends.isEmpty)
+        playback.seek(to: 7)
+        feed.finish(.finished)
+        #expect(await eventually { handoffs == [7] })
     }
 
     /// Once it is made its parts are going: the finished file takes over at the place.

@@ -92,11 +92,7 @@ public final class PartQueuePlayback {
         self.feed = feed
         self.output = output
         self.read = read
-        feed.onChange = { [weak self] in
-            // A part not found may have been made again.
-            self?.missing = false
-            self?.fill()
-        }
+        feed.onChange = { [weak self] in self?.fill() }
         output.onInterrupted = { [weak self] in self?.interrupted() }
     }
 
@@ -295,7 +291,8 @@ public final class PartQueuePlayback {
     }
 
     private func handOff() {
-        handOff(at: Double(base + queuedFrames) / (rate ?? ReadingAudioFormat.sampleRate))
+        // A place asked for before any part could be read still counts.
+        handOff(at: pendingSeek ?? Double(base + queuedFrames) / (rate ?? ReadingAudioFormat.sampleRate))
     }
 
     private func handOff(at place: TimeInterval) {

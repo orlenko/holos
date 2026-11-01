@@ -263,9 +263,10 @@ final class ReadingRowView: NSTableCellView {
             if let part = entry.part, let parts = entry.parts { text += " at part \(part) of \(parts)" }
             status.stringValue = text + (entry.message.map { ". \($0)" } ?? ".")
             if playback != nil {
-                // What is ready goes on playing, and converting can go on meanwhile.
+                // What is ready goes on playing.
                 setPlay(playback)
-                setStopButton("Resume Converting", .retry, help: "Continue converting where it stopped")
+                setStopButton("Resume Converting", .retry,
+                              help: "Continue converting where it stopped. This stops what is playing; press Play when part of it is ready.")
                 buttons = [primary, stopButton, deleteButton]
             } else {
                 setPrimary("Resume", .retry, help: "Continue where it stopped")
