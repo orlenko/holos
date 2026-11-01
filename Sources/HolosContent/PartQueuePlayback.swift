@@ -27,7 +27,7 @@ private struct ReadFailure: Error {
 /// 2. `isPlaying` means engaged: true from `play` until `pause`, `stop`, or the end, also while it waits for a part
 ///    that is not made yet (`isWaiting`). Run dry, the output is stopped, so its count of played frames starts again
 ///    from where the parts end (`base`).
-/// 3. `onEnd` is called once: `.finished` once the last part has played, `.failed` once the made parts have played
+/// 3. `onEnd` is called once: `.finished` once the last part has played and making has finished, `.failed` once the made parts have played
 ///    after making failed (or a part could not be read), `.stopped` once making was stopped; never after `stop`.
 /// 4. Once making has finished, what is not queued yet plays from the finished file: at the end of the parts queued
 ///    (the start of the next part's silence), `onHandoff` gives that place in seconds. Until `stop`, play and pause
@@ -150,11 +150,15 @@ public final class PartQueuePlayback {
         }
         guard queued == 0 else { return }
         if next >= total {
-            // All heard. Making can still have failed since, joining them: that is told, never taken for the end.
+            // All heard, and making may yet fail joining them: its outcome is the end, told, never assumed. It stays
+            // loaded meanwhile (invariant 2), and the feed comes back here.
             switch feed.end {
             case .failed(let reason)?: return end(.failed("The reading could not be finished: \(reason)"))
             case .stopped?: return end(.stopped)
-            case .finished?, nil: return end(.finished)
+            case .finished?: return end(.finished)
+            case nil:
+                onChange?()
+                return
             }
         }
         switch feed.end {

@@ -228,6 +228,24 @@ struct PartFiles {
         #expect(playback.currentTime == 2.5)
     }
 
+    /// Every part heard while they are joined, then that fails: it is told, never taken for the end of the reading.
+    @Test func joiningThatFailsAfterAllIsHeardIsTold() async throws {
+        let files = try PartFiles()
+        defer { files.remove() }
+        let feed = ReadingPartFeed()
+        let output = QueueOutput()
+        let playback = PartQueuePlayback(feed: feed, output: output)
+        var ends: [PartQueuePlayback.End] = []
+        playback.onEnd = { ends.append($0) }
+        feed.add(try files.part(0, of: 1, seconds: 1))
+        #expect(playback.play())
+        #expect(await eventually { output.queued.count == 1 })
+        output.playNext()
+        #expect(ends.isEmpty)
+        feed.finish(.failed("The disk is full."))
+        #expect(ends == [.failed("The reading could not be finished: The disk is full.")])
+    }
+
     /// Every part heard, then joining them fails: that is told, never taken for the end of the reading.
     @Test func makingThatFailsAfterTheLastPartIsTold() async throws {
         let files = try PartFiles()
@@ -262,6 +280,9 @@ struct PartFiles {
         output.playNext()
         output.playNext()
         output.playNext()
+        // All heard, still being joined: the outcome is not known yet.
+        #expect(ends.isEmpty)
+        feed.finish(.finished)
         #expect(ends == [.finished])
 
         let stopped = ReadingPartFeed()
