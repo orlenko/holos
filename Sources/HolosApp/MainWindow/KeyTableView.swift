@@ -3,6 +3,9 @@ import AppKit
 /// A table whose Return opens the selected row and whose Delete (⌫, ⌘⌫, or ⌦) deletes it, both through closures (the
 /// section asks for confirmation), whose Space can play the selected row, and whose ⌘R can rename it. ↑↓ and the
 /// rest of the keyboard behave as in any table.
+///
+/// Invariants:
+/// 1. `onMouseDown` runs before a click changes the selection.
 @MainActor
 final class KeyTableView: NSTableView {
     var onReturn: (() -> Void)?
@@ -11,6 +14,13 @@ final class KeyTableView: NSTableView {
     var onSpace: (() -> Bool)?
     /// ⌘R (Meetings: rename the selected meeting).
     var onRename: (() -> Void)?
+    /// Before a click changes the selection (Meetings: whether the clicked meeting was already selected).
+    var onMouseDown: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        onMouseDown?()
+        super.mouseDown(with: event)
+    }
 
     override func keyDown(with event: NSEvent) {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])

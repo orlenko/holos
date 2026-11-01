@@ -1265,6 +1265,9 @@ func echoLabelStatsReadEachArgumentOnItsOwnAndNameNoPath() async throws {
     // command must not set it off.
     #expect(!ForgetResumeScope.applies(to: ["session", "echo-label-stats", "SESSION-ID", "--json"]))
     #expect(ForgetResumeScope.applies(to: ["session", "echo-analyze", "SESSION-ID"]))
+    #expect(!ForgetResumeScope.applies(to: ["session", "clean-audio", "SESSION-ID", "--older-than", "7", "--dry-run"]),
+            "A dry run promises to change nothing.")
+    #expect(ForgetResumeScope.applies(to: ["session", "clean-audio", "SESSION-ID", "--older-than", "7"]))
     #expect(ForgetResumeScope.applies(to: ["session"]))
     #expect(ForgetResumeScope.applies(to: ["speakers", "list", "SESSION-ID"]))
     #expect(ForgetResumeScope.applies(to: ["people", "list"]))

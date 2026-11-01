@@ -28,8 +28,17 @@ How each item gets covered:
   speaker; after the meeting the fix is in the transcript and the name is on that speaker.
 - [ ] **Titles and summaries.** After the meeting, the Meetings row gets a title and a summary that match
   what was discussed; a name you gave the meeting is kept.
-- [ ] **Meetings list.** Rows grouped by Today / Yesterday / This Week, with title, length, people,
-  summary and badges; the search field filters by title, summary and people; Rename… (⌘R) works.
+- [ ] **Meetings list.** One line per meeting under Today / Yesterday / This Week headers: Name with
+  badges, When, Description, and the Open, View, Delete Audio and Copy Path buttons, each acting on its
+  own row (View opens the Markdown transcript in your Markdown app; Copy Path pastes as the meeting's
+  folder; Delete Audio asks, and "Don't ask again" sticks). A click on the selected meeting's name
+  renames it, a double-click opens it; Rename… (⌘R) works; the search field filters by title, summary
+  and people. Narrow the window beside a call: When hides and nothing overlaps.
+- [ ] **Automatic audio cleanup.** Settings › Meetings: turn on "Delete the audio of meetings older
+  than [N] days" with N small enough to cover a finished test meeting; within a minute its row loses
+  the Delete Audio button and shows No audio, while a meeting with speakers not labelled, a final
+  transcript queued, or open in the meeting screen keeps its audio. Turn "Ask before deleting a
+  meeting's audio" back on after a "Don't ask again".
 - [ ] **Meeting word fixes.** Terms from the word list fixed in the transcript where they were misheard;
   in Review the fixed words are underlined and the menu on one reverts it. Never run on a real meeting.
 - [ ] **Deep transcription (English meetings).** Download the model in Settings › Meetings (about
@@ -60,7 +69,7 @@ How each item gets covered:
 
 - [ ] **Targets other than your usual apps** — the matrix in
   [dictation-validation.md](dictation-validation.md) "Manual acceptance matrix": a browser rich editor,
-  iTerm2 with tabs and split panes, one of Ghostty/WezTerm/kitty/Alacritty/Warp, switching tab or pane
+  iTerm2 with tabs and split panes, one of Ghostty/WezTerm/kitty/Alacritty/Warp/Rex, switching tab or pane
   while speaking (typing must stop), a password field (refused), Esc during finalizing, holding past
   three minutes.
 - [ ] **History** — [dictation-validation.md](dictation-validation.md) "Main window and history" steps

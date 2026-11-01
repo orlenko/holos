@@ -748,9 +748,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             arguments = ["session", "diarize", path, "--json"]
             doing = "Labelling speakers…"
         case .deleteAudio:
-            guard confirm("Delete the audio of “\(name)”?",
-                          "The audio is deleted for good. The transcript, speaker labels, and transcript files stay.",
-                          button: "Delete Audio") else { return }
+            guard confirmDeleteAudio(name) else { return }
             (arguments, doing) = Self.deletion(.deleteAudio, path: path)
         case .deleteMeeting:
             guard let forget = confirmDeleteMeeting(name) else { return }

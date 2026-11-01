@@ -38,6 +38,10 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private var windowObserver: NSObjectProtocol?
     private var preferencesObserver: NSObjectProtocol?
     private var voicesObserver: NSObjectProtocol?
+    /// Show Text's window, while it is open.
+    private(set) var textWindow: ReadingTextWindow?
+    /// Counts Show Text's presses and the main window's closing: a load overtaken by either opens nothing.
+    private var textRequest = 0
     /// The card's chosen voice (nil: Automatic), kept while its pack is briefly missing (a reinstall).
     private var chosenVoice: String?
     /// The natural voice packs the menu offers (tests set it).
@@ -87,6 +91,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
                     guard let self else { return }
                     if !(self.player.entryID.map(self.playsWithoutWindow) ?? false) { self.player.stop() }
                     self.preview.stop()
+                    self.textWindow?.close()
+                    self.textRequest += 1
                 }
             }
         }
@@ -490,6 +496,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         footer.stringValue = footerText
         footer.textColor = controller.notice == nil ? .secondaryLabelColor : .systemOrange
         stopPlaybackOfGoneFile()
+        if let window = textWindow, !rows.contains(where: { $0.id == window.entryID }) { window.close() }
     }
 
     /// The reading being played left the list, or the last check of its file found it moved, deleted, or replaced
@@ -525,7 +532,9 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
 
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { 72 }
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        ReadingRowView.height + (rows[row].id == player.entryID ? ReadingRowView.seekBarHeight : 0)
+    }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let identifier = NSUserInterfaceItemIdentifier("readingRow")
@@ -544,13 +553,15 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         // or share is not connected, as unavailable. From the controller's last check of the files: nothing is
         // looked up here (a share that stopped answering would hold the window).
         let problem = controller.fileProblem(entry)
-        var playback: ReadingRowView.Playback?
-        if player.entryID == entry.id {
-            playback = ReadingRowView.Playback(playing: player.isPlaying, current: player.position?.current,
-                                               duration: player.position?.duration)
-        }
+        let playback = playback(of: entry.id)
         let size = problem != nil ? nil : controller.finishedFile(entry)?.size
         cell.show(entry, activity: controller.activity[entry.id], fileProblem: problem, size: size, playback: playback)
+    }
+
+    private func playback(of id: UUID) -> ReadingRowView.Playback? {
+        guard player.entryID == id else { return nil }
+        return ReadingRowView.Playback(playing: player.isPlaying, current: player.position?.current,
+                                       duration: player.position?.duration)
     }
 
     /// The player's state or position changed (twice a second while it plays): only the rows it concerns, the one
@@ -559,8 +570,14 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         // Each tick checks too: a file moved or replaced while it plays stops it before its row loses Pause.
         if stopPlaybackOfGoneFile() { return }
         let concerned = Set([player.entryID, lastPlayerEntry].compactMap { $0 })
+        // The loaded reading's row is the taller one, with the seek bar.
+        if player.entryID != lastPlayerEntry {
+            let changed = rows.indices.filter { concerned.contains(rows[$0].id) }
+            table.noteHeightOfRows(withIndexesChanged: IndexSet(changed))
+        }
         lastPlayerEntry = player.entryID
         for id in concerned { reloadRow(id) }
+        if let window = textWindow { window.show(playback(of: window.entryID)) }
     }
 
     /// The reading the player had loaded when it last changed, so its row is shown again once another is loaded.
@@ -582,7 +599,13 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         case .share: share(id, from: cell.shareAnchor)
         case .reveal: reveal(id)
         case .delete: confirmDelete(id)
+        case .seek(let time): seek(id, to: time)
         }
+    }
+
+    /// The seek bar of a row or the text window: moves the loaded reading; another one starts from there.
+    private func seek(_ id: UUID, to time: Double) {
+        if !player.seek(id, to: time) { play(id, from: time) }
     }
 
     /// Space, double-click, ▶ Play: plays, pauses, or continues the selected finished reading.
@@ -591,9 +614,9 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         play(entry.id)
     }
 
-    private func play(_ id: UUID) {
+    private func play(_ id: UUID, from start: Double? = nil) {
         preview.stop()
-        if player.toggleLoaded(id) { return }
+        if start == nil, player.toggleLoaded(id) { return }
         guard let entry = controller.entry(id), entry.state == .done, controller.fileProblem(entry) == nil else {
             NSSound.beep()
             return
@@ -605,7 +628,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let played = try await self.player.play(id) { await controller.openFinishedFile(entry) }
+                let played = try await self.player.play(id, from: start) { await controller.openFinishedFile(entry) }
                 if !played { NSSound.beep() }
             } catch {
                 self.showMessage("“\(entry.title)” could not be played: \(error.localizedDescription)", problem: true)
@@ -643,23 +666,51 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         return true
     }
 
-    /// Show Text: the reading's saved text in a sheet, read off the main actor (a book's is megabytes).
+    /// Show Text: the reading's saved text and timing, read off the main actor (a book's is megabytes), in the text
+    /// window, one at a time.
     func showText(_ id: UUID) {
         guard let entry = controller.entry(id) else { return }
+        textRequest += 1
+        let request = textRequest
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 guard let document = try await self.controller.savedText(id) else {
+                    guard request == self.textRequest else { return }
                     self.showMessage("The text of “\(entry.title)” was not kept: an earlier version of Voice is "
                         + "Local made it, and kept only its audio.", problem: true)
                     return
                 }
-                self.presentAsSheet(ReadingTextSheet(title: entry.title, text: document.plainText))
+                let text = document.plainText
+                let timeline = await ReadingTimeline.load(for: entry, text: text)
+                // The window closed, another text was asked for, or the reading was deleted meanwhile.
+                guard request == self.textRequest, self.controller.entry(id) != nil else { return }
+                self.presentTextWindow(entry, text: text, timeline: timeline)
             } catch {
+                guard request == self.textRequest else { return }
                 self.showMessage("The text of “\(entry.title)” could not be read: \(error.localizedDescription)",
                                  problem: true)
             }
         }
+    }
+
+    private func presentTextWindow(_ entry: ReadingEntry, text: String, timeline: ReadingTimeline?) {
+        if let open = textWindow, open.entryID == entry.id {
+            open.showWindow(nil)
+            return
+        }
+        textWindow?.close()
+        let id = entry.id
+        let window = ReadingTextWindow(entryID: id, title: entry.title, text: text, timeline: timeline,
+                                       length: entry.duration)
+        window.onPlay = { [weak self] in self?.play(id) }
+        window.onSeek = { [weak self] time in self?.seek(id, to: time) }
+        window.onClose = { [weak self, weak window] in
+            if let self, self.textWindow === window { self.textWindow = nil }
+        }
+        textWindow = window
+        window.show(playback(of: id))
+        window.showWindow(nil)
     }
 
     private func reveal(_ id: UUID) {

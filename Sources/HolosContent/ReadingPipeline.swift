@@ -291,8 +291,7 @@ import HolosSynthesis
         try Task.checkCancellation()
         let audioParts = manifest.parts.map { part in
             AudioBookPart(url: directory.appendingPathComponent(part.relativeAudioPath),
-                          silenceBefore: ReadingAudioFormat.silenceBefore(part: part.index,
-                                                                          startsSection: part.startsSection),
+                          silenceBefore: part.silenceBefore(manifest.format),
                           chapter: part.chapter)
         }
         let summary: AudioBookSummary
