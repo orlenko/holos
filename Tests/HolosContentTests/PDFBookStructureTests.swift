@@ -375,17 +375,6 @@ import Testing
         #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: One.", "Footnote: Other one."])
     }
 
-    /// In a section the outline names as notes, a small number opens its note, in type the size of the body or not.
-    @Test func aNotesPagesSmallNumbersAreItsNotes() throws {
-        let body = styled([(String(repeating: Self.filler + "\n", count: 4), 10)])
-        let notes = styled([("3", 6), (" A note set in the size of the body.\n", 10)])
-        let (pages, markers, _) = try PDFReader.bookPages([body, notes], notesPages: [1])
-        #expect(markers.isEmpty)
-        #expect(pages[1].text == "3 A note set in the size of the body.")
-        #expect(PDFBookStructure.namedNotesPages([.init(label: "Body", page: 0), .init(label: "Notes", page: 1), .init(label: "Index", page: 2)],
-                                                 pageCount: 3) == [1])
-    }
-
     /// A chapter citing an earlier note again stays in its chapter's notes.
     @Test func citingANoteAgainDoesNotMoveToTheNextChapter() throws {
         let pages: [PDFBookStructure.Page] = [
@@ -591,42 +580,90 @@ import Testing
         return result
     }
 
-    @Test func aSmallNumberAfterTextIsAMarkerAndAnEqualOneIsNot() throws {
+    private func read(_ pages: [NSAttributedString], outline: [PDFBookStructure.OutlineEntry] = []) throws -> [String] {
+        let (found, body) = try PDFReader.bookPages(pages)
+        return try PDFBookStructure.paragraphs(pages: found, outline: outline, bodySize: body, hasTitle: true)
+    }
+
+    /// Three small numbers in body text, so they are a book's markers; none has a note, so they go silently.
+    @Test func smallNumbersAfterTextAreMarkersAndEqualOnesAreNot() throws {
         let page = styled([("In 1913 he said so", 10), ("14", 6), (" and went on, for 20 years.\n", 10),
-                           (Self.filler + "\n", 10), ("5", 6), (" wrapped to open this line of text.\n", 10)])
-        let (pages, markers, body) = try PDFReader.bookPages([page])
-        #expect(body == 10)
-        #expect(markers == ["14", "5"])
-        let lines = pages[0].text.components(separatedBy: "\n")
-        #expect(lines[0] == "In 1913 he said so\(try marker(0)) and went on, for 20 years.")
-        #expect(lines[1] == Self.filler + (try marker(1)))
-        #expect(lines[2] == "wrapped to open this line of text.")
+                           (Self.filler + "\n", 10), ("5", 6), (" wrapped to open this line of text.\n", 10),
+                           ("It names The Book,\n", 10), ("3\n", 5.8), ("and goes on to the end of its sentence.\n", 10),
+                           (Self.filler + " Done.\n", 10)])
+        let text = try read([page]).joined(separator: " ")
+        #expect(text.contains("In 1913 he said so and went on, for 20 years."))
+        #expect(text.contains("wrapped to open this line of text."))
+        #expect(text.contains("It names The Book, and goes on to the end of its sentence."))
+        #expect(!text.contains("14") && !text.contains(" 5 ") && !text.contains(" 3 "))
     }
 
-    /// A marker wrapped to open a line stays with the sentence before it, even when that one ended a paragraph.
-    @Test func aWrappedMarkerFollowsTheSentenceItCites() throws {
-        let page = styled([(Self.filler + "\n", 10), ("Sentence ends.\n", 10), ("1", 6), ("Next sentence.\n", 10)])
-        let (pages, markers, _) = try PDFReader.bookPages([page])
-        #expect(pages[0].text.contains("Sentence ends.\(try marker(0))\nNext sentence."))
-        #expect(markers == ["1"])
+    /// A marker wrapped to open a line, or the first line of a page, follows the sentence it cites.
+    @Test func aWrappedMarkerFollowsTheSentenceItCitesAcrossAPage() throws {
+        let first = styled([(Self.filler + "\n", 10), ("Sentence ends.\n", 10)])
+        let second = styled([("1", 6), ("Next sentence.\n", 10), (Self.filler + "\n", 10)])
+        let notes = styled([("Notes\n", 10), ("1 The note.\n", 10)])
+        let result = try read([first, second, notes], outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 2)])
+        let note = try #require(result.firstIndex(of: "Footnote: The note."))
+        #expect(note > 0 && result[note - 1].hasSuffix("Sentence ends."))
     }
 
-    /// A marker the file gives as its own line stays with its sentence, which goes on unbroken.
-    @Test func aMarkerOnALineOfItsOwnJoinsTheLineBefore() throws {
-        let page = styled([(Self.filler + "\n", 10), ("It names The Book,\n", 10), ("3\n", 5.8), ("and then goes on to the end of its sentence.\n", 10)])
-        let (pages, markers, _) = try PDFReader.bookPages([page])
-        #expect(markers == ["3"])
-        let lines = pages[0].text.components(separatedBy: "\n")
-        #expect(lines == [Self.filler, "It names The Book,\(try marker(0))", "and then goes on to the end of its sentence."])
+    /// In a notes section, named or not, a small number opens its note, in type the size of the body or not.
+    @Test func aNotesPagesSmallNumbersAreItsNotes() throws {
+        var pages = (0..<9).map { index in
+            styled([(Self.differentWords(9)[index] + " Prose goes all the way across the page", 10), ("1", 6), (".\n", 10)])
+        }
+        pages.append(styled([("Notes\n", 14), ("1", 6), (" A note in the size of the body.\n", 10), ("2", 6), (" Another.\n", 10)]))
+        let text = try read(pages).joined(separator: " ")
+        #expect(text.contains("Footnote: A note in the size of the body."))
+    }
+
+    /// A small page number beside a running head is furniture, not a marker.
+    @Test func aRunningHeadsSmallPageNumberIsFurniture() throws {
+        let pages = (0..<8).map { index in
+            styled([("The Chapter's Name ", 10), ("\(index + 1)\n", 6),
+                    ("Text of page \(Character(Unicode.Scalar(97 + UInt8(index)))) runs across.\n", 10)])
+        }
+        #expect(!(try read(pages)).joined(separator: " ").contains("Chapter's Name"))
     }
 
     /// A small number alone at the page's end is its page number, which `pageContent` judges, not a marker.
     @Test func aSmallPageNumberIsNotTakenForAMarker() throws {
-        let page = styled([(Self.filler + "\n", 10), (Self.filler + "\n", 10), ("1\n", 6)])
-        let (pages, markers, _) = try PDFReader.bookPages([page])
-        #expect(markers.isEmpty)
-        #expect(pages[0].text.hasSuffix("\n1"))
-        #expect(!paragraphs(pages, markers: markers).joined(separator: " ").contains(" 1"))
+        let text = try read([styled([(Self.filler + "\n", 10), (Self.filler + "\n", 10), ("1\n", 6)])]).joined(separator: " ")
+        #expect(!text.contains(" 1"))
+    }
+
+    /// A note's small number can stand on its own line above its small text.
+    @Test func aFootnotesLabelOnItsOwnLineStaysItsLabel() throws {
+        let body = String(repeating: Self.filler + "\n", count: 6)
+        let page = styled([(body, 10), ("It is cited", 10), ("1", 6), (" and goes on.\n", 10), ("1\n", 6),
+                           ("The footnote is printed here.\n", 8)])
+        let (found, size) = try PDFReader.bookPages([page])
+        let result = try PDFBookStructure.paragraphs(pages: found, outline: [], bodySize: size, hasTitle: true)
+        #expect(result.contains("Footnote: The footnote is printed here."))
+    }
+
+    /// A footnote whose marker was not found is still said, not merged into the one before.
+    @Test func aFootnoteWithoutAFoundMarkerStaysItsOwn() throws {
+        let page = PDFBookStructure.Page(text: "A.\(try marker(0))\n1 First note.\n2 Second note.",
+                                         lineSizes: ["1 First note.": 8, "2 Second note.": 8])
+        let result = paragraphs([page], markers: ["1"], bodySize: 10)
+        #expect(result.contains("Footnote: First note."))
+        #expect(result.last == "Footnote: Second note.")
+    }
+
+    /// Named blocks settle which chapter's notes a citation means, even past a chapter whose citations were not found.
+    @Test func aNamedBlockIsFoundPastAChapterWithoutCitations() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0))"), .init(text: "No citations found."), .init(text: "B.\(try marker(1))"),
+            .init(text: "Notes\nChapter 1\n1 Of one.\nChapter 2\n1 Of two.\nChapter 3\n1 Of three."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "1"], outline: [
+            .init(label: "Chapter 1 A Start", page: 0), .init(label: "Chapter 2 A Middle", page: 1),
+            .init(label: "Chapter 3 An End", page: 2), .init(label: "Notes", page: 3),
+        ])
+        #expect(result.filter { $0.hasPrefix("Footnote:") }.prefix(2) == ["Footnote: Of one.", "Footnote: Of three."])
+        #expect(result.last == "Footnote: Of two.")
     }
 
     /// The same file gives the same text: equally frequent sizes tie the same way each time.
@@ -639,8 +676,7 @@ import Testing
     @Test func aSmallNumberOpeningASmallLineIsTheNotesOwn() throws {
         let body = String(repeating: Self.filler + "\n", count: 4)
         let page = styled([(body, 10), ("3", 5), (" The note itself.\n", 8)])
-        let (pages, markers, _) = try PDFReader.bookPages([page])
-        #expect(markers.isEmpty)
+        let (pages, _) = try PDFReader.bookPages([page])
         #expect(pages[0].text.hasSuffix("3 The note itself."))
     }
 

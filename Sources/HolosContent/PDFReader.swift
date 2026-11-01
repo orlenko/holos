@@ -22,11 +22,9 @@ public enum PDFReader {
             let page = pdf.page(at: index)
             styled.append(page?.attributedString ?? page?.string.map { NSAttributedString(string: $0) })
         }
-        let contents = outline(of: pdf)
-        let (pages, markers, bodySize) = try bookPages(
-            styled, notesPages: PDFBookStructure.namedNotesPages(contents, pageCount: styled.count))
-        let paragraphs = try PDFBookStructure.paragraphs(pages: pages, markers: markers, outline: contents,
-                                                     bodySize: bodySize, hasTitle: declared?.isEmpty == false)
+        let (pages, bodySize) = try bookPages(styled)
+        let paragraphs = try PDFBookStructure.paragraphs(pages: pages, outline: outline(of: pdf), bodySize: bodySize,
+                                                         hasTitle: declared?.isEmpty == false)
         guard !paragraphs.isEmpty else {
             throw HolosError.invalidInput("\(url.lastPathComponent) has no text to read. Scanned PDFs need OCR, which is not supported.")
         }
@@ -35,11 +33,10 @@ public enum PDFReader {
         return result
     }
 
-    /// Each page's text with its little note numbers marked (see `PDFBookStructure`), and what they say, from the
-    /// fonts: the book's body size is the one most of its characters are set in.
-    /// On `notesPages`, a small number opens its own note and cites nothing.
-    static func bookPages(_ styled: [NSAttributedString?], notesPages: Set<Int> = [])
-        throws -> (pages: [PDFBookStructure.Page], markers: [String], bodySize: Double) {
+    /// Each page's text, as it stands, with each line's main size and the small runs of digits or symbols in it, which
+    /// `PDFBookStructure` judges once it knows what the page is. The book's body size is the one most of its characters
+    /// are set in.
+    static func bookPages(_ styled: [NSAttributedString?]) throws -> (pages: [PDFBookStructure.Page], bodySize: Double) {
         var counts: [Double: Int] = [:]
         for page in styled.compactMap({ $0 }) {
             page.enumerateAttribute(.font, in: NSRange(location: 0, length: page.length)) { value, range, _ in
@@ -48,9 +45,8 @@ public enum PDFReader {
         }
         // Ties go to the larger size: the same file must always give the same text, or a reading could not resume.
         let bodySize = counts.filter { $0.key > 0 }.max { ($0.value, $0.key) < ($1.value, $1.key) }?.key ?? 0
-        var markers: [String] = []
         var pages: [PDFBookStructure.Page] = []
-        for (index, page) in styled.enumerated() {
+        for page in styled {
             try Task.checkCancellation()
             guard let page else {
                 pages.append(.init(text: ""))
@@ -59,86 +55,43 @@ public enum PDFReader {
             var result = PDFBookStructure.Page(text: "")
             var lines: [String] = []
             let source = page.string as NSString
-            // Where the page's last text ends.
-            let lastText = NSMaxRange(source.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted,
-                                                              options: .backwards))
             source.enumerateSubstrings(in: NSRange(location: 0, length: source.length), options: .byLines) { _, range, _, _ in
-                let styled = styledLine(page, range: range, bodySize: notesPages.contains(index) ? 0 : bodySize,
-                                        markers: &markers)
-                var text = styled.text
-                let size = styled.size
-                // A marker the file gives as a line of its own belongs to the line before; left alone, it would break
-                // the sentence in two.
-                if !text.isEmpty, PDFBookStructure.withoutTrailingMarkers(text).isEmpty, let label = markers.last {
-                    // At either end of the page, a small number alone is the page's own, for `pageContent` to judge.
-                    if let previous = lines.lastIndex(where: { !$0.isEmpty }), NSMaxRange(range) < lastText {
-                        let held = result.lineSizes.removeValue(forKey: lines[previous])
-                        lines[previous] += text
-                        result.lineSizes[lines[previous]] = held
-                        return
-                    }
-                    markers.removeLast()
-                    text = label
-                }
-                // A marker opening a line of text belongs to the sentence that wrapped before it.
-                if let first = text.first, PDFBookStructure.withoutTrailingMarkers(String(first)).isEmpty,
-                   let previous = lines.lastIndex(where: { !$0.isEmpty }) {
-                    let held = result.lineSizes.removeValue(forKey: lines[previous])
-                    lines[previous].append(first)
-                    result.lineSizes[lines[previous]] = held
-                    text.removeFirst()
-                }
-                lines.append(text)
-                guard !text.isEmpty else { return }
-                result.lineSizes[text] = size
+                let styled = styledLine(page, range: range, bodySize: bodySize)
+                lines.append(styled.text)
+                guard !styled.text.isEmpty else { return }
+                result.lineSizes[styled.text] = styled.size
+                if !styled.small.isEmpty { result.smallRuns[styled.text] = styled.small }
             }
             result.text = lines.joined(separator: "\n")
             pages.append(result)
         }
-        return (pages, markers, bodySize)
+        return (pages, bodySize)
     }
 
     private static func fontSize(_ value: Any?) -> Double { (value as? NSFont).map { Double($0.pointSize) } ?? 0 }
 
-    /// One line's text with its markers replaced, and the size most of it is set in. A small number opening a line is
-    /// a marker only in a line of body text, the sentence having wrapped just before it, or as a line of its own.
-    /// Opening a smaller line, it is that note's own number.
-    private static func styledLine(_ page: NSAttributedString, range: NSRange, bodySize: Double, markers: inout [String])
-        -> (text: String, size: Double) {
+    /// One line's text, the size most of it is set in, and where small marker-like runs stand in it.
+    private static func styledLine(_ page: NSAttributedString, range: NSRange, bodySize: Double)
+        -> (text: String, size: Double, small: [PDFBookStructure.SmallRun]) {
         let source = page.string as NSString
         var line = ""
-        var opening: String?
+        var small: [PDFBookStructure.SmallRun] = []
         var lengths: [Double: Int] = [:]
         page.enumerateAttribute(.font, in: range) { value, run, _ in
             let text = source.substring(with: run).replacingOccurrences(of: "\u{FFFC}", with: "")
             let size = fontSize(value)
             lengths[size, default: 0] += run.length
             let bare = text.trimmingCharacters(in: .whitespaces)
-            guard bodySize > 0, size > 0, size <= bodySize * 0.8, PDFBookStructure.isMarkerText(bare) else {
-                line += text
-                return
+            if bodySize > 0, size > 0, size <= bodySize * 0.8, PDFBookStructure.isMarkerText(bare) {
+                let lead = text.prefix { $0.isWhitespace }.utf16.count
+                small.append(.init(offset: line.utf16.count + lead, length: bare.utf16.count, label: bare))
             }
-            if line.trimmingCharacters(in: .whitespaces).isEmpty {
-                opening = bare
-            } else if line.last?.isWhitespace == false, let scalar = PDFBookStructure.markerScalar(markers.count) {
-                markers.append(bare)
-                line.append(scalar)
-                if text.last?.isWhitespace == true { line += " " }
-            } else {
-                line += text
-            }
+            line += text
         }
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        let lead = line.prefix { $0.isWhitespace }.utf16.count
         let size = lengths.max { ($0.value, $0.key) < ($1.value, $1.key) }?.key ?? 0
-        if let opening {
-            let alone = line.trimmingCharacters(in: .whitespaces).isEmpty
-            if alone || size >= bodySize * 0.95, let scalar = PDFBookStructure.markerScalar(markers.count) {
-                markers.append(opening)
-                line = String(scalar) + line.trimmingCharacters(in: .whitespaces)
-            } else {
-                line = opening + " " + line.trimmingCharacters(in: .whitespaces)
-            }
-        }
-        return (line.trimmingCharacters(in: .whitespaces), size)
+        return (trimmed, size, small.map { .init(offset: $0.offset - lead, length: $0.length, label: $0.label) })
     }
 
     /// The outline's entries at every level, with the page each opens.
