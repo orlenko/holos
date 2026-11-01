@@ -111,6 +111,21 @@ import Testing
         #expect(PDFReader.pageContent(pages) == words.map { [$0] })
     }
 
+    /// A chapter opening on the page it numbers is a heading, however well its number runs with the pages.
+    @Test func aChapterHeadingOnItsOwnPageNumberStays() {
+        let words = Self.differentWords(8)
+        var pages = (0..<8).map { ["Chapter's Name \($0 + 1)", words[$0]] }
+        pages[0][0] = "Chapter 1"
+        #expect(PDFReader.pageContent(pages)[0] == ["Chapter 1", words[0]])
+        #expect(PDFReader.pageContent(pages)[1] == [words[1]])
+    }
+
+    /// A page's two edges numbered alike are one page, not two agreeing.
+    @Test func twoPagesWithBothEdgesNumberedAreNotFurniture() {
+        let pages = [["Exercise 1", "Something to do.", "Answer 1"], ["Exercise 2", "Something else.", "Answer 2"]]
+        #expect(PDFReader.pageContent(pages) == pages)
+    }
+
     @Test func romanNumberedRunningHeadsAreDropped() {
         let words = Self.differentWords(6)
         let pages = ["iii", "iv", "v", "vi", "vii", "viii"].enumerated().map { ["Foreword \($1)", words[$0]] }
@@ -151,13 +166,25 @@ import Testing
                            "Chapter two says that.", "Footnote: Note of the second."])
     }
 
-    /// Some tools give every fifth note's number apart from its line, at the top of the page.
-    @Test func aNotesNumberGivenApartFromItsLineIsPutBack() throws {
-        let body = (0..<3).map { "Sentence number \($0).\((try? marker($0)) ?? "")" }.joined(separator: " ")
-        let notes = PDFBookStructure.Page(text: "3\nNotes\n1 One\n2 Two\nThree", lineLevels: ["3": 100, "1 One": 140, "2 Two": 120, "Three": 100])
-        let result = paragraphs([.init(text: body), notes], markers: ["1", "2", "3"],
+    /// Some tools give every fifth note's number apart from its line, at the top of the page. It stands at no height
+    /// to trust, so the line after a finished note takes it.
+    @Test func aNotesNumberGivenApartFromItsLineIsPutBackByOrder() throws {
+        let body = try (0..<4).map { "Sentence \($0).\(try marker($0))" }.joined(separator: " ")
+        let notes = PDFBookStructure.Page(text: "3\nNotes\n1 Ibid.\n2 Ibid., wrapping\nonto a line.\nIbid.\n4 Done.")
+        let result = paragraphs([.init(text: body), notes], markers: ["1", "2", "3", "4"],
                                 outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 1)])
-        #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: One.", "Footnote: Two.", "Footnote: Three."])
+        #expect(result.filter { $0.hasPrefix("Footnote:") }
+            == ["Footnote: Ibid.", "Footnote: Ibid., wrapping onto a line.", "Footnote: Ibid.", "Footnote: Done."])
+    }
+
+    /// A wrapped line opening with the next number, in lowercase, stays in its note.
+    @Test func aWrappedLineOpeningWithTheNextNumberStaysInItsNote() throws {
+        let body = try (0..<2).map { "Sentence \($0).\(try marker($0))" }.joined(separator: " ")
+        let long = "1 A long note that runs on from one margin all the way across the page to the"
+        let notes = PDFBookStructure.Page(text: "Notes\n\(long)\n2 that must be read.\n2 The real second.")
+        let result = paragraphs([.init(text: body), notes], markers: ["1", "2"],
+                                outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 1)])
+        #expect(result.filter { $0.hasPrefix("Footnote:") }.last == "Footnote: The real second.")
     }
 
     /// "1 Corinthians" wrapping to a line's start inside a note starts no new block of notes.
@@ -182,6 +209,30 @@ import Testing
         #expect(result.filter { $0.hasPrefix("Footnote:") } == [
             "Footnote: First.", "Footnote: Second, ending here. 1 Corinthians is cited too.", "Footnote: Third.", "Footnote: Fourth.",
         ])
+    }
+
+    /// A last chapter with one note that wraps is still a block of its own.
+    @Test func aLastChapterWithOneWrappedNoteIsItsOwnBlock() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0)) B.\(try marker(1))"),
+            .init(text: "Last chapter.\(try marker(2))"),
+            .init(text: "Notes\n1 Note one.\n2 Note two.\nChapter Two\n1 The only note\nwraps here."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "2", "1"],
+                                outline: [.init(label: "One", page: 0), .init(label: "Two", page: 1), .init(label: "Notes", page: 2)])
+        #expect(result.filter { $0.hasPrefix("Footnote:") }.last == "Footnote: The only note wraps here.")
+    }
+
+    /// An outline naming only the back matter says nothing of chapters: numbers starting over still pair by block.
+    @Test func anOutlineWithoutChaptersStillPairsByBlock() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0)) B.\(try marker(1))"),
+            .init(text: "C.\(try marker(2)) D.\(try marker(3))"),
+            .init(text: "Notes\n1 Note one.\n2 Note two.\n1 Other one.\n2 Other two."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "2", "1", "2"], outline: [.init(label: "Notes", page: 2)])
+        #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: Note one.", "Footnote: Note two.",
+                                                                "Footnote: Other one.", "Footnote: Other two."])
     }
 
     /// A chapter citing an earlier note again stays in its chapter's notes.

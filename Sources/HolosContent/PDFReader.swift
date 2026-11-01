@@ -22,9 +22,7 @@ public enum PDFReader {
             let page = pdf.page(at: index)
             styled.append(page?.attributedString ?? page?.string.map { NSAttributedString(string: $0) })
         }
-        let (pages, markers, bodySize) = try bookPages(styled) { index, character in
-            pdf.page(at: index).map { Double($0.characterBounds(at: character).minY) }
-        }
+        let (pages, markers, bodySize) = try bookPages(styled)
         let paragraphs = try PDFBookStructure.paragraphs(pages: pages, markers: markers, outline: outline(of: pdf),
                                                      bodySize: bodySize, hasTitle: declared?.isEmpty == false)
         guard !paragraphs.isEmpty else {
@@ -36,9 +34,8 @@ public enum PDFReader {
     }
 
     /// Each page's text with its little note numbers marked (see `PDFBookStructure`), and what they say, from the
-    /// fonts: the book's body size is the one most of its characters are set in. `level`: how high on page `page` a
-    /// character stands, where the file can tell.
-    static func bookPages(_ styled: [NSAttributedString?], level: @escaping (_ page: Int, _ character: Int) -> Double? = { _, _ in nil })
+    /// fonts: the book's body size is the one most of its characters are set in.
+    static func bookPages(_ styled: [NSAttributedString?])
         throws -> (pages: [PDFBookStructure.Page], markers: [String], bodySize: Double) {
         var counts: [Double: Int] = [:]
         for page in styled.compactMap({ $0 }) {
@@ -49,7 +46,7 @@ public enum PDFReader {
         let bodySize = counts.filter { $0.key > 0 }.max { $0.value < $1.value }?.key ?? 0
         var markers: [String] = []
         var pages: [PDFBookStructure.Page] = []
-        for (index, page) in styled.enumerated() {
+        for page in styled {
             try Task.checkCancellation()
             guard let page else {
                 pages.append(.init(text: ""))
@@ -63,7 +60,6 @@ public enum PDFReader {
                 lines.append(text)
                 guard !text.isEmpty else { return }
                 result.lineSizes[text] = size
-                if range.length > 0, let height = level(index, range.location) { result.lineLevels[text] = height }
             }
             result.text = lines.joined(separator: "\n")
             pages.append(result)
@@ -263,11 +259,14 @@ public enum PDFReader {
             var headOffsets: [Int: Int] = [:]
             for (index, page) in pages.enumerated() {
                 guard let first = page.first, let last = page.last else { continue }
+                // Counted once a page: a page's two edges numbered alike are not two pages agreeing.
+                for key in Set([first, last].compactMap({ runningHeadKey($0, page: index) })) {
+                    headOffsets[key, default: 0] += 1
+                }
                 headers[furnitureKey(first), default: 0] += 1
                 footers[furnitureKey(last), default: 0] += 1
                 for line in Set([first, last]) {
                     if let number = bareNumber(line) { numberOffsets[number - index, default: 0] += 1 }
-                    if let key = runningHeadKey(line, page: index) { headOffsets[key, default: 0] += 1 }
                 }
             }
             for index in pages.indices {
@@ -313,7 +312,9 @@ public enum PDFReader {
     /// How a running head's page number ("8 Chapter Name", "Chapter Name 9", "Foreword xi") stands to its page's index,
     /// the same for every page numbered in the same series; nil for a line without one.
     static func runningHeadKey(_ line: String, page: Int) -> Int? {
-        guard line.count <= 90, bareNumber(line) == nil, line.contains(where: \.isLetter) else { return nil }
+        guard line.count <= 90, bareNumber(line) == nil, line.contains(where: \.isLetter), !isNumberedHeading(line) else {
+            return nil
+        }
         let words = line.split(whereSeparator: \.isWhitespace)
         guard words.count >= 2, let first = words.first, let last = words.last else { return nil }
         for word in [last, first] {
@@ -321,6 +322,12 @@ public enum PDFReader {
             if let number = romanNumeral(String(word)) { return 100_000 + number - page }
         }
         return nil
+    }
+
+    /// "Chapter 1", "Part II": a chapter opening on the page it numbers looks like a running head and is not one.
+    private static func isNumberedHeading(_ line: String) -> Bool {
+        line.range(of: #"^(chapter|part|book|section|lecture|volume)\s+(\d{1,4}|[ivxlc]{1,7})$"#,
+                   options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     /// A lowercase roman numeral's value, as front matter is numbered.
