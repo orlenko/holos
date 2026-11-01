@@ -380,6 +380,15 @@ import Testing
         #expect(lines[2] == "\(try marker(1))wrapped to open this line of text.")
     }
 
+    /// A marker the file gives as its own line stays with its sentence, which goes on unbroken.
+    @Test func aMarkerOnALineOfItsOwnJoinsTheLineBefore() throws {
+        let page = styled([(Self.filler + "\n", 10), ("It names The Book,\n", 10), ("3\n", 5.8), ("and then goes on to the end of its sentence.\n", 10)])
+        let (pages, markers, _) = try PDFReader.bookPages([page])
+        #expect(markers == ["3"])
+        let lines = pages[0].text.components(separatedBy: "\n")
+        #expect(lines == [Self.filler, "It names The Book,\(try marker(0))", "and then goes on to the end of its sentence."])
+    }
+
     /// In a line set small, a small number opening it is that note's own.
     @Test func aSmallNumberOpeningASmallLineIsTheNotesOwn() throws {
         let body = String(repeating: Self.filler + "\n", count: 4)

@@ -1922,8 +1922,8 @@ bibliography, references, or index are left out; without an outline, a contents 
 are recognized by their look. An outline naming more than 80% of the pages is ignored. A chapter's running head with
 its page number ("8 Chapter Name") goes too, when at least four pages' edge lines number along with the pages.
 
-A note's marker is a run of digits or a footnote symbol set at most 80% of the body size, right after text or opening
-a line of body text. It is never spoken. Its note is, as "Footnote: …" in a paragraph of its own after the sentence
+A note's marker is a run of digits or a footnote symbol set at most 80% of the body size, right after text, opening
+a line of body text, or as a line of its own. It is never spoken. Its note is, as "Footnote: …" in a paragraph of its own after the sentence
 holding the marker. Notes at a page's foot are the smaller lines closing the page that open with a marker the page uses,
 including one running over from the page before. Notes in a notes section, named by the outline or recognized by its
 look, pair with markers in reading order, a new block each time the numbers start over (a book numbering per chapter).
