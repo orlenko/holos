@@ -143,6 +143,11 @@ respect secure input. Do not synthesize Return or auto-submit. A terminal must n
 receive an unexpected trailing newline. "Anywhere" means broad tested coverage,
 with a visible copy fallback for unsupported fields.
 
+Rex translates synthetic input from physical key codes. Its dictation events carry the key code and Shift state
+that produce each character in the active keyboard layout, as well as the Unicode text. Each chunk is checked in
+full before typing. Characters needing a dead key, Option, an input method or a different keyboard layout keep
+that chunk for Copy Result; typing never substitutes a different character or sends terminal modifier shortcuts.
+
 The first app matrix should include TextEdit, a browser textarea/contenteditable,
 VS Code, a terminal, and the user's actual chat/mail applications. The latter list
 can be supplied with the Wispr references. The app needs Microphone and
@@ -226,7 +231,7 @@ available for another attempt in the meeting start panel and dictation setup.
 Settings › Dictation › **Write spoken paths and commands as code** (on by default)
 writes "scripts slash restart dash app dot es aytch" as `scripts/restart-app.sh` and
 "slash Q C" as `/qc`; **Wrap them in backticks** (on by default) adds the backticks,
-never for a terminal (Terminal, iTerm2, Ghostty, WezTerm, kitty, Alacritty, Warp),
+never for a terminal (Terminal, iTerm2, Ghostty, WezTerm, kitty, Alacritty, Warp, Rex),
 which gets the token itself. It is its own step (`SpokenCodeFormatter`), after
 learned corrections and before Apple Intelligence's fix, on each committed chunk and
 on the rest at release; Run Again runs it with the current settings (without
@@ -632,6 +637,24 @@ rendered, and kept until the reading is deleted, so Resume and Try Again read th
 without fetching the page again, and **Show Text** shows it; a document that cannot be saved,
 or a saved one that cannot be read back, fails the reading rather than loading the source again.
 
+**Show Text** opens `ReadingTextWindow`, one window at a time, to read along with the voice: the
+saved text (`ReadableDocument.plainText`, the same string the script speaks), selectable and copyable
+but never editable, over ▶ Play, a seek bar, **Follow Voice**, and **Copy Text** (the whole text). Space
+plays or pauses. The bar of a reading not loaded in the player starts it from the place chosen. The
+sentence being spoken is highlighted with a rendering attribute, so it never touches the text, the
+selection, or what is copied, and the view scrolls to keep it in view while Follow Voice is on. Scrolling
+or selecting turns Follow Voice off so the place being read stays put; the highlight keeps moving, and
+turning it on goes back to the voice. The window closes with the main window and when its reading leaves
+the list. A reading an earlier version made has no saved text and says so.
+
+The times come from `ReadingTimeline` (HolosContent), read from the manifest the render cache keeps
+after the file is made, so readings already made follow too, without rendering again. A part's start is
+exact: its rendered duration, plus the silences the joiner put before it (`ReadingPart.silenceBefore`,
+the one rule both use). Inside a part, up to 3,000 UTF-16 units, a sentence's time is estimated from its
+place in the part's text, since no renderer reports word times, so the highlight can lead or lag within
+a part and is corrected at the next one. A manifest whose durations are missing, or whose parts' text hashes do not match the saved
+text, gives no timeline: the text shows with no highlight and Follow Voice is off and says why.
+
 `ReadingController` (HolosApp) runs the readings one at a time through
 `ReadingWorkQueue` (HolosContent): first come, first made; Stop takes a waiting one out at
 once and cancels a running one, which ends as stopped unless it finished anyway. The work
@@ -672,10 +695,12 @@ same file) is never used, so two readings never share, or delete, one file.
 Rows show the title and the source (the site without "www.", or the file's name), then:
 waiting (Stop); loading or "Rendering part N of M" with a bar (Stop); joining; made
 (length · chapters · size · voice, and the speed when not 1×) with **▶ Play** (an
-`AVAudioPlayer` in the app, Space or double-click, one reading at a time, position shown;
-stopped when the window closes), **Show Text** (the saved text, `ReadableDocument.plainText`,
-in a sheet to read, select, or copy whole with **Copy Text**; a reading an earlier version made
-has none and says so), **Share…** (`NSSharingServicePicker`, ⇧⌘S), **Show in Finder**,
+`AVAudioPlayer` in the app, Space or double-click, one reading at a time; stopped when the
+window closes). The reading loaded in the player has a taller row with a seek bar
+(`ReadingSeekBar`): elapsed time, the bar, the length. While it plays from its parts, only those ahead being in
+memory, the bar shows its place ("4:10…" for the length so far) and cannot move it. The release of a drag seeks, the player does
+not move the knob meanwhile, and ← and → (and VoiceOver) move 15 seconds, since a pixel of a long
+book's bar can be nearly a minute. **Show Text** opens the text window (see below); **Share…** (`NSSharingServicePicker`, ⇧⌘S), **Show in Finder**,
 **Delete…**; in a row narrower than 600 points Show Text, Share…, Show in Finder and Delete…
 show only their symbols; failed (the error, **Try Again**); stopped (where, **Resume**). A
 made reading whose file is no longer there, or was replaced by another file (its file
@@ -1541,27 +1566,41 @@ docs/meeting/deep-transcription.md §4.16 has the stage, files, thresholds and m
 
 ### Meetings list
 
-The Meetings section lists the meetings as rich rows in a source-list style, grouped under
-Today, Yesterday, This Week, then by month, newest first (the meeting being recorded or saved
-first). Each row has the meeting's title in bold, with small badges at its right; below it when
-it started (the time alone today and yesterday, the weekday this week, else the date), how long
-it is, and the people its speaker labels name ("Alex, Sam and 2 others"); then a one- or
-two-line summary. Badges replace the former State and Speakers columns and appear only when
-there is something to say: ● Recording (red), ● Paused, Starting…, Saving…, what a command is
-doing ("Labelling speakers…", "Final transcript queued", "Writing summary…"), Interrupted,
-Failed, Damaged, Transcript incomplete, Audio only, No audio, Speakers not labelled, Speaker
-labels failed, Language missing. The size and the state are in the row's tooltip; the footer
-keeps the total and free space. A search field above the list (⌘F) filters by title, name,
-summary, key points, action items and people, ignoring case and accents.
+The Meetings section lists the meetings as a grid, one line per meeting, grouped under day
+headers (Today, Yesterday, This Week, then by month), newest first (the meeting being recorded or
+saved first). The columns are Name (the meeting's title in bold, with small badges at its right),
+When (the start, as the time alone today and yesterday, the weekday this week, else the date, and
+the length), Description (the first line of the summary, else the people its speaker labels name,
+"Alex, Sam and 2 others"; the whole of both on hover), and four buttons that act on their own row
+whatever is selected: Open (pencil: the meeting screen, where speakers are named), View
+(magnifying glass: exports/transcript.md in the app that opens Markdown; off without a saved
+transcript, and a beep when the file is missing), Delete
+Audio (speaker with a slash; off when `MeetingActionPolicy` refuses it, for example while the meeting
+records, is worked on, or has no audio), and Copy Path (the meeting's folder, for an agent or
+Terminal). The buttons' states come from the catalog read, so drawing a row reads no files. Where
+the list is narrower than 470 points (beside a call's window) the When column is
+hidden; the day headers still say when. Badges appear only when there is something to say:
+● Recording (red), ● Paused, Starting…, Saving…, what a command is doing ("Labelling speakers…",
+"Final transcript queued", "Writing summary…"), Interrupted, Failed, Damaged, Transcript incomplete,
+Audio only, No audio, Speakers not labelled, Speaker labels failed, Language missing; a squeezed
+badge ends in "…" and shows its text on hover. The size and the state are in the name's tooltip,
+and VoiceOver reads the whole row from the name; the footer keeps the total and free space. A
+search field above the list (⌘F) filters by title, name, summary, key points, action items and
+people, ignoring case and accents.
+
+Delete Audio on one meeting (its row's button or the menu) asks first, with "Don't ask again"
+(`MeetingAudioPreferences`, UserDefaults `confirmMeetingAudioDeletion`); Delete Audio of several
+meetings always asks, since it names the meetings it skips.
 
 The title is the name the user gave the meeting (in the start panel, `--name`, or by renaming
 it), else the title Apple Intelligence wrote for the current transcript, else the default name
 ("Meeting 2026-10-03 14:00"); a generated title never replaces a name the user gave. The
 Markdown transcript file's heading follows the same rule.
 
-A meeting is renamed in its row: Advanced › Rename… (⌘R in the list) turns the
-title into a text field spanning the line, with the title selected. Double-clicking any part
-of the row opens the meeting. Inside the meeting, the three-dot menu's Rename… opens a name
+A meeting is renamed in its row: a click on the title text of the meeting already selected alone
+(once no second click follows and nothing opened a meeting meanwhile, as in the Finder), or Advanced › Rename… (⌘R in the list), turns
+the title into a text field spanning the Name cell, with the title selected. Double-clicking any
+part of the row opens the meeting. Inside the meeting, the three-dot menu's Rename… opens a name
 sheet on the main window. In the list, Return saves it, Escape
 cancels, and clicking elsewhere saves it, as in the Finder. The name is one line of at most 60
 characters (a longer one is cut as titles are, at a space when it can be); leaving the field
@@ -1590,7 +1629,7 @@ It is available while the recorder is idle or failed; recording, starting, and s
 The list offers Open, Delete Meeting…, and Advanced. Open, Return, and double-click all
 enter the same meeting screen inside the main window. The row context menu keeps Open
 and Delete Meeting… at the top; Advanced contains export, transcript-file preview, Finder,
-rename, summaries, final transcription, recovery, speaker labelling, and audio deletion.
+Copy Path, rename, summaries, final transcription, recovery, speaker labelling, and audio deletion.
 The meeting screen's three-dot button exposes these advanced actions too. Editable review
 keeps its playback, correction, speaker, and export controls inside that screen. Right-clicking
 a row selects it. A processing state changes which advanced actions are available, not how
@@ -1626,6 +1665,50 @@ failures then waits for the quit, and is shown if the quit does not go ahead aft
 meeting is skipped by Delete Audio as damaged, since its audio may still be there. A right-click on a row of the selection acts on
 all of it (Show N in Finder, Delete Audio of N Meetings…, Delete N Meetings…); a right-click on
 another row selects that row and acts on it alone, as in the Finder.
+
+### Automatic audio cleanup
+
+Settings › Meetings › "Delete the audio of meetings older than [7] days" (off by default; 1 to 365
+days, saved in `MeetingAudioPreferences`) deletes the audio of old meetings on its own, as Delete
+Audio does: the audio and screen captures gone for good, the transcript, speaker labels and
+transcript files kept, and the voice samples waiting to be learned from the meeting forgotten.
+
+A meeting qualifies (`AudioCleanupPolicy.refusal` names why not) once it is at least that many days
+old, has audio, is complete or recovered with a readable transcript and a readable meeting.json, has
+its speakers labelled with no language left to detect, and no final transcript (queued, being decided
+on, or a Make Final Transcript Now whose languages are being read) or echo analysis is queued on it;
+never while it records, is worked on by any command, or is open. Only positive evidence lets the audio
+go (`AudioCleanupPolicy.audioNeeded`, read off the main actor and again under the lease): a readable
+manifest; a meeting.json of this meeting (a missing one reads as a one-language meeting, so meetings from
+before meeting.json keep their audio); an event journal that is there and reads whole, with no torn or unreadable line (the catalog
+reads a missing or unreadable one as no language work left); a current transcript not rebuilt without
+transcribing audio it leaves out (`session recover --no-transcribe`, a `recovered` meeting;
+`TranscriptRebuilder.leftAudioUntranscribed`); and speaker labels made for that transcript or one it was
+corrected from (`WordFixStage.correctionChain`: Review's edits and automatic fixes keep the labels).
+Anything that cannot be read or established keeps the audio.
+
+It runs as automatic background work (`AudioCleanupJobs`: after final transcripts, echo analyses and
+summaries, one meeting at a time, oldest first, and nothing before the launch's final-transcript
+reconciliation ends or while one runs, as summaries wait; a reconciliation that starts stops a cleanup
+running then), from a scan of the sessions folder made
+at launch, hourly while the app runs, and when the setting changes. Each pick is read again off the
+main actor, then checked again on it just before it starts (the setting unchanged, nothing queued on
+the meeting meanwhile unless its deletion is under way). The command, `voiceislocal session clean-audio <session> --older-than N`
+(`SessionAudioCleanupCommand`), holds the background-job lock (kind `audioCleanup`) for its whole
+run and decides again under the meeting's processing lease, so nothing that changed the meeting
+since the scan is missed; it exits 0 once the audio is gone and 3 when it keeps it (with the reason).
+`--dry-run` decides the same way, under the same locks, and deletes nothing (nor does it finish a
+pending forget of voices first, `ForgetResumeScope`).
+A review open on the meeting is held read-only and reread afterwards, as for Delete Audio.
+
+A deletion that began and did not finish (a meeting started and stopped it, or the app quit), as the
+files show it, marked deleted while its `audio/` folder is still there
+(`SessionDeletion.audioDeletionUnfinished`, read by the scan, which runs again after a stopped run), is
+finished first, whatever the meeting's age or state, as soon as nothing records or works on it;
+Delete Audio keeps the marker and removes the rest. A run stopped before it wrote the marker left
+nothing to finish, and its meeting is judged again like any other. A meeting whose cleanup failed is
+tried again at the next launch. The same Settings card has "Ask before deleting a meeting's audio",
+which turns back on the confirmation that "Don't ask again" turned off.
 
 ### Meetings
 

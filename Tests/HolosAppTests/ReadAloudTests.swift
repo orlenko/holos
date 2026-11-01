@@ -159,7 +159,8 @@ import Testing
         fixture.list.set(ids[0], .failed, message: "No voice.")
         fixture.list.feeds[ids[0]]?.finish(.failed("No voice."))
         fixture.readAloud.readingEnded(ids[0])
-        #expect(fixture.notices.last == "The selection could not be read aloud")
+        // The part's read runs off the main actor, so the failure is told once it returns.
+        #expect(await eventually { fixture.notices.contains("The selection could not be read aloud") })
         #expect(await eventually { fixture.player.entryID == ids[1] })
         #expect(fixture.readAloud.playing == ids[1])
     }

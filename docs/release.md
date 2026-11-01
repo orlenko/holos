@@ -262,8 +262,16 @@ notices reproduce too. Apple's speech assets are downloaded by macOS. When a dep
 3. Publish `build/release/appcast.xml` at `https://voiceislocal.com/downloads/appcast.xml`, byte for byte: its
    signature covers the whole file. Publish it after the DMG, so the app never offers a file that is not there yet.
 4. Update the Homebrew cask, `Casks/voiceislocal.rb` in
-   [orlenko/homebrew-tap](https://github.com/orlenko/homebrew-tap): its `version` and `sha256`. Users install with
-   `brew install --cask orlenko/tap/voiceislocal`.
+   [orlenko/homebrew-tap](https://github.com/orlenko/homebrew-tap): its `version` and `sha256`. Homebrew loads casks
+   from other taps only once you trust them, so users run both:
+
+   ```sh
+   brew trust --cask orlenko/tap/voiceislocal
+   brew install --cask orlenko/tap/voiceislocal
+   ```
+
+   The website and the GitHub release notes give the same two commands. Trusting the cask, not the whole tap
+   (`brew trust --tap`), keeps the trust to Voice is Local.
 5. Keep a short changelog per version.
 6. Publish a GitHub release for the tag with the DMG and that changelog, its SHA-256, and the requirements:
    `gh release create v<version> build/release/VoiceIsLocal-<version>.dmg --verify-tag --title "Voice is Local

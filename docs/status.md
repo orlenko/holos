@@ -381,6 +381,10 @@ timeline and a larger local-model benchmark are follow-ups.
   consecutive reads agree (at most four reads); if they never agree, as when focus
   moves during the capture, that dictation is not typed and is kept for Copy Result.
   Secure fields and Secure Keyboard Entry are refused.
+  Rex uses physical key codes from the active keyboard layout because it interprets those instead of the event's
+  Unicode text. Only direct and Shift-modified characters are typed; an unrepresentable chunk requires Copy Result
+  before any of that chunk is sent. Layout planning and unposted event fields are unit-tested; the Rex input path
+  needs an interactive check against the installed beta.
   It never synthesizes Return and never pastes. Text it could not write (target
   changed, safety check failed, unverified write, forced stop) is kept for Copy Result
   or Discard in the menu; it is never put on the clipboard automatically, since
@@ -491,9 +495,12 @@ timeline and a larger local-model benchmark are follow-ups.
   on copies of three real meetings (52–80 min; numbers only): 6, 6 and 9 model calls, 32–53 s
   each, no failures; the titles and summaries named the meetings' topics and their facts were in
   the transcripts, with recognition errors in names and jargon carried over.
-- Meetings list (docs/design.md "Meetings list"): rich rows grouped by Today, Yesterday, This
-  Week and month, with the title, start, length, people, the summary, and badges instead of
-  columns; a search field filters by title, summary and people. Open and Delete are primary;
+- Meetings list (docs/design.md "Meetings list"): a grid, one line per meeting under Today,
+  Yesterday, This Week and month headers: Name (with badges, renamed by a click on the selected
+  meeting's name), When, Description, and Open, View, Delete Audio and Copy Path buttons on each
+  row; a search field filters by title, summary and people. Automatic audio cleanup (docs/design.md
+  "Automatic audio cleanup"): off by default; deletes the audio of finished meetings older than N
+  days (7 preset) as background work, oldest first. Open and Delete are primary;
   Start Recording… opens the menu bar's start panel; Advanced contains exports and maintenance
   actions. Open, Return, and double-click enter
   the same meeting screen inside the main window. Recording, processing, saved transcript,
@@ -562,6 +569,10 @@ timeline and a larger local-model benchmark are follow-ups.
   logic, the voice order, the speed mapping, and the pipeline's new progress reports are
   unit-tested; the section itself is built and compiled only and has not been seen on screen
   yet (docs/dictation-validation.md "Reading section").
+  A loaded reading's row has a seek bar, and Show Text is a window that highlights and follows the sentence being
+  spoken, its times from the render cache's manifest (`ReadingTimeline`). The timeline, the player's seek on a real
+  `.m4a`, the bar's drag rules and the window's highlight are unit-tested, and the views were checked rendered offscreen;
+  dragging the bar in the real list and how closely the highlight tracks a voice by ear are still to check.
 - Natural voices (docs/design.md "Natural voices"): Reading can use Kyutai's Pocket TTS through
   FluidAudio 0.17.1, rendered by the bundled `voiceislocal say` (the app does not link
   FluidAudio). `voiceislocal setup --natural-voices [--language fr]` or Settings › Reading

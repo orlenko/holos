@@ -11,15 +11,19 @@ extension ReadingController {
         return entry.state == .done && fileProblem(entry) == nil
     }
 
-    /// Plays, pauses, or continues reading `id` on `player`. False when its file is not the one it made (see
-    /// `ReadingPlayer.play`); throws when it cannot start.
+    /// Plays, pauses, or continues reading `id` on `player`, from `start` when one is given and it can move. False when
+    /// its file is not the one it made (see `ReadingPlayer.play`); throws when it cannot start.
     func play(_ id: UUID, on player: ReadingPlayer) async throws -> Bool {
+        try await play(id, from: nil, on: player)
+    }
+
+    func play(_ id: UUID, from start: Double?, on player: ReadingPlayer) async throws -> Bool {
         guard let entry = entry(id) else { return false }
         if entry.state == .rendering, let feed = feeds.feed(id), feed.madeInOrder > 0 {
             try player.play(id, feed: feed) { [weak self] in await self?.openFinishedFile(id: id) }
             return true
         }
-        return try await player.play(id) { await self.openFinishedFile(entry) }
+        return try await player.play(id, from: start) { await self.openFinishedFile(entry) }
     }
 
     /// Whether the reading loaded in the player (`entry`, nil once it left the list) keeps playing: from its parts

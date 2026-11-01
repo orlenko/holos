@@ -14,6 +14,8 @@ read-aloud shortcut and reading the selected text.
 - `TextInsertion` (`@MainActor`): `captureTarget()` snapshots the focused element and selection at key-down as an
   `InsertionTarget`; insertion rechecks it and reports an `InsertionOutcome` (`inserted`, `typed`, `needsCopy`,
   `targetChanged`, `unverified`). `KeystrokeTarget` types into terminals. Secure input is detected and refused.
+- `KeyboardTyping` maps printable physical keys in the active layout for Rex, which translates key codes rather
+  than accepting the event's Unicode text. Characters without a direct key or Shift-key combination require Copy Result.
 
 **Must not own:** dictation state (`HolosDictation`), the dictated text's history or storage, windows. It never
 writes to the pasteboard: when text cannot be inserted it returns `needsCopy` and the user chooses Copy Result.
@@ -28,4 +30,5 @@ writes to the pasteboard: when text cannot be inserted it returns `needsCopy` an
   `InsertionTarget` keeps its `AXUIElement` file-private.
 
 **Tests:** `Tests/HolosDesktopTests` (`HotkeyReducerTests`, `TextInsertionPolicyTests`, `TerminalFocusTests`,
-`HotkeyPermissionTests`, `SelectedTextTests`): policies and reducers, no events posted to other apps.
+`HotkeyPermissionTests`, `SelectedTextTests`, `KeyboardTypingTests`): policies, reducers and unposted keyboard events;
+no events posted to other apps.

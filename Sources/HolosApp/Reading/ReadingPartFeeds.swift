@@ -4,6 +4,11 @@ import HolosContent
 /// The parts of the readings being made (`ReadingPartFeed`), so each can play before it is finished: one per reading,
 /// from its first part made in a run until that run's work ends, when its feed says how and is let go (a player that
 /// plays it keeps it).
+///
+/// Invariants:
+/// 1. A reading has at most one feed, made by its first part of a run.
+/// 2. Every run's end ends its feed, the quit's abandoned renders too, so nothing waits for parts that will not come.
+/// 3. A feed's end says how the work ended, from the entry as it is at that moment.
 @MainActor
 final class ReadingPartFeeds {
     private var feeds: [UUID: ReadingPartFeed] = [:]

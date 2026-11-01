@@ -469,6 +469,8 @@ final class ReadingController {
     /// a cancelled quit, a deletion that waited for it finishes.
     private func abandonedEnded(_ id: UUID) {
         activity[id] = nil
+        // A reading playing from its parts must not wait for parts nobody will make (`ReadingPartFeeds`, invariant 2).
+        feeds.ended(id, as: entry(id))
         // It may have made its file after all.
         refreshFiles()
         guard !preparedForQuit, deleteWhenStopped.remove(id) != nil else { return }

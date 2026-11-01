@@ -17,11 +17,14 @@ public protocol ReadingPlayback: AnyObject {
     func pause()
     func stop()
     func seek(to time: TimeInterval)
+    /// Whether `seek` can move it.
+    var canSeek: Bool { get }
 }
 
 extension ReadingPlayback {
     public var isWaiting: Bool { false }
     public var isDurationFinal: Bool { true }
+    public var canSeek: Bool { true }
 }
 
 extension AVAudioPlayer: ReadingPlayback {
@@ -40,6 +43,14 @@ public final class OpenedPlayback: @unchecked Sendable {
 /// file, one being made from its parts as they are made (`PartQueuePlayback`), handed over to its file once it is
 /// finished. A failure while it plays (the file cannot be decoded, for one cut short while open; making it failed) or
 /// when it continues is reported (`onError`), never taken for the end of the reading.
+///
+/// Invariants:
+/// 1. `player` and `entryID` are set and cleared together.
+/// 2. The latest interaction wins: a pause, a toggle, a seek or a stop advances `request`, and a reading still opening
+///    starts only when `request` has not moved since it was asked for.
+/// 3. A callback from a player no longer loaded changes nothing.
+/// 4. A seek stays inside the loaded file and leaves it playing or paused as it was. A reading playing from its parts
+///    does not seek (`canSeek`), since only the parts ahead are in memory.
 @MainActor
 public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
     /// Opens the file for playing; runs off the main actor (the player reads the file's start, which on a share whose
@@ -88,6 +99,9 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
         return (player.currentTime, player.duration, player.isDurationFinal)
     }
 
+    /// Whether the loaded reading can be moved: not while it plays from its parts.
+    public var canSeek: Bool { player?.canSeek ?? false }
+
     /// The loaded reading waits for a part that is not made yet.
     public var isWaiting: Bool { player?.isWaiting ?? false }
 
@@ -111,13 +125,32 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
         return true
     }
 
+    /// Moves reading `id` to `time` when it is the one loaded, playing or paused as it was; false when it is not.
+    @discardableResult
+    public func seek(_ id: UUID, to time: Double) -> Bool {
+        guard entryID == id, let player, time.isFinite else { return false }
+        // Invariant 2.
+        request += 1
+        if player.canSeek { player.seek(to: Self.clamped(time, duration: player.duration)) }
+        onChange?()
+        return true
+    }
+
+    /// Within the file, short of its very end, so a seek to the end of the bar leaves the end of the last sentence to
+    /// play and reports the reading's end as usual.
+    private static func clamped(_ time: Double, duration: Double) -> Double {
+        min(max(0, time), max(0, duration - 0.25))
+    }
+
     /// Plays reading `id` from the file `file` gives (the reading's file opened and checked; see `openAudio`), the
-    /// player opened off the main actor. The request counts from now: when another reading is asked for, or playing
+    /// player opened off the main actor. `start`: where to begin, or, when `id` is already loaded, where to move it
+    /// (without `start`, a loaded reading pauses or continues). The request counts from now: when another reading is asked for, or playing
     /// is stopped, before this one is open, it is dropped (true: nothing to tell). False when `file` gives none;
     /// throws when it cannot start.
     @discardableResult
-    public func play(_ id: UUID, file: () async -> FileHandle?) async throws -> Bool {
-        if toggleLoaded(id) { return true }
+    public func play(_ id: UUID, from start: Double? = nil, file: () async -> FileHandle?) async throws -> Bool {
+        if let start, seek(id, to: start) { return true }
+        if start == nil, toggleLoaded(id) { return true }
         request += 1
         let asked = request
         guard let handle = await file() else { return asked != request }
@@ -139,6 +172,7 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
         unload()
         let player = opened.playback
         (player as? AVAudioPlayer)?.delegate = self
+        if let start, start.isFinite { player.seek(to: Self.clamped(start, duration: player.duration)) }
         guard player.play() else { throw HolosError.unavailable("The audio could not start playing.") }
         self.player = player
         entryID = id

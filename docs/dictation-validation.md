@@ -204,6 +204,16 @@ Voice › Manage Voices).
 6. **Play and keys**: ▶ Play plays in the app, the button turns ❚❚ Pause and the position
    counts up; Space on the selected row pauses and continues; ↑↓ move between rows; playing
    another row stops the first. Closing the window stops playback.
+   **Seek**: the playing reading's row grows a bar with elapsed time and length. Drag the knob:
+   the time follows it, the audio moves only on release, and the knob does not jump meanwhile. Click
+   the bar to jump. On a selected (blue) row the filled part stays visible. With the bar focused
+   (full keyboard access), ← and → move 15 seconds.
+   **Show Text**: opens a window; the text can be selected and copied (⌘C, Copy Text) but not typed
+   into. Press Play there (Space works too): the spoken sentence is highlighted and stays in view; the
+   highlight stays with the voice across a chapter and a long part, by ear. Scroll or select: Follow
+   Voice turns off and the view stays, the highlight goes on; turn it on: back to the voice. Check dark
+   mode, a reading not loaded (the bar starts it from that place), and a book-length reading (opening
+   and jumping stay quick). Close the main window: the text window closes too.
 7. **Share and Finder**: Share… (and ⇧⌘S on the selected row) shows AirDrop, Messages,
    Mail…; send one to an iPhone and play it there (Files or Books), with its chapters.
    Show in Finder selects the file.
@@ -279,7 +289,7 @@ replacement, attempted only when the focused field is a supported writable,
 non-secure plain text field and the app, field, selection, text length, and nearby
 text still match the snapshot taken at key-down or after the previous chunk. Each
 write is read back. For a known terminal app (Terminal, iTerm2, Ghostty, WezTerm,
-kitty, Alacritty, Warp), which has no writable text field, chunks are typed as
+kitty, Alacritty, Warp, Rex), which has no writable text field, chunks are typed as
 keystrokes posted only to the terminal that was frontmost at key-down, and only
 while the terminal session focused at key-down still has focus: before each chunk
 (and every 16 characters within one) Voice is Local checks that the terminal is
@@ -295,6 +305,12 @@ same way, but only while that exact element keeps focus. Chromium browsers and
 Electron apps are asked to expose accessibility (`AXManualAccessibility`) when they
 become active, since they otherwise report no focused element. A password/secure
 field or Secure Keyboard Entry is refused.
+
+Rex receives physical key codes and Shift states matching the active keyboard layout. Check a mixture of lower-
+and uppercase letters, spaces and punctuation at an empty prompt without pressing Return. Characters the layout
+cannot type directly (including emoji and dead-key combinations) keep the entire unwritten chunk for Copy Result.
+Check another keyboard layout too: letters must follow that layout, and text requiring another layout must be
+kept for copying. No Option or Control combinations are synthesized.
 
 Hesitation sounds ("um", "uh", "ah", "erm", "hmm") and the commas around them are
 removed before corrections are applied, unless **Remove filler words** is turned
@@ -425,7 +441,7 @@ behavior, and permission owner for each row.
 | TextEdit plain text, empty caret and selected text | One insertion/replacement, with no extra newline or duplicate text. |
 | Browser text field and rich editor (e.g. ChatGPT in Chrome) | Phrases are typed as you pause while that field keeps focus; moving focus stops typing and keeps the rest for Copy Result. |
 | Native field without direct Accessibility writes | Typed into while it keeps focus; a field that fails a safety check (large selection, unreadable range) is not typed into and its text is kept for Copy Result. |
-| Terminal input (shell prompt and a TUI such as Claude Code) | Phrases are typed as you pause; never a Return; Secure Keyboard Entry refuses. Switching tab, split pane or window while speaking stops typing; nothing lands in the new session, and the rest is kept for Copy Result. Check Terminal and iTerm2 (tabs and split panes), and one of Ghostty, WezTerm, kitty, Alacritty or Warp (the log line "focus tracked by session/window/app" shows which level that terminal supports). |
+| Terminal input (shell prompt and a TUI such as Claude Code) | Phrases are typed as you pause; never a Return; Secure Keyboard Entry refuses. Switching tab, split pane or window while speaking stops typing; nothing lands in the new session, and the rest is kept for Copy Result. Check Terminal and iTerm2 (tabs and split panes), and one of Ghostty, WezTerm, kitty, Alacritty, Warp or Rex (the log line "focus tracked by session/window/app" shows which level that terminal supports). |
 | Accidental press after a dictation that left text for Copy Result | Tap the shortcut and release before Listening, press and Esc, or hold without speaking: Copy Result, Copy Original and Discard still offer the earlier text, which still expires ten minutes after its own dictation. A later dictation that recognizes words replaces it. |
 | Learn "bull request" → "pull request", then dictate it | Corrected in preview and in the field; "bull market" unchanged. |
 | Long utterance with pauses in TextEdit | Finalized phrases appear while speaking, the tail on release, no duplicates or missing spaces. |

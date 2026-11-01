@@ -194,6 +194,10 @@ final class ReadAloud {
         do {
             if try await readings.play(id, on: player) {
                 starting = false
+                // Another reading can have played over this one, and ended, while its file opened: the queue goes on.
+                if player.entryID != id, playing == id { playing = nil }
+                advance()
+                onChange?()
                 return
             }
             notify("The selection could not be played", "Its audio file is not where it was made.")

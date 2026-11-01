@@ -7,7 +7,7 @@ import Testing
 
 /// The real output, rendered offline (`AVAudioEngine` manual rendering: no output device, nothing heard), and the
 /// joined file's timeline against the one the parts play by.
-@MainActor @Suite(.serialized) struct EngineSegmentOutputTests {
+@MainActor @Suite struct EngineSegmentOutputTests {
     private static let rate = 22_050.0
 
     private func samples(_ url: URL) throws -> [Float] {

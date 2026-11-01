@@ -2,15 +2,15 @@
 # Regenerate with scripts/check-size.sh --update-baseline. A raised entry needs a
 # reason in the PR description (AGENTS.md "Size caps").
 # entries: 42
-1704 Sources/HolosApp/HolosApp+Meeting.swift
+1702 Sources/HolosApp/HolosApp+Meeting.swift
 1604 Sources/HolosApp/HolosApp.swift
 1021 Sources/HolosApp/MainWindow/HistoryPane.swift
 625 Sources/HolosApp/MainWindow/LiveMeetingView.swift
 731 Sources/HolosApp/MainWindow/MainWindowController.swift
 1756 Sources/HolosApp/MainWindow/MeetingsPane.swift
-737 Sources/HolosApp/MainWindow/ReadingPane.swift
-1351 Sources/HolosApp/MainWindow/SettingsPane.swift
-926 Sources/HolosApp/Reading/ReadingController.swift
+789 Sources/HolosApp/MainWindow/ReadingPane.swift
+1350 Sources/HolosApp/MainWindow/SettingsPane.swift
+928 Sources/HolosApp/Reading/ReadingController.swift
 1756 Sources/HolosApp/Review/ReviewWindow.swift
 737 Sources/HolosAudio/MeetingScreenCapture.swift
 692 Sources/HolosAudio/TrackRenderer.swift
@@ -32,7 +32,7 @@
 815 Sources/HolosMeeting/PostProcessing/LanguageStage.swift
 748 Sources/HolosMeeting/PostProcessing/SpeakerTranscriptRetarget.swift
 776 Sources/HolosMeeting/PostProcessing/TranscriptWordEdit.swift
-834 Sources/HolosMeeting/PostProcessing/WordFixStage.swift
+825 Sources/HolosMeeting/PostProcessing/WordFixStage.swift
 664 Sources/HolosMeeting/RecorderLauncher.swift
 652 Sources/HolosMeeting/RecorderMachine.swift
 811 Sources/HolosMeeting/RecordingWorkflow.swift

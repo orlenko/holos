@@ -149,7 +149,7 @@ struct MainWindowNarrowTests {
         entry.state = .done
         entry.duration = 192
         let row = ReadingRowView(identifier: NSUserInterfaceItemIdentifier("reading"))
-        row.frame = NSRect(x: 0, y: 0, width: width, height: 52)
+        row.frame = NSRect(x: 0, y: 0, width: width, height: ReadingRowView.height + ReadingRowView.seekBarHeight)
         row.show(entry, activity: nil, fileProblem: nil, size: 1_200_000,
                  playback: .init(playing: true, current: 12, duration: 192))
         row.layoutSubtreeIfNeeded()
@@ -164,6 +164,9 @@ struct MainWindowNarrowTests {
         let labels = Self.allViews(row).compactMap { $0 as? NSTextField }
         let title = try #require(labels.first { $0.stringValue == entry.title })
         #expect(title.frame.width > 60)
+        let seekBar = try #require(Self.allViews(row).compactMap { $0 as? ReadingSeekBar }.first)
+        #expect(!seekBar.isHidden && seekBar.frame.width > 200)
+        #expect(Self.allViews(seekBar).compactMap { $0 as? NSSlider }.first?.frame.width ?? 0 >= 60)
         let compact = width < ReadingRowView.compactWidth
         #expect(buttons.contains { $0.title == "Show Text" } == !compact)
         #expect(buttons.contains { $0.title == "Share…" } == !compact)
@@ -195,7 +198,9 @@ struct MainWindowNarrowTests {
         }
         let labels = Self.allViews(row).compactMap { $0 as? NSTextField }.filter { !$0.isHiddenOrHasHiddenAncestor }
         #expect(labels.contains { $0.stringValue == "Waiting for part 2 of 5…" })
-        #expect(labels.contains { $0.stringValue == "0:12 / 0:40…" } == (width >= ReadingRowView.compactWidth))
+        // Its place is shown at any width, on a bar that cannot move while the parts play.
+        #expect(labels.contains { $0.stringValue == "0:12" } && labels.contains { $0.stringValue == "0:40…" })
+        #expect(Self.allViews(row).compactMap { $0 as? NSSlider }.first?.isEnabled == false)
         #expect(Self.brokenConstraints(in: row).isEmpty)
 
         // Not played yet, its first part made: Play beside Stop; none made: Stop alone.
