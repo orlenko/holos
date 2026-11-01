@@ -126,7 +126,9 @@ enum PDFBookStructure {
         // Invariant 3.
         if !resolved.endnotesPaired {
             roles = roles.map { $0 == .notes ? .body : $0 }
-            for (page, lines) in notesBelow { content[page] += lines }
+            for (page, notes) in notesBelow {
+                content[page].insert(contentsOf: notes.lines, at: min(notes.at, content[page].count))
+            }
         }
         let bodyPages = content.indices.filter { roles[$0] == .body }.map { content[$0] }
         let literal = markers.count < 3
@@ -139,12 +141,15 @@ enum PDFBookStructure {
         return body + unsaid.map(Self.spoken)
     }
 
-    /// Back matter starting under the last of the text, on a page the two share: its lines leave the page, so the text
-    /// above stays and is read. Those of a notes section are returned, by page, for the notes; the rest go as the part does.
-    private static func takeBackMatterBelow(_ framed: inout [[String]], outline: [OutlineEntry]) -> [Int: [String]] {
-        var notes: [Int: [String]] = [:]
-        for entry in outline where framed.indices.contains(entry.page) && opensMidPage(entry.label)
-            && !opensPart(framed[entry.page], named: entry.label) {
+    /// Back matter on a page it shares with other text: its lines leave the page, so the rest stays and is read. Those of
+    /// a notes section are returned, heading and all, by page and with their place, for the notes; the rest go as the
+    /// part does.
+    private static func takeBackMatterBelow(_ framed: inout [[String]], outline: [OutlineEntry])
+        -> [Int: (at: Int, lines: [String])] {
+        var notes: [Int: (at: Int, lines: [String])] = [:]
+        for entry in outline where framed.indices.contains(entry.page) && opensMidPage(entry.label) {
+            let sharing = outline.contains { $0.page == entry.page && $0.label != entry.label }
+            guard sharing || !opensPart(framed[entry.page], named: entry.label) else { continue }
             let name = outlineName(entry.label)
             guard let heading = framed[entry.page].firstIndex(where: { !$0.isEmpty && outlineName($0) == name }) else { continue }
             // Down to the next part the outline starts on this page, which stays.
@@ -153,7 +158,7 @@ enum PDFBookStructure {
                 ?? framed[entry.page].count
             let below = Array(framed[entry.page][heading..<end])
             framed[entry.page].removeSubrange(heading..<end)
-            if role(named: entry.label, hasTitle: true) == .notes { notes[entry.page] = Array(below.dropFirst()) }
+            if role(named: entry.label, hasTitle: true) == .notes { notes[entry.page] = (heading, below) }
         }
         return notes
     }
@@ -415,7 +420,7 @@ enum PDFBookStructure {
     /// their lines, at the top of the page, and at no height that can be trusted. So the numbers are not put back by
     /// place but by order: with the next note's number stray on this page, the line after a finished note opens it.
     private static func endnoteBlocks(content: [[String]], roles: [Role], pages: [Page], outline: [OutlineEntry],
-                                      notesBelow: [Int: [String]])
+                                      notesBelow: [Int: (at: Int, lines: [String])])
         -> (blocks: [[Int: String]], names: [String?], symbolic: [String]) {
         let parts = outline.map { outlineName($0.label) }
         let lines = noteLines(content: content, roles: roles, pages: pages, notesBelow: notesBelow)
@@ -455,7 +460,8 @@ enum PDFBookStructure {
             let note = last.flatMap { blocks.last?[$0] }
             let finished = PDFReader.endsSentence(pending ?? note ?? "") || (note != nil && lastLine.count * 10 < widest * 6)
             // A short line left over before a note 1 may name the chapter whose notes it opens.
-            let closed = pending.map { $0.count <= 90 || PDFReader.endsSentence($0) } ?? PDFReader.endsSentence(note ?? ".")
+            let closed = heading != nil
+                || (pending.map { $0.count <= 90 || PDFReader.endsSentence($0) } ?? PDFReader.endsSentence(note ?? "."))
             let start = noteStart(line.text).flatMap { start -> (number: Int, text: String)? in
                 Int(start.label).map { ($0, start.text) }
             }.flatMap { start -> (number: Int, text: String)? in
@@ -508,11 +514,13 @@ enum PDFBookStructure {
 
     /// The notes pages' lines, with the numbers stray on each line's page. A larger line is no part of a note: it is
     /// a heading, which can name the block after it.
-    private static func noteLines(content: [[String]], roles: [Role], pages: [Page], notesBelow: [Int: [String]])
+    private static func noteLines(content: [[String]], roles: [Role], pages: [Page],
+                                  notesBelow: [Int: (at: Int, lines: [String])])
         -> [(text: String, stray: Set<Int>, heading: Bool)] {
         var lines: [(text: String, stray: Set<Int>, heading: Bool)] = []
         for index in content.indices where roles[index] == .notes || notesBelow[index] != nil {
-            let page = (roles[index] == .notes ? content[index] : []) + (notesBelow[index] ?? [])
+            // Without the heading of notes taken from a shared page.
+            let page = (roles[index] == .notes ? content[index] : []) + (notesBelow[index]?.lines.dropFirst() ?? [])
             // After the furniture has gone, so a printed page number is not taken for a note's.
             let stray = Set(page.compactMap(PDFReader.bareNumber))
             let sizes = pages[index].lineSizes.values.filter { $0 > 0 }.sorted()

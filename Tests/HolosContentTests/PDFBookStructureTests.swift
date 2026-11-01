@@ -429,6 +429,46 @@ import Testing
         #expect(roles[9] == .skipped && roles[10] == .skipped && roles[11] == .body)
     }
 
+    /// Notes that open a page they share with another part are still notes.
+    @Test func notesOpeningASharedPageAreKept() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0)) B.\(try marker(1)) C.\(try marker(2))"),
+            .init(text: "Notes\n1 One.\n2 Two.\n3 Three.\nAppendix\nThe appendix says this."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "2", "3"], outline: [
+            .init(label: "One", page: 0), .init(label: "Notes", page: 1), .init(label: "Appendix", page: 1),
+        ])
+        #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: One.", "Footnote: Two.", "Footnote: Three."])
+        #expect(result.joined(separator: " ").contains("The appendix says this."))
+    }
+
+    /// Notes that do not pair go back where they stood, heading and all.
+    @Test func unpairedNotesFromASharedPageGoBackInPlace() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0)) B.\(try marker(1)) C.\(try marker(2))"),
+            .init(text: "Last words.\nNotes\n77 Numbered otherwise.\nAppendix\nThe appendix says this."),
+        ]
+        let text = paragraphs(pages, markers: ["7", "8", "9"], outline: [
+            .init(label: "One", page: 0), .init(label: "Notes", page: 1), .init(label: "Appendix", page: 1),
+        ]).joined(separator: " ")
+        let order = ["Last words.", "Notes", "77 Numbered", "Appendix", "The appendix"].map { text.range(of: $0)?.lowerBound }
+        #expect(order.allSatisfy { $0 != nil })
+        #expect(order.compactMap { $0 } == order.compactMap { $0 }.sorted())
+    }
+
+    /// A larger chapter name starts a block, however the note before it ended.
+    @Test func aLargerChapterNameStartsABlockAfterAnUnfinishedNote() throws {
+        let notes = "Notes\n1 One without an end\nChapter 2\n1 Of two."
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0))"), .init(text: "B.\(try marker(1))"),
+            .init(text: notes, lineSizes: ["Notes": 14, "Chapter 2": 12, "1 One without an end": 9, "1 Of two.": 9]),
+        ]
+        let result = paragraphs(pages, markers: ["1", "1"], outline: [
+            .init(label: "Chapter 1", page: 0), .init(label: "Chapter 2", page: 1), .init(label: "Notes", page: 2),
+        ])
+        #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: One without an end.", "Footnote: Of two."])
+    }
+
     /// Notes starting under the last of the text are still notes, and the text above them is still read.
     @Test func notesStartingPartwayDownAPageAreKept() throws {
         let pages: [PDFBookStructure.Page] = [
