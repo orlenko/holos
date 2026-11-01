@@ -87,7 +87,7 @@ enum PDFBookStructure {
         }
         var roles = self.roles(content: content, outline: outline, hasTitle: hasTitle)
         try Task.checkCancellation()
-        let endnotes = endnoteBlocks(content: content, roles: roles, pages: pages)
+        let (endnotes, symbolic) = endnoteBlocks(content: content, roles: roles, pages: pages)
         let resolved = resolve(content: content, roles: roles, markers: markers, footnotes: footnotes,
                                endnotes: endnotes, partStarts: chapterStarts(outline, hasTitle: hasTitle))
         // Invariant 3.
@@ -99,7 +99,7 @@ enum PDFBookStructure {
             expand(paragraph, notes: resolved.endnotesPaired ? resolved.notes : resolved.footnotesOnly, markers: markers,
                    literal: literal)
         }
-        return body + (resolved.endnotesPaired ? resolved.uncited.map(Self.spoken) : [])
+        return body + (resolved.endnotesPaired ? (symbolic + resolved.uncited).map(Self.spoken) : [])
     }
 
     // MARK: - Footnotes at the foot of a page
@@ -274,7 +274,8 @@ enum PDFBookStructure {
     /// Some typesetting tools keep a few note numbers in a text layer of their own, which the file gives apart from
     /// their lines, at the top of the page, and at no height that can be trusted. So the numbers are not put back by
     /// place but by order: with the next note's number stray on this page, the line after a finished note opens it.
-    private static func endnoteBlocks(content: [[String]], roles: [Role], pages: [Page]) -> [[Int: String]] {
+    private static func endnoteBlocks(content: [[String]], roles: [Role], pages: [Page])
+        -> (blocks: [[Int: String]], symbolic: [String]) {
         var lines: [(text: String, stray: Set<Int>)] = []
         for index in content.indices where roles[index] == .notes {
             let stray = Set(PDFReader.lines(of: pages[index].text).compactMap(PDFReader.bareNumber))
@@ -287,6 +288,8 @@ enum PDFBookStructure {
         }
         let widest = lines.map(\.text.count).max() ?? 0
         var blocks: [[Int: String]] = []
+        // "* A note": no number to pair by, so said with those no marker cited rather than lost.
+        var symbolic: [String] = []
         var last: Int?
         var pending: String?
         var lastLine = ""
@@ -299,6 +302,12 @@ enum PDFBookStructure {
             pending = nil
         }
         for (position, line) in lines.enumerated() {
+            if let symbol = noteStart(line.text), Int(symbol.label) == nil {
+                flush()
+                symbolic.append(symbol.text)
+                lastLine = line.text
+                continue
+            }
             let next = (last ?? 0) + 1
             let note = last.flatMap { blocks.last?[$0] }
             let finished = PDFReader.endsSentence(pending ?? note ?? "") || (note != nil && lastLine.count * 10 < widest * 6)
@@ -332,7 +341,7 @@ enum PDFBookStructure {
             last = start.number
         }
         flush()
-        return blocks
+        return (blocks, symbolic)
     }
 
     private static func bracketsClosed(_ text: String) -> Bool {
@@ -353,9 +362,9 @@ enum PDFBookStructure {
         return starts.count >= 2 ? starts : []
     }
 
-    /// Each marker's note, going through the text in reading order. A number falling back to where the next block of
-    /// notes begins, past the start of a part where the outline names chapters, moves on to that block: a chapter citing an
-    /// earlier note again does not. `endnotesPaired`: most of the markers not at a page's foot found theirs. `uncited`: the notes none of
+    /// Each marker's note, going through the text in reading order. Past the start of a part where the outline names
+    /// chapters, a number that does not rise and that the next block has moves on to it; without chapters, only one
+    /// falling back to where that block begins does. A chapter citing an earlier note again does not. `endnotesPaired`: most of the markers not at a page's foot found theirs. `uncited`: the notes none of
     /// them cited, in order.
     private static func resolve(content: [[String]], roles: [Role], markers: [String], footnotes: [[Note]],
                                 endnotes: [[Int: String]], partStarts: Set<Int>)
@@ -375,8 +384,10 @@ enum PDFBookStructure {
                 }
                 guard let number = Int(label), !endnotes.isEmpty else { continue }
                 wanted += 1
-                let partBegan = partStarts.isEmpty || partStarts.contains { $0 > lastPage && $0 <= page }
-                if number <= last, partBegan, block + 1 < endnotes.count, number == endnotes[block + 1].keys.min() {
+                let partBegan = partStarts.contains { $0 > lastPage && $0 <= page }
+                let nextBlock = block + 1 < endnotes.count ? endnotes[block + 1] : nil
+                let moves = partStarts.isEmpty ? number == nextBlock?.keys.min() : partBegan && nextBlock?[number] != nil
+                if number <= last, moves {
                     block += 1
                     last = number
                 } else {

@@ -43,7 +43,8 @@ public enum PDFReader {
                 counts[fontSize(value), default: 0] += range.length
             }
         }
-        let bodySize = counts.filter { $0.key > 0 }.max { $0.value < $1.value }?.key ?? 0
+        // Ties go to the larger size: the same file must always give the same text, or a reading could not resume.
+        let bodySize = counts.filter { $0.key > 0 }.max { ($0.value, $0.key) < ($1.value, $1.key) }?.key ?? 0
         var markers: [String] = []
         var pages: [PDFBookStructure.Page] = []
         for page in styled {
@@ -55,16 +56,25 @@ public enum PDFReader {
             var result = PDFBookStructure.Page(text: "")
             var lines: [String] = []
             let source = page.string as NSString
+            // Where the page's last text ends.
+            let lastText = NSMaxRange(source.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted,
+                                                              options: .backwards))
             source.enumerateSubstrings(in: NSRange(location: 0, length: source.length), options: .byLines) { _, range, _, _ in
-                let (text, size) = styledLine(page, range: range, bodySize: bodySize, markers: &markers)
+                let styled = styledLine(page, range: range, bodySize: bodySize, markers: &markers)
+                var text = styled.text
+                let size = styled.size
                 // A marker the file gives as a line of its own belongs to the line before; left alone, it would break
                 // the sentence in two.
-                if !text.isEmpty, PDFBookStructure.withoutTrailingMarkers(text).isEmpty,
-                   let previous = lines.lastIndex(where: { !$0.isEmpty }) {
-                    let held = result.lineSizes.removeValue(forKey: lines[previous])
-                    lines[previous] += text
-                    result.lineSizes[lines[previous]] = held
-                    return
+                if !text.isEmpty, PDFBookStructure.withoutTrailingMarkers(text).isEmpty, let label = markers.last {
+                    // At either end of the page, a small number alone is the page's own, for `pageContent` to judge.
+                    if let previous = lines.lastIndex(where: { !$0.isEmpty }), NSMaxRange(range) < lastText {
+                        let held = result.lineSizes.removeValue(forKey: lines[previous])
+                        lines[previous] += text
+                        result.lineSizes[lines[previous]] = held
+                        return
+                    }
+                    markers.removeLast()
+                    text = label
                 }
                 lines.append(text)
                 guard !text.isEmpty else { return }
@@ -106,7 +116,7 @@ public enum PDFReader {
                 line += text
             }
         }
-        let size = lengths.max { $0.value < $1.value }?.key ?? 0
+        let size = lengths.max { ($0.value, $0.key) < ($1.value, $1.key) }?.key ?? 0
         if let opening {
             let alone = line.trimmingCharacters(in: .whitespaces).isEmpty
             if alone || size >= bodySize * 0.95, let scalar = PDFBookStructure.markerScalar(markers.count) {
