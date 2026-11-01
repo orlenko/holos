@@ -93,7 +93,7 @@ enum PDFBookStructure {
         }
         var roles = self.roles(content: content, outline: outline, hasTitle: hasTitle)
         try Task.checkCancellation()
-        let (endnotes, symbolic) = endnoteBlocks(content: content, roles: roles, pages: pages)
+        let (endnotes, symbolic) = endnoteBlocks(content: content, roles: roles, pages: pages, outline: outline)
         let resolved = resolve(content: content, roles: roles, markers: markers, footnotes: footnotes,
                                endnotes: endnotes, partStarts: chapterStarts(outline, hasTitle: hasTitle))
         // Invariant 3.
@@ -250,6 +250,9 @@ enum PDFBookStructure {
                     if share(content[rest], startingWithANumber) >= 0.1 { end = rest }
                     rest += 1
                 }
+                // The last note can run over onto one page more.
+                if end + 1 < content.count, roles[end + 1] == .body,
+                   let line = content[end].last(where: { !$0.isEmpty }), !PDFReader.endsSentence(line) { end += 1 }
                 for notes in page...end { roles[notes] = .notes }
             }
         }
@@ -288,8 +291,9 @@ enum PDFBookStructure {
     /// Some typesetting tools keep a few note numbers in a text layer of their own, which the file gives apart from
     /// their lines, at the top of the page, and at no height that can be trusted. So the numbers are not put back by
     /// place but by order: with the next note's number stray on this page, the line after a finished note opens it.
-    private static func endnoteBlocks(content: [[String]], roles: [Role], pages: [Page])
+    private static func endnoteBlocks(content: [[String]], roles: [Role], pages: [Page], outline: [OutlineEntry])
         -> (blocks: [[Int: String]], symbolic: [String]) {
+        let parts = outline.map { outlineName($0.label) }
         let lines = noteLines(content: content, roles: roles, pages: pages)
         let widest = lines.map(\.text.count).max() ?? 0
         var blocks: [[Int: String]] = []
@@ -346,10 +350,11 @@ enum PDFBookStructure {
             }
             inSymbolic = false
             if start.number == 1 || blocks.isEmpty {
-                // A short capitalized line with no end of its own, right before a new block, names that block's chapter.
-                // Anything else is the note's last line.
-                if let line = pending, line.count > 90 || PDFReader.endsSentence(line)
-                    || line.first?.isUppercase != true { flush() }
+                // A line right before a new block names that block's chapter only with evidence, since a note's last
+                // line can look just the same ("Oxford University Press, 1999"); anything else stays in the note.
+                if let line = pending, !namesAPart(line, parts: parts, afterFinished: PDFReader.endsSentence(note ?? ".")) {
+                    flush()
+                }
                 pending = nil
                 blocks.append([:])
             } else {
@@ -376,6 +381,15 @@ enum PDFBookStructure {
             }
         }
         return lines
+    }
+
+    /// Whether a short line before a block of notes names a part of the book: "Chapter 2", or a part the outline names,
+    /// or a capitalized line after a note that had ended.
+    private static func namesAPart(_ line: String, parts: [String], afterFinished: Bool) -> Bool {
+        guard line.count <= 90, !PDFReader.endsSentence(line), line.first?.isUppercase == true else { return false }
+        let name = outlineName(line)
+        if name.hasPrefix("chapter") || name.hasPrefix("part ") { return true }
+        return afterFinished || (!name.isEmpty && parts.contains { $0 == name || $0.hasPrefix(name + " ") })
     }
 
     private static func bracketsClosed(_ text: String) -> Bool {

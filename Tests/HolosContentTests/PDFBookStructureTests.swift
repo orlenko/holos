@@ -318,6 +318,18 @@ import Testing
         #expect(result.contains("Footnote: Second note."))
     }
 
+    /// Nor is a capitalized last line, while the note had not ended and nothing names it a part of the book.
+    @Test func aNotesCapitalizedLastLineIsKept() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "One.\(try marker(0))"),
+            .init(text: "Two.\(try marker(1))"),
+            .init(text: "Notes\n1 First note cites\nOxford University Press, 1999\n1 Second chapter note."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "1"], outline: [.init(label: "One", page: 0), .init(label: "Two", page: 1),
+                                                                      .init(label: "Notes", page: 2)])
+        #expect(result.contains("Footnote: First note cites Oxford University Press, 1999."))
+    }
+
     /// A number missing from the notes does not swallow the note after it.
     @Test func aGapInTheNumberingKeepsTheNoteAfterIt() throws {
         let body = try ["1", "2", "3", "5"].enumerated().map { "Sentence \($1).\(try marker($0))" }.joined(separator: " ")
@@ -491,6 +503,14 @@ import Testing
             == ["Footnote: A foot note.", "Footnote: An end note.", "Footnote: Another."])
     }
 
+    /// The last note running over onto the final page stays in the notes.
+    @Test func theLastNoteRunningOverStaysInTheNotes() {
+        var content: [[String]] = (0..<10).map { ["Prose on page \($0) in plain sentences."] }
+        content[8] = ["Notes", "1 One.", "2 Two runs on"]
+        content[9] = ["onto the last page."]
+        #expect(PDFBookStructure.roles(content: content, outline: [], hasTitle: true)[9] == .notes)
+    }
+
     /// Without an outline, a page all one long note does not end the notes section.
     @Test func aNotesPageWithoutANumberDoesNotEndTheSection() {
         var content: [[String]] = (0..<10).map { ["Prose on page \($0) in plain sentences."] }
@@ -544,7 +564,16 @@ import Testing
         #expect(markers == ["14", "5"])
         let lines = pages[0].text.components(separatedBy: "\n")
         #expect(lines[0] == "In 1913 he said so\(try marker(0)) and went on, for 20 years.")
-        #expect(lines[2] == "\(try marker(1))wrapped to open this line of text.")
+        #expect(lines[1] == Self.filler + (try marker(1)))
+        #expect(lines[2] == "wrapped to open this line of text.")
+    }
+
+    /// A marker wrapped to open a line stays with the sentence before it, even when that one ended a paragraph.
+    @Test func aWrappedMarkerFollowsTheSentenceItCites() throws {
+        let page = styled([(Self.filler + "\n", 10), ("Sentence ends.\n", 10), ("1", 6), ("Next sentence.\n", 10)])
+        let (pages, markers, _) = try PDFReader.bookPages([page])
+        #expect(pages[0].text.contains("Sentence ends.\(try marker(0))\nNext sentence."))
+        #expect(markers == ["1"])
     }
 
     /// A marker the file gives as its own line stays with its sentence, which goes on unbroken.

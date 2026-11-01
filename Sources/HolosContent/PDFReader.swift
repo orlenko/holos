@@ -76,6 +76,14 @@ public enum PDFReader {
                     markers.removeLast()
                     text = label
                 }
+                // A marker opening a line of text belongs to the sentence that wrapped before it.
+                if let first = text.first, PDFBookStructure.withoutTrailingMarkers(String(first)).isEmpty,
+                   let previous = lines.lastIndex(where: { !$0.isEmpty }) {
+                    let held = result.lineSizes.removeValue(forKey: lines[previous])
+                    lines[previous].append(first)
+                    result.lineSizes[lines[previous]] = held
+                    text.removeFirst()
+                }
                 lines.append(text)
                 guard !text.isEmpty else { return }
                 result.lineSizes[text] = size
