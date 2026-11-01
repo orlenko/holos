@@ -346,6 +346,19 @@ import Testing
         #expect(result.contains { $0.hasPrefix("Footnote: Of two begins") })
     }
 
+    /// Chapters named inside Notes are not the book's chapters.
+    @Test func chaptersInsideNotesAreNotTheBooksChapters() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0))"), .init(text: "B.\(try marker(1))"),
+            .init(text: "Notes\nChapter 1\n1 Of one."), .init(text: "Chapter 2\n1 Of two."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "1"], outline: [
+            .init(label: "A Start", page: 0), .init(label: "A Middle", page: 1), .init(label: "Notes", page: 2),
+            .init(label: "Chapter 1", page: 2, level: 1), .init(label: "Chapter 2", page: 3, level: 1),
+        ])
+        #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: Of one.", "Footnote: Of two."])
+    }
+
     /// A number missing from the notes does not swallow the note after it.
     @Test func aGapInTheNumberingKeepsTheNoteAfterIt() throws {
         let body = try ["1", "2", "3", "5"].enumerated().map { "Sentence \($1).\(try marker($0))" }.joined(separator: " ")
@@ -820,6 +833,15 @@ import Testing
                                          lineSizes: Dictionary(uniqueKeysWithValues: lines.map { ($0, 8.0) }))
         let result = paragraphs([page], markers: ["1", "2"], bodySize: 10)
         #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: The sample contains 2 million entries.", "Footnote: The real second."])
+    }
+
+    /// A page using one label twice says both notes.
+    @Test func aPageUsingOneLabelTwiceSaysBothNotes() throws {
+        let lines = ["1 The first one.", "1 The second one."]
+        let page = PDFBookStructure.Page(text: "A.\(try marker(0)) B.\(try marker(1))\n" + lines.joined(separator: "\n"),
+                                         lineSizes: Dictionary(uniqueKeysWithValues: lines.map { ($0, 8.0) }))
+        let result = paragraphs([page], markers: ["1", "1"], bodySize: 10)
+        #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: The first one.", "Footnote: The second one."])
     }
 
     /// A footnote whose marker was not found is still said, not merged into the one before.

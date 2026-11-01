@@ -580,7 +580,14 @@ enum PDFBookStructure {
     /// The outline's chapters: at the depth of the entries it calls chapters, else its shallowest level with several text
     /// parts, so a section inside a chapter is no new chapter. One naming only front and back matter says nothing.
     private static func chapters(_ outline: [OutlineEntry], hasTitle: Bool) -> [OutlineEntry] {
-        let parts = outline.filter { role(named: $0.label, hasTitle: hasTitle) == nil }
+        // Not those inside a part nobody reads as text: Notes can hold its own "Chapter 1".
+        var parts: [OutlineEntry] = []
+        var inside: Int?
+        for entry in outline {
+            if let level = inside, entry.level > level { continue }
+            inside = role(named: entry.label, hasTitle: hasTitle) == nil ? nil : entry.level
+            if inside == nil { parts.append(entry) }
+        }
         let named = parts.filter { $0.label.lowercased().hasPrefix("chapter") }
         let levels = Set(parts.map(\.level)).sorted()
         let shallowest = levels.first { level in parts.filter { $0.level == level }.count >= 2 }
@@ -610,10 +617,13 @@ enum PDFBookStructure {
                 guard let index = markerIndex(scalar), markers.indices.contains(index) else { continue }
                 let label = markers[index]
                 let source = markerPages[index] ?? page
-                if let note = footnotes[source].first(where: { $0.label == label }) {
+                // A page can use one label twice, its numbering starting over: each marker takes the next not yet said.
+                let same = footnotes[source].indices.filter { footnotes[source][$0].label == label }
+                if let found = same.first(where: { !citedFootnotes.contains("\(source):\($0)") }) ?? same.first {
+                    let note = footnotes[source][found]
                     notes[index] = note.text
                     footnotesOnly[index] = note.text
-                    citedFootnotes.insert("\(source):\(label)")
+                    citedFootnotes.insert("\(source):\(found)")
                     continue
                 }
                 guard let number = Int(label), !endnotes.isEmpty else { continue }
@@ -649,7 +659,7 @@ enum PDFBookStructure {
             endnotes[block].keys.filter { !cited[block].contains($0) }.sorted().compactMap { endnotes[block][$0] }
         }
         let uncitedFootnotes = footnotes.indices.flatMap { page in
-            footnotes[page].filter { !citedFootnotes.contains("\(page):\($0.label)") }.map(\.text)
+            footnotes[page].indices.filter { !citedFootnotes.contains("\(page):\($0)") }.map { footnotes[page][$0].text }
         }
         return (notes, footnotesOnly, !endnotes.isEmpty && wanted > 0 && found * 10 >= wanted * 6, uncited, uncitedFootnotes)
     }
