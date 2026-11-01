@@ -26,6 +26,8 @@ private final class FakePlayback: ReadingPlayback, @unchecked Sendable {
         isPlaying = false
         stops += 1
     }
+
+    func seek(to time: TimeInterval) { currentTime = time }
 }
 
 @MainActor @Suite struct ReadingPlayerTests {
@@ -262,7 +264,7 @@ private final class FakePlayback: ReadingPlayback, @unchecked Sendable {
         let opened = try ReadingPlayer.openAudio(FileHandle(forReadingFrom: output))
         let playback = opened.playback
         #expect(abs(playback.duration - summary.duration) < 0.2)
-        playback.currentTime = 30
+        playback.seek(to: 30)
         #expect(abs(playback.currentTime - 30) < 0.2)
         playback.stop()
     }
