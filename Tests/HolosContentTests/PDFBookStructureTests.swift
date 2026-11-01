@@ -398,6 +398,22 @@ import Testing
         ])
     }
 
+    /// Notes starting under the last of the text are still notes, and the text above them is still read.
+    @Test func notesStartingPartwayDownAPageAreKept() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0)) B.\(try marker(1))"),
+            .init(text: "C.\(try marker(2))"),
+            .init(text: "The last words.\nNotes\n1 One.\n2 Two.\nChapter Two"),
+            .init(text: "1 Other one."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "2", "1"], outline: [
+            .init(label: "One", page: 0), .init(label: "Two", page: 1), .init(label: "Notes", page: 2),
+        ])
+        #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: One.", "Footnote: Two.", "Footnote: Other one."])
+        #expect(result.contains("The last words."))
+        #expect(!result.contains { $0.contains("Chapter Two") })
+    }
+
     /// An outline gives only a page: back matter starting partway down keeps the text above it.
     @Test func aPageSharedWithTheStartOfBackMatterKeepsItsText() {
         let content = [["The chapter's last words.", "Index", "Apples 3"], ["Bears 4", "Cats 5"]]
