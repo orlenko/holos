@@ -232,7 +232,7 @@ public final class PartQueuePlayback {
         self.rate = rate
         // A seek lands inside this part: no silence, and the audio from there.
         let lands = landing?.index == index ? landing?.frames : nil
-        landed = lands.map { (index, $0) }
+        if let lands { landed = (index, lands) }
         landing = nil
         let silence = lands == nil ? ReadingAudioFormat.silenceFrames(seconds, rate: rate) : 0
         let buffer = try lands.map { try Self.tail(of: whole, from: $0) } ?? whole

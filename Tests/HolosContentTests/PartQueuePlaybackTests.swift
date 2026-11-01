@@ -269,8 +269,10 @@ struct PartFiles {
         for index in 0..<2 { feed.add(try files.part(index, of: 3, seconds: 1)) }
         #expect(playback.play())
         #expect(await eventually { output.queued.count == 3 })
+        feed.add(try files.part(2, of: 3, seconds: 1))
         playback.seek(to: 2)
-        #expect(await eventually { output.queued.first?.frames == 4_000 })
+        // The next part queued as well, so the place must outlast that.
+        #expect(await eventually { output.queued.first?.frames == 4_000 && output.queued.count == 3 })
         output.onInterrupted?()
         #expect(playback.currentTime == 2)
         #expect(playback.play())
