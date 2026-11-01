@@ -209,6 +209,13 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
             self?.playSelected()
             return true
         }
+        // The bar itself rarely has the keyboard: ← and → move the selected reading while it is loaded.
+        table.onArrow = { [weak self] forward in
+            guard let self, let id = self.selectedEntry?.id, id == self.player.entryID,
+                  let current = self.player.position?.current else { return false }
+            self.seek(id, to: current + (forward ? ReadingSeekBar.keyStep : -ReadingSeekBar.keyStep))
+            return true
+        }
         table.target = self
         table.doubleAction = #selector(playSelected)
         table.setAccessibilityLabel("Readings")
@@ -563,8 +570,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         guard player.entryID == id else { return nil }
         let position = player.position
         return ReadingRowView.Playback(playing: player.isPlaying, waiting: player.isWaiting, current: position?.current,
-                                       duration: position?.duration, final: position?.isFinal ?? true,
-                                       seekable: player.canSeek)
+                                       duration: position?.duration, final: position?.isFinal ?? true)
     }
 
     /// The player's state or position changed (twice a second while it plays): only the rows it concerns, the one
@@ -595,10 +601,11 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         switch action {
         case .play: play(id)
         case .stop:
-            // One Stop for a reading being made and played: both end.
+            // The conversion only: what is ready goes on playing, and Pause is for that.
             if let problem = controller.stop(id) { showMessage(problem, problem: true) }
-            else if player.entryID == id { player.stop() }
         case .retry:
+            // What plays is what the stopped run made; the resumed run checks its parts again and reports them anew.
+            if player.entryID == id, player.playsParts { player.unload() }
             if let problem = controller.retry(id) { showMessage(problem, problem: true) }
         case .showText: showText(id)
         case .share: share(id, from: cell.shareAnchor)

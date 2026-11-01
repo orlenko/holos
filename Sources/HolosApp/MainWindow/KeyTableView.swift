@@ -14,6 +14,8 @@ final class KeyTableView: NSTableView {
     var onSpace: (() -> Bool)?
     /// ⌘R (Meetings: rename the selected meeting).
     var onRename: (() -> Void)?
+    /// ← or → with a row selected (Reading: move the reading loaded); returns false to let the table have it.
+    var onArrow: ((_ forward: Bool) -> Bool)?
     /// Before a click changes the selection (Meetings: whether the clicked meeting was already selected).
     var onMouseDown: (() -> Void)?
 
@@ -36,6 +38,8 @@ final class KeyTableView: NSTableView {
         }
         if modifiers.isEmpty, selectedRow >= 0 {
             switch event.keyCode {
+            case 123, 124:  // Left and right arrows
+                if let onArrow, onArrow(event.keyCode == 124) { return }
             case 49:  // Space
                 if let onSpace, onSpace() { return }
             case 36, 76:  // Return, keypad Enter
