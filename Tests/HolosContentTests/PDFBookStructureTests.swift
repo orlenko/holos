@@ -17,7 +17,13 @@ import Testing
     private func paragraphs(_ pages: [PDFBookStructure.Page], markers: [String] = [],
                             outline: [PDFBookStructure.OutlineEntry] = [], bodySize: Double = 10,
                             hasTitle: Bool = true) -> [String] {
-        PDFBookStructure.paragraphs(pages: pages, markers: markers, outline: outline, bodySize: bodySize, hasTitle: hasTitle)
+        do {
+            return try PDFBookStructure.paragraphs(pages: pages, markers: markers, outline: outline, bodySize: bodySize,
+                                                   hasTitle: hasTitle)
+        } catch {
+            Issue.record(error)
+            return []
+        }
     }
 
     private func marker(_ index: Int) throws -> String { String(try #require(PDFBookStructure.markerScalar(index))) }
@@ -25,7 +31,9 @@ import Testing
     // MARK: Parts of the book
 
     @Test func theOutlineNamesWhatIsNotReadAloud() {
-        let content = (0..<8).map { ["Page \($0) words."] }
+        var content = (0..<8).map { ["Page \($0) words."] }
+        content[6] = ["Notes", "1 A note."]
+        content[7] = ["Index", "Apples 3"]
         let outline: [PDFBookStructure.OutlineEntry] = [
             .init(label: "Cover", page: 0), .init(label: "Title Page", page: 1), .init(label: "Copyright Page", page: 2),
             .init(label: "Table of Contents", page: 3), .init(label: "Chapter 1 Beginnings", page: 4),
@@ -37,7 +45,9 @@ import Testing
 
     /// A part's chapters are still that part, until the next entry at its depth.
     @Test func chaptersInsideANamedPartInheritItsRole() {
-        let content = (0..<7).map { ["Page \($0) words."] }
+        var content = (0..<7).map { ["Page \($0) words."] }
+        content[2] = ["Notes", "1 A note."]
+        content[6] = ["Index", "Apples 3"]
         let outline: [PDFBookStructure.OutlineEntry] = [
             .init(label: "Chapter", page: 0), .init(label: "Notes", page: 2),
             .init(label: "Chapter One", page: 3, level: 1), .init(label: "Chapter Two", page: 4, level: 1),
@@ -49,7 +59,8 @@ import Testing
 
     /// A chapter's own notes, one level down, end with the next chapter.
     @Test func aChildNamingItsOwnPartOverridesTheParent() {
-        let content = (0..<4).map { ["Page \($0) words."] }
+        var content = (0..<4).map { ["Page \($0) words."] }
+        content[1] = ["Notes", "1 A note."]
         let outline: [PDFBookStructure.OutlineEntry] = [
             .init(label: "One", page: 0), .init(label: "Notes", page: 1, level: 1), .init(label: "Two", page: 2),
         ]
@@ -119,7 +130,7 @@ import Testing
         let body = "\(Self.filler) It ended here\(try marker(0)) and went on. The next sentence stays together.\(try marker(1))"
         let pages: [PDFBookStructure.Page] = [
             .init(text: body),
-            .init(text: "1 First note\n2 Second note, which wraps\nonto a second line."),
+            .init(text: "Notes\n1 First note\n2 Second note, which wraps\nonto a second line."),
         ]
         let result = paragraphs(pages, markers: ["1", "2"], outline: [.init(label: "Chapter", page: 0), .init(label: "Notes", page: 1)])
         #expect(result == ["\(Self.filler) It ended here and went on.",
@@ -132,9 +143,10 @@ import Testing
         let pages: [PDFBookStructure.Page] = [
             .init(text: "Chapter one says this.\(try marker(0))"),
             .init(text: "Chapter two says that.\(try marker(1))"),
-            .init(text: "1 Note of the first\nChapter Two\n1 Note of the second"),
+            .init(text: "Notes\n1 Note of the first\nChapter Two\n1 Note of the second"),
         ]
-        let result = paragraphs(pages, markers: ["1", "1"], outline: [.init(label: "One", page: 0), .init(label: "Notes", page: 2)])
+        let result = paragraphs(pages, markers: ["1", "1"], outline: [.init(label: "One", page: 0), .init(label: "Two", page: 1),
+                                                                      .init(label: "Notes", page: 2)])
         #expect(result == ["Chapter one says this.", "Footnote: Note of the first.",
                            "Chapter two says that.", "Footnote: Note of the second."])
     }
@@ -142,7 +154,7 @@ import Testing
     /// Some tools give every fifth note's number apart from its line, at the top of the page.
     @Test func aNotesNumberGivenApartFromItsLineIsPutBack() throws {
         let body = (0..<3).map { "Sentence number \($0).\((try? marker($0)) ?? "")" }.joined(separator: " ")
-        let notes = PDFBookStructure.Page(text: "3\n1 One\n2 Two\nThree", lineLevels: ["3": 100, "1 One": 140, "2 Two": 120, "Three": 100])
+        let notes = PDFBookStructure.Page(text: "3\nNotes\n1 One\n2 Two\nThree", lineLevels: ["3": 100, "1 One": 140, "2 Two": 120, "Three": 100])
         let result = paragraphs([.init(text: body), notes], markers: ["1", "2", "3"],
                                 outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 1)])
         #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: One.", "Footnote: Two.", "Footnote: Three."])
@@ -152,18 +164,68 @@ import Testing
     @Test func aLineOpeningWithANumberInsideANoteStaysInIt() throws {
         let pages: [PDFBookStructure.Page] = [
             .init(text: "One.\(try marker(0)) Two.\(try marker(1)) Three.\(try marker(2))"),
-            .init(text: "1 As it says in\n1 Corinthians, the verse.\n2 Second\n162 pages later.\n3 Third"),
+            .init(text: "Notes\n1 As it says in\n1 Corinthians, the verse.\n2 Second\n162 pages later.\n3 Third"),
         ]
         let result = paragraphs(pages, markers: ["1", "2", "3"], outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 1)])
         #expect(result.filter { $0.hasPrefix("Footnote:") }
             == ["Footnote: As it says in 1 Corinthians, the verse.", "Footnote: Second 162 pages later.", "Footnote: Third."])
     }
 
+    /// "1 Corinthians" opening a line after a finished note has no note 2 after it, so it starts no block either.
+    @Test func aLineOpeningWithOneNearTheEndOfANoteStartsNoBlock() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "One.\(try marker(0)) Two.\(try marker(1)) Three.\(try marker(2)) Four.\(try marker(3))"),
+            .init(text: "Notes\n1 First.\n2 Second, ending here.\n1 Corinthians is cited too.\n3 Third.\n4 Fourth."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "2", "3", "4"],
+                                outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 1)])
+        #expect(result.filter { $0.hasPrefix("Footnote:") } == [
+            "Footnote: First.", "Footnote: Second, ending here. 1 Corinthians is cited too.", "Footnote: Third.", "Footnote: Fourth.",
+        ])
+    }
+
+    /// A chapter citing an earlier note again stays in its chapter's notes.
+    @Test func citingANoteAgainDoesNotMoveToTheNextChapter() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0)) B.\(try marker(1)) C again.\(try marker(2))"),
+            .init(text: "Next chapter.\(try marker(3))"),
+            .init(text: "Notes\n1 Note one.\n2 Note two.\nChapter Two\n1 Other one.\n2 Other two."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "2", "1", "1"],
+                                outline: [.init(label: "One", page: 0), .init(label: "Two", page: 1), .init(label: "Notes", page: 2)])
+        #expect(Array(result.filter { $0.hasPrefix("Footnote:") }.prefix(4)) == [
+            "Footnote: Note one.", "Footnote: Note two.", "Footnote: Note one.", "Footnote: Other one.",
+        ])
+    }
+
+    /// An outline gives only a page: back matter starting partway down keeps the text above it.
+    @Test func aPageSharedWithTheStartOfBackMatterKeepsItsText() {
+        let content = [["The chapter's last words.", "Index", "Apples 3"], ["Bears 4", "Cats 5"]]
+        let roles = PDFBookStructure.roles(content: content, outline: [.init(label: "Index", page: 0)], hasTitle: true)
+        #expect(roles == [.body, .skipped])
+    }
+
+    /// Note numbers kept apart from their lines do not hide the heading that opens the page.
+    @Test func strayNumbersAboveTheHeadingDoNotHideIt() {
+        let content = [["Body."], ["5", "10", "Notes", "1 A note."], ["2 Another."]]
+        let roles = PDFBookStructure.roles(content: content, outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 1)], hasTitle: true)
+        #expect(roles == [.body, .notes, .notes])
+    }
+
+    /// A stopped reading ends the analysis too.
+    @Test func cancellingStopsTheAnalysis() async {
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try PDFBookStructure.paragraphs(pages: [.init(text: "Words.")], markers: [], outline: [], bodySize: 10, hasTitle: true)
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+    }
+
     /// A note no marker was found for still gets said.
     @Test func aNoteNoMarkerCitedIsSaidAtTheEnd() throws {
         let pages: [PDFBookStructure.Page] = [
             .init(text: "One.\(try marker(0)) Two.\(try marker(1)) Three.\(try marker(2))"),
-            .init(text: "1 First.\n2 Second.\n3 Third.\n4 Never cited."),
+            .init(text: "Notes\n1 First.\n2 Second.\n3 Third.\n4 Never cited."),
         ]
         let result = paragraphs(pages, markers: ["1", "2", "3"], outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 1)])
         #expect(result.last == "Footnote: Never cited.")
@@ -174,7 +236,7 @@ import Testing
     @Test func notesThatDoNotPairAreReadWhereTheyStand() throws {
         let pages: [PDFBookStructure.Page] = [
             .init(text: "Words.\(try marker(0)) More.\(try marker(1)) Last.\(try marker(2))"),
-            .init(text: "77 Some note numbered otherwise."),
+            .init(text: "Notes\n77 Some note numbered otherwise."),
         ]
         let result = paragraphs(pages, markers: ["7", "8", "9"], outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 1)])
         #expect(result.contains("Words. More. Last."))
@@ -207,6 +269,17 @@ import Testing
         let result = paragraphs(pages, markers: Array(repeating: "1", count: 6), bodySize: 10)
         #expect(result.contains("Footnote: The note of page a."))
         #expect(!result.joined().contains("Running Title"))
+    }
+
+    /// Small print on the page after a finished note is that page's own, not the note's.
+    @Test func smallPrintAfterAFinishedNoteStaysWhereItIs() throws {
+        let first = PDFBookStructure.Page(text: "One sentence.\(try marker(0))\n1 A finished note.",
+                                          lineSizes: ["1 A finished note.": 8])
+        let second = PDFBookStructure.Page(text: "Next sentence.\nA small caption", lineSizes: ["A small caption": 8])
+        let result = paragraphs([first, second], markers: ["1"], bodySize: 10)
+        #expect(result.contains("Footnote: A finished note."))
+        #expect(result.joined(separator: " ").contains("A small caption"))
+        #expect(!result.contains { $0.hasPrefix("Footnote:") && $0.contains("caption") })
     }
 
     @Test func smallPrintWithNoMarkerOnThePageIsNotAFootnote() {
@@ -248,7 +321,7 @@ import Testing
     @Test func aSmallNumberAfterTextIsAMarkerAndAnEqualOneIsNot() throws {
         let page = styled([("In 1913 he said so", 10), ("14", 6), (" and went on, for 20 years.\n", 10),
                            (Self.filler + "\n", 10), ("5", 6), (" wrapped to open this line of text.\n", 10)])
-        let (pages, markers, body) = PDFReader.bookPages([page])
+        let (pages, markers, body) = try PDFReader.bookPages([page])
         #expect(body == 10)
         #expect(markers == ["14", "5"])
         let lines = pages[0].text.components(separatedBy: "\n")
@@ -257,10 +330,10 @@ import Testing
     }
 
     /// In a line set small, a small number opening it is that note's own.
-    @Test func aSmallNumberOpeningASmallLineIsTheNotesOwn() {
+    @Test func aSmallNumberOpeningASmallLineIsTheNotesOwn() throws {
         let body = String(repeating: Self.filler + "\n", count: 4)
         let page = styled([(body, 10), ("3", 5), (" The note itself.\n", 8)])
-        let (pages, markers, _) = PDFReader.bookPages([page])
+        let (pages, markers, _) = try PDFReader.bookPages([page])
         #expect(markers.isEmpty)
         #expect(pages[0].text.hasSuffix("3 The note itself."))
     }

@@ -22,10 +22,10 @@ public enum PDFReader {
             let page = pdf.page(at: index)
             styled.append(page?.attributedString ?? page?.string.map { NSAttributedString(string: $0) })
         }
-        let (pages, markers, bodySize) = bookPages(styled) { index, character in
+        let (pages, markers, bodySize) = try bookPages(styled) { index, character in
             pdf.page(at: index).map { Double($0.characterBounds(at: character).minY) }
         }
-        let paragraphs = PDFBookStructure.paragraphs(pages: pages, markers: markers, outline: outline(of: pdf),
+        let paragraphs = try PDFBookStructure.paragraphs(pages: pages, markers: markers, outline: outline(of: pdf),
                                                      bodySize: bodySize, hasTitle: declared?.isEmpty == false)
         guard !paragraphs.isEmpty else {
             throw HolosError.invalidInput("\(url.lastPathComponent) has no text to read. Scanned PDFs need OCR, which is not supported.")
@@ -39,7 +39,7 @@ public enum PDFReader {
     /// fonts: the book's body size is the one most of its characters are set in. `level`: how high on page `page` a
     /// character stands, where the file can tell.
     static func bookPages(_ styled: [NSAttributedString?], level: @escaping (_ page: Int, _ character: Int) -> Double? = { _, _ in nil })
-        -> (pages: [PDFBookStructure.Page], markers: [String], bodySize: Double) {
+        throws -> (pages: [PDFBookStructure.Page], markers: [String], bodySize: Double) {
         var counts: [Double: Int] = [:]
         for page in styled.compactMap({ $0 }) {
             page.enumerateAttribute(.font, in: NSRange(location: 0, length: page.length)) { value, range, _ in
@@ -50,6 +50,7 @@ public enum PDFReader {
         var markers: [String] = []
         var pages: [PDFBookStructure.Page] = []
         for (index, page) in styled.enumerated() {
+            try Task.checkCancellation()
             guard let page else {
                 pages.append(.init(text: ""))
                 continue
