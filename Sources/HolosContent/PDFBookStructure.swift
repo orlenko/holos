@@ -121,9 +121,9 @@ enum PDFBookStructure {
             for marker in found..<markers.count { markerPages[marker] = index }
         }
         try Task.checkCancellation()
-        let (endnotes, names, symbolic) = endnoteBlocks(content: content, roles: roles, pages: pages, outline: outline,
+        let (endnotes, names, symbolic) = try endnoteBlocks(content: content, roles: roles, pages: pages, outline: outline,
                                                          notesBelow: notesBelow)
-        let resolved = resolve(content: content, roles: roles, markers: markers, markerPages: markerPages, footnotes: footnotes,
+        let resolved = try resolve(content: content, roles: roles, markers: markers, markerPages: markerPages, footnotes: footnotes,
                                endnotes: endnotes, names: names, chapters: chapters(outline, hasTitle: hasTitle))
         // Invariant 3.
         if !resolved.endnotesPaired {
@@ -138,9 +138,10 @@ enum PDFBookStructure {
         let bodyPages = content.indices.filter { roles[$0] == .body }.map { content[$0] }
         let literal = markers.count < 3
         try Task.checkCancellation()
-        let body = PDFReader.reflow(content: bodyPages).flatMap { paragraph in
-            expand(paragraph, notes: resolved.endnotesPaired ? resolved.notes : resolved.footnotesOnly, markers: markers,
-                   literal: literal)
+        let body = try PDFReader.reflow(content: bodyPages).flatMap { paragraph in
+            try Task.checkCancellation()
+            return expand(paragraph, notes: resolved.endnotesPaired ? resolved.notes : resolved.footnotesOnly, markers: markers,
+                          literal: literal)
         }
         let unsaid = (resolved.endnotesPaired ? symbolic + resolved.uncited : []) + resolved.uncitedFootnotes
         return body + unsaid.map(Self.spoken)
@@ -438,7 +439,7 @@ enum PDFBookStructure {
     /// place but by order: with the next note's number stray on this page, the line after a finished note opens it.
     private static func endnoteBlocks(content: [[String]], roles: [Role], pages: [Page], outline: [OutlineEntry],
                                       notesBelow: [Int: [(at: Int, lines: [String])]])
-        -> (blocks: [[Int: String]], names: [String?], symbolic: [String]) {
+        throws -> (blocks: [[Int: String]], names: [String?], symbolic: [String]) {
         let parts = outline.map { outlineName($0.label) }
         let lines = noteLines(content: content, roles: roles, pages: pages, notesBelow: notesBelow)
         let widest = lines.map(\.text.count).max() ?? 0
@@ -463,7 +464,9 @@ enum PDFBookStructure {
             pending = nil
         }
         var heading: String?
+        let texts = lines.map(\.text)
         for (position, line) in lines.enumerated() {
+            try Task.checkCancellation()
             if line.heading {
                 flush()
                 heading = ReadableDocument.titleKey(line.text)
@@ -490,7 +493,7 @@ enum PDFBookStructure {
                 if start.number == next, note == nil || start.text.first?.isLowercase != true
                     || (finished && bracketsClosed(pending.map { joined(note ?? "", $0) } ?? note ?? "")) { return start }
                 // A larger chapter name has already said a block begins.
-                if start.number == 1, closed, heading != nil || startsABlock(lines.map(\.text), after: position, next: next) {
+                if start.number == 1, closed, heading != nil || startsABlock(texts, after: position, next: next) {
                     return start
                 }
                 // A gap in the numbering: a sentence opening just past the next number, after a note that ended.
@@ -498,7 +501,8 @@ enum PDFBookStructure {
                     return start
                 }
                 return nil
-            } ?? (line.stray.contains(next) && finished ? (next, line.text) : nil)
+            } ?? (line.stray.contains(next) && (finished || (note == nil && !namesAPart(line.text, parts: parts, afterFinished: true)))
+                ? (next, line.text) : nil)
             lastLine = line.text
             guard let start else {
                 if inSymbolic, !symbolic.isEmpty {
@@ -546,11 +550,15 @@ enum PDFBookStructure {
         for index in content.indices where roles[index] == .notes || notesBelow[index] != nil {
             // Without the heading of notes taken from a shared page.
             let page = (roles[index] == .notes ? content[index] : []) + (notesBelow[index] ?? []).flatMap { $0.lines.dropFirst() }
-            // After the furniture has gone, so a printed page number is not taken for a note's.
-            let stray = Set(page.compactMap(PDFReader.bareNumber))
+            // Numbers given apart stand before all the page's text but perhaps its heading, after the furniture has gone.
+            // One further down is a note's own: its label, on a line of its own, or a page reference that wrapped.
+            let headed = page.first.map { PDFReader.bareNumber($0) == nil } == true
+                && page.dropFirst().first.flatMap(PDFReader.bareNumber) != nil ? 1 : 0
+            let leading = page.dropFirst(headed).prefix { $0.isEmpty || PDFReader.bareNumber($0) != nil }
+            let stray = Set(leading.compactMap(PDFReader.bareNumber))
             let sizes = pages[index].lineSizes.values.filter { $0 > 0 }.sorted()
             let usual = sizes.isEmpty ? 0 : sizes[sizes.count / 2]
-            for line in page where !line.isEmpty && PDFReader.bareNumber(line) == nil {
+            for line in page.prefix(headed) + page.dropFirst(headed + leading.count) where !line.isEmpty {
                 let heading = pages[index].lineSizes[line].map { usual > 0 && $0 > usual * 1.08 } ?? false
                 lines.append((line, stray, heading))
             }
@@ -606,8 +614,8 @@ enum PDFBookStructure {
     private static func resolve(content: [[String]], roles: [Role], markers: [String], markerPages: [Int: Int],
                                 footnotes: [[Note]],
                                 endnotes: [[Int: String]], names: [String?], chapters: [OutlineEntry])
-        -> (notes: [Int: String], footnotesOnly: [Int: String], endnotesPaired: Bool, uncited: [String],
-            uncitedFootnotes: [String]) {
+        throws -> (notes: [Int: String], footnotesOnly: [Int: String], endnotesPaired: Bool, uncited: [String],
+                   uncitedFootnotes: [String]) {
         var notes: [Int: String] = [:]
         var footnotesOnly: [Int: String] = [:]
         var block = 0, last = 0, lastPage = -1, wanted = 0, found = 0
@@ -630,6 +638,7 @@ enum PDFBookStructure {
             }
         }
         for (page, line, index) in markersInOrder where markers.indices.contains(index) {
+            try Task.checkCancellation()
             let label = markers[index]
             let source = markerPages[index] ?? page
             // A page can use one label twice, its numbering starting over: each marker takes the next not yet said.

@@ -592,6 +592,23 @@ extension PDFBookStructureTests {
         #expect(paragraphs([.init(text: text)], markers: ["1", "2", "3"]) == ["One two three four."])
     }
 
+    /// Labels given apart from their notes, all first or each on its own line, pair with the right notes.
+    @Test(arguments: ["1\n2\n3\nFirst.\nSecond.\nThird.", "1\nFirst.\n2\nSecond.\n3\nThird."])
+    func detachedLabelsPairWithTheirNotes(notes: String) throws {
+        let body = try (0..<3).map { "Sentence \($0).\(try marker($0))" }.joined(separator: " ")
+        let result = paragraphs([.init(text: body), .init(text: "Notes\n" + notes)], markers: ["1", "2", "3"],
+                                outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 1)])
+        #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: First.", "Footnote: Second.", "Footnote: Third."])
+    }
+
+    /// A page reference wrapped onto its own line stays in its note.
+    @Test func aNotesNumericLineStaysInIt() throws {
+        let body = try (0..<3).map { "Sentence \($0).\(try marker($0))" }.joined(separator: " ")
+        let result = paragraphs([.init(text: body), .init(text: "Notes\n1 Writer, Title, p.\n123\n2 Two.\n3 Three.")],
+                                markers: ["1", "2", "3"], outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 1)])
+        #expect(result.contains("Footnote: Writer, Title, p. 123."))
+    }
+
     /// A chapter starting partway down a page: a citation above its heading is still the last chapter's.
     @Test func aCitationAboveAChaptersHeadingIsTheLastChapters() throws {
         let pages: [PDFBookStructure.Page] = [
