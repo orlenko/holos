@@ -451,8 +451,8 @@ enum PDFBookStructure {
         func flush() {
             guard let line = pending else { return }
             guard let last, !blocks.isEmpty, let note = blocks[blocks.count - 1][last] else {
-                // Before any note: nothing to add it to, and still not to be lost.
-                symbolic.append(line)
+                // Before any note: nothing to add it to, and, unless it is a heading, still not to be lost.
+                if !namesAPart(line, parts: parts, afterFinished: true) { symbolic.append(line) }
                 pending = nil
                 return
             }
