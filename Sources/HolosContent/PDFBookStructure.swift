@@ -243,10 +243,10 @@ enum PDFBookStructure {
         let none = (lines.count..<lines.count, (notes: [Note](), carried: String?.none))
         guard bodySize > 0, !lines.isEmpty else { return none }
         var end = lines.count
-        while end > 0, lines[end - 1].isEmpty || PDFReader.bareNumber(lines[end - 1]) != nil
-            || PDFReader.isPageLabel(lines[end - 1]) {
-            end -= 1
-        }
+        // Furniture has gone. A number in small print still here is the end of a note, and one in other type is under it.
+        func small(_ line: String) -> Bool { page.lineSizes[line].map { $0 > 0 && $0 <= bodySize * 0.95 } ?? false }
+        while end > 0, lines[end - 1].isEmpty || !small(lines[end - 1])
+            && (PDFReader.bareNumber(lines[end - 1]) != nil || PDFReader.isPageLabel(lines[end - 1])) { end -= 1 }
         var start = end
         // Blank lines can separate the notes. A page all small print is only a note running on, from one not finished.
         while start > 0 {
@@ -516,7 +516,9 @@ enum PDFBookStructure {
                 var name = heading
                 heading = nil
                 if let line = pending {
-                    if namesAPart(line, parts: parts, afterFinished: PDFReader.endsSentence(note ?? ".")) {
+                    // With an outline to go by, only its names count: a note's last line can read like a heading.
+                    let finished = parts.isEmpty && PDFReader.endsSentence(note ?? ".") && note?.hasSuffix(":") != true
+                    if namesAPart(line, parts: parts, afterFinished: finished || note == nil) {
                         name = name ?? ReadableDocument.titleKey(line)
                     } else {
                         flush()
@@ -611,48 +613,63 @@ enum PDFBookStructure {
         var block = 0, last = 0, lastPage = -1, wanted = 0, found = 0
         var cited = endnotes.map { _ in Set<Int>() }
         var citedFootnotes = Set<String>()
-        let partStarts = Set(chapters.map(\.page))
-        for page in content.indices where roles[page] == .body {
-            for scalar in content[page].joined().unicodeScalars {
-                guard let index = markerIndex(scalar), markers.indices.contains(index) else { continue }
-                let label = markers[index]
-                let source = markerPages[index] ?? page
-                // A page can use one label twice, its numbering starting over: each marker takes the next not yet said.
-                let same = footnotes[source].indices.filter { footnotes[source][$0].label == label }
-                if let found = same.first(where: { !citedFootnotes.contains("\(source):\($0)") }) ?? same.first {
-                    let note = footnotes[source][found]
-                    notes[index] = note.text
-                    footnotesOnly[index] = note.text
-                    citedFootnotes.insert("\(source):\(found)")
-                    continue
-                }
-                guard let number = Int(label), !endnotes.isEmpty else { continue }
-                wanted += 1
-                let partBegan = partStarts.contains { $0 > lastPage && $0 <= page }
-                let nextBlock = block + 1 < endnotes.count ? endnotes[block + 1] : nil
-                // Blocks mean numbering per chapter, so a chapter's first citation moves on, risen or not, past the first.
-                // With no chapters to go by, numbers start over only once this block's notes have all been cited: a
-                // chapter can cite an earlier note again.
-                let moves = partStarts.isEmpty
-                    ? number <= last && number == nextBlock?.keys.min() && cited[block].count >= endnotes[block].count
-                    : last > 0 && partBegan && nextBlock?[number] != nil
-                // A block named for the part this citation opens settles it, whichever chapters had no citations found.
-                let named = partBegan ? namedBlock(names, part: partName(chapters, page: page)) : nil
-                if let named, endnotes[named][number] != nil {
-                    block = named
-                    last = number
-                } else if moves {
-                    block += 1
-                    last = number
-                } else {
-                    last = max(last, number)
-                }
-                lastPage = page
-                if let note = endnotes[block][number] {
-                    notes[index] = note
-                    cited[block].insert(number)
-                    found += 1
-                }
+        // Where each chapter starts, by its heading on the page where that can be found, else at the page's top.
+        let starts = chapters.map { chapter -> (page: Int, line: Int, name: String) in
+            let name = ReadableDocument.titleKey(chapter.label)
+            let lines = content.indices.contains(chapter.page) ? content[chapter.page] : []
+            let line = lines.firstIndex { line in
+                let key = ReadableDocument.titleKey(withoutTrailingMarkers(line))
+                return !key.isEmpty && (key == name || name.hasPrefix(key + " "))
+            }
+            return (chapter.page, line ?? 0, name)
+        }
+        var lastLine = -1
+        let markersInOrder = content.indices.filter { roles[$0] == .body }.flatMap { page in
+            content[page].enumerated().flatMap { line, text in
+                text.unicodeScalars.compactMap(markerIndex).map { (page: page, line: line, index: $0) }
+            }
+        }
+        for (page, line, index) in markersInOrder where markers.indices.contains(index) {
+            let label = markers[index]
+            let source = markerPages[index] ?? page
+            // A page can use one label twice, its numbering starting over: each marker takes the next not yet said.
+            let same = footnotes[source].indices.filter { footnotes[source][$0].label == label }
+            if let found = same.first(where: { !citedFootnotes.contains("\(source):\($0)") }) ?? same.first {
+                let note = footnotes[source][found]
+                notes[index] = note.text
+                footnotesOnly[index] = note.text
+                citedFootnotes.insert("\(source):\(found)")
+                continue
+            }
+            guard let number = Int(label), !endnotes.isEmpty else { continue }
+            wanted += 1
+            let partBegan = starts.contains { start in
+                (start.page, start.line) > (lastPage, lastLine) && (start.page, start.line) <= (page, line)
+            }
+            let nextBlock = block + 1 < endnotes.count ? endnotes[block + 1] : nil
+            // Blocks mean numbering per chapter, so a chapter's first citation moves on, risen or not, past the first.
+            // With no chapters to go by, numbers start over only once this block's notes have all been cited: a
+            // chapter can cite an earlier note again.
+            let moves = starts.isEmpty
+                ? number <= last && number == nextBlock?.keys.min() && cited[block].count >= endnotes[block].count
+                : last > 0 && partBegan && nextBlock?[number] != nil
+            // A block named for the part this citation opens settles it, whichever chapters had no citations found.
+            let named = partBegan ? namedBlock(names, part: starts.last { ($0.page, $0.line) <= (page, line) }?.name) : nil
+            if let named, endnotes[named][number] != nil {
+                block = named
+                last = number
+            } else if moves {
+                block += 1
+                last = number
+            } else {
+                last = max(last, number)
+            }
+            lastPage = page
+            lastLine = line
+            if let note = endnotes[block][number] {
+                notes[index] = note
+                cited[block].insert(number)
+                found += 1
             }
         }
         let uncited = endnotes.indices.flatMap { block in
@@ -662,11 +679,6 @@ enum PDFBookStructure {
             footnotes[page].indices.filter { !citedFootnotes.contains("\(page):\($0)") }.map { footnotes[page][$0].text }
         }
         return (notes, footnotesOnly, !endnotes.isEmpty && wanted > 0 && found * 10 >= wanted * 6, uncited, uncitedFootnotes)
-    }
-
-    /// The name of the chapter `page` is in.
-    private static func partName(_ chapters: [OutlineEntry], page: Int) -> String? {
-        chapters.last { $0.page <= page }.map { ReadableDocument.titleKey($0.label) }
     }
 
     /// The block named for `part`: "Chapter 2" for "Chapter 2 Its Long Name".
