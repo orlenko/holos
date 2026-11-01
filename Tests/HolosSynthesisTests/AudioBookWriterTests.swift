@@ -173,6 +173,36 @@ import Testing
         let side: String
     }
 
+    /// The shared silence rule places every part where the joined file has it, at a rate where a gap's frames round
+    /// (half a second at 11,025 Hz is 5,512.5 frames): a player of the parts before they are joined agrees with the
+    /// file to the frame.
+    @Test(.timeLimit(.minutes(1))) func theSharedSilenceRulePlacesPartsWhereTheFileHasThem() async throws {
+        let folder = try directory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let rate = 11_025.0
+        let plan: [(seconds: Double, startsSection: Bool, chapter: String)] = [
+            (1.0, false, "One"), (0.7, false, "Two"), (1.3, true, "Three"),
+        ]
+        var parts: [AudioBookPart] = []
+        var expected: [Double] = []
+        var frame: Int64 = 0
+        for (index, item) in plan.enumerated() {
+            let url = folder.appendingPathComponent("part\(index).caf")
+            try tone(seconds: item.seconds, rate: rate, to: url)
+            let silence = ReadingAudioFormat.silenceBefore(part: index, startsSection: item.startsSection)
+            parts.append(AudioBookPart(url: url, silenceBefore: silence, chapter: item.chapter))
+            // A chapter starts at the silence before its part.
+            expected.append(Double(frame) / rate)
+            frame += ReadingAudioFormat.silenceFrames(silence, rate: rate)
+            frame += try AVAudioFile(forReading: url).length
+        }
+        #expect(ReadingAudioFormat.silenceFrames(0.5, rate: rate) == 5_513)
+        let summary = try await AudioBookWriter.write(parts: parts, metadata: AudioBookMetadata(title: "Timeline"),
+                                                      to: folder.appendingPathComponent("Timeline.m4a"))
+        #expect(summary.chapters.map(\.start) == expected)
+        #expect(summary.duration == Double(frame) / rate)
+    }
+
     /// The furthest audio frame the writer has come to append.
     private final class Furthest: Sendable {
         private let frame = Mutex<Int64>(0)
