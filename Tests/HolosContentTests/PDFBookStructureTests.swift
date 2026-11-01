@@ -462,6 +462,59 @@ import Testing
         #expect(result.contains("Footnote: This note goes right over the page and on."))
     }
 
+    /// A page holding nothing but a note's next lines keeps them in the note, and passes it on.
+    @Test func aPageAllSmallPrintRunsANoteOn() throws {
+        let first = PDFBookStructure.Page(text: "One sentence.\(try marker(0))\n1 This note goes",
+                                          lineSizes: ["1 This note goes": 8])
+        let second = PDFBookStructure.Page(text: "over this whole page", lineSizes: ["over this whole page": 8])
+        let third = PDFBookStructure.Page(text: "Body text.\nand ends here.", lineSizes: ["and ends here.": 8])
+        let result = paragraphs([first, second, third], markers: ["1"], bodySize: 10)
+        #expect(result.contains("Footnote: This note goes over this whole page and ends here."))
+    }
+
+    /// Blank lines between a page's notes do not end them.
+    @Test func blankLinesBetweenFootnotesKeepThemAll() throws {
+        let page = PDFBookStructure.Page(text: "A.\(try marker(0)) B.\(try marker(1))\n\n1 First note.\n\n2 Second note.",
+                                         lineSizes: ["1 First note.": 8, "2 Second note.": 8])
+        let result = paragraphs([page], markers: ["1", "2"], bodySize: 10)
+        #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: First note.", "Footnote: Second note."])
+    }
+
+    /// A finished footnote on the page before is not the note of the same number here.
+    @Test func aFootnoteOfThePageBeforeIsNotReusedForTheSameNumber() throws {
+        let first = PDFBookStructure.Page(text: "A.\(try marker(0))\n1 A foot note.", lineSizes: ["1 A foot note.": 8])
+        let second = PDFBookStructure.Page(text: "B.\(try marker(1)) C.\(try marker(2))")
+        let notes = PDFBookStructure.Page(text: "Notes\n1 An end note.\n2 Another.")
+        let result = paragraphs([first, second, notes], markers: ["1", "1", "2"], outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 2)],
+                                bodySize: 10)
+        #expect(result.filter { $0.hasPrefix("Footnote:") }.prefix(3)
+            == ["Footnote: A foot note.", "Footnote: An end note.", "Footnote: Another."])
+    }
+
+    /// Without an outline, a page all one long note does not end the notes section.
+    @Test func aNotesPageWithoutANumberDoesNotEndTheSection() {
+        var content: [[String]] = (0..<10).map { ["Prose on page \($0) in plain sentences."] }
+        content[6] = ["Notes", "1 One.", "2 Two.", "3 Three runs on"]
+        content[7] = ["and on across this page", "with no number at all", "to the end of it"]
+        content[8] = ["4 Four.", "5 Five."]
+        let roles = PDFBookStructure.roles(content: content, outline: [], hasTitle: true)
+        #expect(roles[6] == .notes && roles[7] == .notes && roles[8] == .notes)
+        #expect(roles[5] == .body)
+    }
+
+    /// A new chapter whose first citation is past the last chapter's moves on as well.
+    @Test func aChapterFirstCitingAHigherNumberMovesOn() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0)) B.\(try marker(1))"),
+            .init(text: "C.\(try marker(2))"),
+            .init(text: "Notes\n1 One.\n2 Two.\nChapter Two\n1 Other one.\n2 Other two.\n3 Other three."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "2", "3"], outline: [.init(label: "One", page: 0), .init(label: "Two", page: 1),
+                                                                           .init(label: "Notes", page: 2)])
+        #expect(result.contains("Footnote: Other three."))
+        #expect(result.firstIndex(of: "Footnote: Other three.")! < result.firstIndex(of: "Footnote: Other one.")!)
+    }
+
     /// Too few small numbers to be a book's notes: an exponent is text.
     @Test func aLoneSmallNumberWithoutANoteStays() throws {
         let result = paragraphs([.init(text: "The area is ten\(try marker(0)) metres.")], markers: ["2"])
@@ -548,6 +601,15 @@ import Testing
         opening.insertByline("By Jane Writer")
         #expect(opening.sections[0].paragraphs == ["By Jane Writer", "Words."])
 
+        var separate = ReadableDocument(title: "A Title", sections: [.init(heading: "A Title", level: 1),
+                                                                     .init(heading: "Jane Writer", level: 2, paragraphs: ["Words."])])
+        separate.insertByline("By Jane Writer")
+        #expect(!ReadingScript(document: separate).text.contains("By Jane Writer"))
+
+        var asParagraph = ReadableDocument(title: "Is This A Title?", sections: [.init(paragraphs: ["Is This A Title?", "Words."])])
+        asParagraph.insertByline("By Jane Writer")
+        #expect(ReadingScript(document: asParagraph).text == "Is This A Title?\n\nBy Jane Writer\n\nWords.")
+
         var said = ReadableDocument(title: "A Title", sections: [.init(paragraphs: ["Jane Writer", "Words."])])
         said.insertByline("By Jane Writer")
         #expect(said.sections[0].paragraphs == ["Jane Writer", "Words."])
@@ -597,7 +659,10 @@ import Testing
 
         let document = try DocumentLoader.load(url)
         let text = ReadingScript(document: document).text
-        #expect(text.hasPrefix("A Made-Up Book\n\nBy Jane Writer"))
+        // The title, then the author once: by the file's details, or from the title page where that stays.
+        #expect(text.hasPrefix("A Made-Up Book\n\n"))
+        #expect(text.components(separatedBy: "Jane Writer").count == 2)
+        #expect(text.prefix(40).contains("Jane Writer"))
         for gone in ["Contents", "Apples", "Bears", "The Only Chapter 3", "4 The Only", "Notes"] {
             #expect(!text.contains(gone), "\(gone) is read")
         }

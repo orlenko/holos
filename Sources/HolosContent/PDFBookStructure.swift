@@ -119,14 +119,20 @@ enum PDFBookStructure {
         while end > 0, lines[end - 1].isEmpty || PDFReader.bareNumber(lines[end - 1]) != nil
             || PDFReader.isPageLabel(lines[end - 1]) { end -= 1 }
         var start = end
-        while start > 0, !lines[start - 1].isEmpty, let size = page.lineSizes[lines[start - 1]], size > 0,
-              size <= bodySize * 0.95 { start -= 1 }
-        guard start < end, start > 0 else { return (lines, ([], nil)) }
+        // Blank lines can separate the notes. A page all small print is only a note running on, from one not finished.
+        while start > 0 {
+            let line = lines[start - 1]
+            guard line.isEmpty || (page.lineSizes[line].map { $0 > 0 && $0 <= bodySize * 0.95 } ?? false) else { break }
+            start -= 1
+        }
+        while start < end, lines[start].isEmpty { start += 1 }
+        let runsOn = previous.map { !PDFReader.endsSentence($0.text) } ?? false
+        guard start < end, start > 0 || runsOn else { return (lines, ([], nil)) }
         let used = Set(lines[..<start].joined().unicodeScalars.compactMap(markerIndex)
             .compactMap { markers.indices.contains($0) ? markers[$0] : nil })
         var notes: [Note] = []
         var carried: String?
-        for line in lines[start..<end] {
+        for line in lines[start..<end] where !line.isEmpty {
             if let (label, rest) = noteStart(line), used.contains(label) {
                 notes.append(Note(label: label, text: rest))
             } else if !notes.isEmpty {
@@ -237,12 +243,14 @@ enum PDFBookStructure {
                 break
             }
             if opens(content[page], with: ["notes", "endnotes"]), share(content[page], startingWithANumber) >= 0.3 {
-                var rest = page
-                while rest < content.count, rest == page || share(content[rest], startingWithANumber) >= 0.1,
-                      roles[rest] == .body {
-                    roles[rest] = .notes
+                // A page can be all one long note, so it takes two without a numbered line to end the section.
+                var end = page
+                var rest = page + 1
+                while rest < content.count, rest - end <= 2, roles[rest] == .body {
+                    if share(content[rest], startingWithANumber) >= 0.1 { end = rest }
                     rest += 1
                 }
+                for notes in page...end { roles[notes] = .notes }
             }
         }
     }
@@ -282,17 +290,7 @@ enum PDFBookStructure {
     /// place but by order: with the next note's number stray on this page, the line after a finished note opens it.
     private static func endnoteBlocks(content: [[String]], roles: [Role], pages: [Page])
         -> (blocks: [[Int: String]], symbolic: [String]) {
-        var lines: [(text: String, stray: Set<Int>)] = []
-        for index in content.indices where roles[index] == .notes {
-            // After the furniture has gone, so a printed page number is not taken for a note's.
-            let stray = Set(content[index].compactMap(PDFReader.bareNumber))
-            let sizes = pages[index].lineSizes.values.filter { $0 > 0 }.sorted()
-            let usual = sizes.isEmpty ? 0 : sizes[sizes.count / 2]
-            for line in content[index] where !line.isEmpty && PDFReader.bareNumber(line) == nil {
-                if let size = pages[index].lineSizes[line], usual > 0, size > usual * 1.08 { continue }
-                lines.append((line, stray))
-            }
-        }
+        let lines = noteLines(content: content, roles: roles, pages: pages)
         let widest = lines.map(\.text.count).max() ?? 0
         var blocks: [[Int: String]] = []
         // "* A note": no number to pair by, so said with those no marker cited rather than lost.
@@ -364,6 +362,22 @@ enum PDFBookStructure {
         return (blocks, symbolic)
     }
 
+    /// The notes pages' lines, with the numbers stray on each line's page. A larger line is no part of a note.
+    private static func noteLines(content: [[String]], roles: [Role], pages: [Page]) -> [(text: String, stray: Set<Int>)] {
+        var lines: [(text: String, stray: Set<Int>)] = []
+        for index in content.indices where roles[index] == .notes {
+            // After the furniture has gone, so a printed page number is not taken for a note's.
+            let stray = Set(content[index].compactMap(PDFReader.bareNumber))
+            let sizes = pages[index].lineSizes.values.filter { $0 > 0 }.sorted()
+            let usual = sizes.isEmpty ? 0 : sizes[sizes.count / 2]
+            for line in content[index] where !line.isEmpty && PDFReader.bareNumber(line) == nil {
+                if let size = pages[index].lineSizes[line], usual > 0, size > usual * 1.08 { continue }
+                lines.append((line, stray))
+            }
+        }
+        return lines
+    }
+
     private static func bracketsClosed(_ text: String) -> Bool {
         text.filter { $0 == "(" }.count <= text.filter { $0 == ")" }.count
     }
@@ -404,7 +418,7 @@ enum PDFBookStructure {
             for scalar in content[page].joined().unicodeScalars {
                 guard let index = markerIndex(scalar), markers.indices.contains(index) else { continue }
                 let label = markers[index]
-                if let note = footnotes[page].first(where: { $0.label == label }) ?? (page > 0 ? footnotes[page - 1].first { $0.label == label } : nil) {
+                if let note = footnotes[page].first(where: { $0.label == label }) {
                     notes[index] = note.text
                     footnotesOnly[index] = note.text
                     continue
@@ -414,7 +428,8 @@ enum PDFBookStructure {
                 let partBegan = partStarts.contains { $0 > lastPage && $0 <= page }
                 let nextBlock = block + 1 < endnotes.count ? endnotes[block + 1] : nil
                 let moves = partStarts.isEmpty ? number == nextBlock?.keys.min() : partBegan && nextBlock?[number] != nil
-                if number <= last, moves {
+                // A new chapter's first citation can also rise past the last one and be missing from this block.
+                if number <= last || endnotes[block][number] == nil, moves {
                     block += 1
                     last = number
                 } else {
