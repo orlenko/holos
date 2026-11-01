@@ -26,7 +26,8 @@ enum PDFBookStructure {
     struct Page: Equatable {
         var text: String
         var lineSizes: [String: Double] = [:]
-        var smallRuns: [String: [SmallRun]] = [:]
+        /// For each line's text, the runs of each time the page says it: a line can repeat in other type.
+        var smallRuns: [String: [[SmallRun]]] = [:]
     }
 
     struct OutlineEntry: Equatable {
@@ -84,6 +85,8 @@ enum PDFBookStructure {
         let framed = PDFReader.pageContent(pages.map { PDFReader.lines(of: $0.text) })
         var roles = self.roles(content: framed, outline: outline, hasTitle: hasTitle)
         var markers = given
+        // The page each marker was found on, where its footnote is, wherever its sentence is.
+        var markerPages: [Int: Int] = [:]
         var footnotes: [[Note]] = []
         var content: [[String]] = []
         // The note a page's unmarked small print can run on from: the last one begun, while each page since ran it on.
@@ -109,13 +112,15 @@ enum PDFBookStructure {
             }
             let lines = framed[index]
             let kept = Array(lines[..<notesStart.lowerBound]) + Array(lines[notesStart.upperBound...])
+            let found = markers.count
             let text = marked(kept, page: page, bodySize: bodySize, markers: &markers, into: &content)
             content.append(text)
+            for marker in found..<markers.count { markerPages[marker] = index }
         }
         try Task.checkCancellation()
         let (endnotes, names, symbolic) = endnoteBlocks(content: content, roles: roles, pages: pages, outline: outline)
-        let resolved = resolve(content: content, roles: roles, markers: markers, footnotes: footnotes, endnotes: endnotes,
-                               names: names, outline: outline, partStarts: chapterStarts(outline, hasTitle: hasTitle))
+        let resolved = resolve(content: content, roles: roles, markers: markers, markerPages: markerPages, footnotes: footnotes,
+                               endnotes: endnotes, names: names, outline: outline, partStarts: chapterStarts(outline, hasTitle: hasTitle))
         // Invariant 3.
         if !resolved.endnotesPaired { roles = roles.map { $0 == .notes ? .body : $0 } }
         let bodyPages = content.indices.filter { roles[$0] == .body }.map { content[$0] }
@@ -138,8 +143,13 @@ enum PDFBookStructure {
                                into earlier: inout [[String]]) -> [String] {
         var result: [String] = []
         let filled = lines.indices.filter { !lines[$0].isEmpty }
+        var seen: [String: Int] = [:]
         for (position, line) in lines.enumerated() {
-            guard let runs = page.smallRuns[line], !runs.isEmpty else {
+            let occurrence = seen[line, default: 0]
+            seen[line] = occurrence + 1
+            let said = page.smallRuns[line] ?? []
+            let runs = said.indices.contains(occurrence) ? said[occurrence] : []
+            guard !runs.isEmpty else {
                 result.append(line)
                 continue
             }
@@ -210,7 +220,7 @@ enum PDFBookStructure {
         guard start < end, start > 0 || runsOn else { return none }
         let already = lines[..<start].joined().unicodeScalars.compactMap(markerIndex)
             .compactMap { markers.indices.contains($0) ? markers[$0] : nil }
-        let used = Set(already + lines[..<start].flatMap { (page.smallRuns[$0] ?? []).map(\.label) })
+        let used = Set(already + lines[..<start].flatMap { (page.smallRuns[$0] ?? []).flatMap { $0 }.map(\.label) })
         var notes: [Note] = []
         var carried: String?
         for line in lines[start..<end] where !line.isEmpty {
@@ -513,7 +523,8 @@ enum PDFBookStructure {
     /// chapters, a number the next block has moves on to it; without chapters, only one falling back to where that block
     /// begins does. A chapter citing an earlier note again does not. `endnotesPaired`: most of the markers not at a page's foot found theirs. `uncited`: the notes none of
     /// them cited, in order.
-    private static func resolve(content: [[String]], roles: [Role], markers: [String], footnotes: [[Note]],
+    private static func resolve(content: [[String]], roles: [Role], markers: [String], markerPages: [Int: Int],
+                                footnotes: [[Note]],
                                 endnotes: [[Int: String]], names: [String?], outline: [OutlineEntry], partStarts: Set<Int>)
         -> (notes: [Int: String], footnotesOnly: [Int: String], endnotesPaired: Bool, uncited: [String],
             uncitedFootnotes: [String]) {
@@ -526,10 +537,11 @@ enum PDFBookStructure {
             for scalar in content[page].joined().unicodeScalars {
                 guard let index = markerIndex(scalar), markers.indices.contains(index) else { continue }
                 let label = markers[index]
-                if let note = footnotes[page].first(where: { $0.label == label }) {
+                let source = markerPages[index] ?? page
+                if let note = footnotes[source].first(where: { $0.label == label }) {
                     notes[index] = note.text
                     footnotesOnly[index] = note.text
-                    citedFootnotes.insert("\(page):\(label)")
+                    citedFootnotes.insert("\(source):\(label)")
                     continue
                 }
                 guard let number = Int(label), !endnotes.isEmpty else { continue }
@@ -537,7 +549,10 @@ enum PDFBookStructure {
                 let partBegan = partStarts.contains { $0 > lastPage && $0 <= page }
                 let nextBlock = block + 1 < endnotes.count ? endnotes[block + 1] : nil
                 // Blocks mean numbering per chapter, so a chapter's first citation moves on, risen or not, past the first.
-                let moves = partStarts.isEmpty ? number <= last && number == nextBlock?.keys.min()
+                // With no chapters to go by, numbers start over only once this block's notes have all been cited: a
+                // chapter can cite an earlier note again.
+                let moves = partStarts.isEmpty
+                    ? number <= last && number == nextBlock?.keys.min() && cited[block].count >= endnotes[block].count
                     : last > 0 && partBegan && nextBlock?[number] != nil
                 // A block named for the part this citation opens settles it, whichever chapters had no citations found.
                 let named = partBegan ? namedBlock(names, part: partName(outline, page: page)) : nil

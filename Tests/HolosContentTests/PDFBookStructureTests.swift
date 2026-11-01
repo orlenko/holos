@@ -375,6 +375,15 @@ import Testing
         #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: One.", "Footnote: Other one."])
     }
 
+    /// Without chapters to go by, citing an earlier note again stays in this block while it has notes left.
+    @Test func withoutChaptersARepeatedCitationStaysWhileNotesAreLeft() throws {
+        let body = try ["1", "2", "1", "3"].enumerated().map { "Sentence \($1).\(try marker($0))" }.joined(separator: " ")
+        let notes = PDFBookStructure.Page(text: "Notes\n1 One.\n2 Two.\n3 Three.\n1 Other one.\n2 Other two.")
+        let result = paragraphs([.init(text: body), notes], markers: ["1", "2", "1", "3"], outline: [.init(label: "Notes", page: 1)])
+        #expect(Array(result.filter { $0.hasPrefix("Footnote:") }.prefix(4))
+            == ["Footnote: One.", "Footnote: Two.", "Footnote: One.", "Footnote: Three."])
+    }
+
     /// A chapter citing an earlier note again stays in its chapter's notes.
     @Test func citingANoteAgainDoesNotMoveToTheNextChapter() throws {
         let pages: [PDFBookStructure.Page] = [
@@ -641,6 +650,25 @@ import Testing
         let (found, size) = try PDFReader.bookPages([page])
         let result = try PDFBookStructure.paragraphs(pages: found, outline: [], bodySize: size, hasTitle: true)
         #expect(result.contains("Footnote: The footnote is printed here."))
+    }
+
+    /// A marker moved back to the page before keeps the footnote of the page it was on.
+    @Test func aMovedMarkerKeepsItsPagesFootnote() throws {
+        let filler = String(repeating: Self.filler + "\n", count: 3)
+        let first = styled([(filler, 10), ("A sentence cites one", 10), ("1", 6), (" here. It ends.\n", 10), ("1 The first page's note.\n", 8)])
+        let second = styled([("1", 6), ("Then this goes on.\n", 10), (filler, 10), ("1 The second page's note.\n", 8)])
+        let third = styled([(filler, 10), ("Last", 10), ("2", 6), (" of all.\n", 10), ("2 The third's.\n", 8)])
+        let result = try read([first, second, third])
+        #expect(result.contains("Footnote: The second page's note."))
+        #expect(result.last != "Footnote: The second page's note.")
+    }
+
+    /// A line said twice in other type keeps each time's own small runs.
+    @Test func aRepeatedLineKeepsEachTimesRuns() throws {
+        let small = styled([("See page ", 10), ("1", 6), ("\n", 10), (Self.filler + "\n", 10), ("See page 1\n", 10),
+                            (Self.filler + " Two", 10), ("2", 6), (" and three", 10), ("3", 6), (".\n", 10)])
+        let (pages, _) = try PDFReader.bookPages([small])
+        #expect(pages[0].smallRuns["See page 1"]?.map(\.count) == [1, 0])
     }
 
     /// A footnote whose marker was not found is still said, not merged into the one before.

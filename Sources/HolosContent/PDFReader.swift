@@ -60,7 +60,7 @@ public enum PDFReader {
                 lines.append(styled.text)
                 guard !styled.text.isEmpty else { return }
                 result.lineSizes[styled.text] = styled.size
-                if !styled.small.isEmpty { result.smallRuns[styled.text] = styled.small }
+                result.smallRuns[styled.text, default: []].append(styled.small)
             }
             result.text = lines.joined(separator: "\n")
             pages.append(result)
