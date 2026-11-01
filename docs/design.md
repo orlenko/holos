@@ -1894,6 +1894,24 @@ have a configurable short retention period. Debug logs contain timing/status rat
 than full documents. No recording or transcript is committed as a test fixture
 without deliberate selection.
 
+
+A PDF is read as a person would read a book (`PDFBookStructure`), from what the file shows of its structure; no model
+is involved, so the same file always reads the same. The title is said first, then "By <author>" when the file names an
+author that its first pages also print (a file's author field often holds an account or a tool). Parts the outline
+names as cover, half title, title page (when the title is known), endorsements, copyright, contents, lists of figures,
+bibliography, references, or index are left out; without an outline, a contents page, a copyright page and an index
+are recognized by their look. An outline naming more than 80% of the pages is ignored. A chapter's running head with
+its page number ("8 Chapter Name") goes too, when at least four pages' edge lines number along with the pages.
+
+A note's marker is a run of digits or a footnote symbol set at most 80% of the body size, right after text or opening
+a line of body text. It is never spoken. Its note is, as "Footnote: …" in a paragraph of its own after the sentence
+holding the marker. Notes at a page's foot are the smaller lines closing the page that open with a marker the page uses,
+including one running over from the page before. Notes in a notes section, named by the outline or recognized by its
+look, pair with markers in reading order, a new block each time the numbers start over (a book numbering per chapter).
+When under 60% of the markers find a note, the section is read as ordinary text and the markers go silently, so no
+note is lost. A book with fewer than three markers keeps them as text: they may be exponents. A note set in the body
+size at a page's foot is not recognized: it stays where it stands, without its marker. Other formats and web pages do
+not get this yet. A reading made before this keeps its text until it is made again.
 ### Voice profiles
 
 This reverses the earlier rule "No inferred cross-meeting voiceprint database" (user

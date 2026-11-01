@@ -38,6 +38,19 @@ public struct ReadableDocument: Sendable, Equatable, Codable {
 
     public var isEmpty: Bool { sections.isEmpty }
 
+    /// Adds "By <author>" right after the title, unless the opening already says it.
+    mutating func insertByline(_ byline: String?) {
+        guard let byline else { return }
+        let opening = sections.first.map { ([$0.heading].compactMap { $0 } + $0.paragraphs).prefix(4) } ?? []
+        let name = Self.titleKey(String(byline.dropFirst(3)))
+        guard !opening.contains(where: { (" " + Self.titleKey($0) + " ").contains(" " + name + " ") }) else { return }
+        if let first = sections.first, first.heading != nil, title.map({ Self.sameTitle($0, first.heading ?? "") }) ?? true {
+            sections[0].paragraphs.insert(byline, at: 0)
+        } else {
+            sections.insert(Section(paragraphs: [byline]), at: 0)
+        }
+    }
+
     /// The text as Show Text gives it: the title (unless the first heading or paragraph says it), then each heading
     /// and paragraph, a blank line between them.
     public var plainText: String {

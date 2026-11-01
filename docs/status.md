@@ -569,6 +569,9 @@ timeline and a larger local-model benchmark are follow-ups.
   logic, the voice order, the speed mapping, and the pipeline's new progress reports are
   unit-tested; the section itself is built and compiled only and has not been seen on screen
   yet (docs/dictation-validation.md "Reading section").
+  A PDF reads like a book: title and author, no contents, index, or page numbers, and each note as "Footnote: …" after
+  its sentence (`PDFBookStructure`). Unit-tested with made-up pages and a generated PDF, and its extracted text checked
+  on one real published book with end-of-book notes. Books with notes at the page's foot have been seen only in tests.
 - Natural voices (docs/design.md "Natural voices"): Reading can use Kyutai's Pocket TTS through
   FluidAudio 0.17.1, rendered by the bundled `voiceislocal say` (the app does not link
   FluidAudio). `voiceislocal setup --natural-voices [--language fr]` or Settings › Reading

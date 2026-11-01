@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import HolosCore
 import PDFKit
@@ -11,20 +12,120 @@ public enum PDFReader {
         guard !pdf.isLocked else {
             throw HolosError.invalidInput("\(url.lastPathComponent) is password-protected.")
         }
-        var pages: [String] = []
-        for index in 0..<pdf.pageCount {
-            // A long PDF read for a reading that was stopped ends here (outside a task, never).
-            try Task.checkCancellation()
-            pages.append(pdf.page(at: index)?.string ?? "")
-        }
-        let paragraphs = reflow(pages: pages)
-        guard !paragraphs.isEmpty else {
-            throw HolosError.invalidInput("\(url.lastPathComponent) has no text to read. Scanned PDFs need OCR, which is not supported.")
-        }
         let attributes = pdf.documentAttributes ?? [:]
         let declared = (attributes[PDFDocumentAttribute.titleAttribute] as? String).map(cleanTitle)
         let author = attributes[PDFDocumentAttribute.authorAttribute] as? String
-        return document(paragraphs: paragraphs, declaredTitle: declared, author: author)
+        var styled: [NSAttributedString?] = []
+        for index in 0..<pdf.pageCount {
+            // A long PDF read for a reading that was stopped ends here (outside a task, never).
+            try Task.checkCancellation()
+            let page = pdf.page(at: index)
+            styled.append(page?.attributedString ?? page?.string.map { NSAttributedString(string: $0) })
+        }
+        let (pages, markers, bodySize) = bookPages(styled) { index, character in
+            pdf.page(at: index).map { Double($0.characterBounds(at: character).minY) }
+        }
+        let paragraphs = PDFBookStructure.paragraphs(pages: pages, markers: markers, outline: outline(of: pdf),
+                                                     bodySize: bodySize, hasTitle: declared?.isEmpty == false)
+        guard !paragraphs.isEmpty else {
+            throw HolosError.invalidInput("\(url.lastPathComponent) has no text to read. Scanned PDFs need OCR, which is not supported.")
+        }
+        var result = document(paragraphs: paragraphs, declaredTitle: declared, author: author)
+        result.insertByline(PDFBookStructure.byline(author: author, pages: styled.map { $0?.string ?? "" }))
+        return result
+    }
+
+    /// Each page's text with its little note numbers marked (see `PDFBookStructure`), and what they say, from the
+    /// fonts: the book's body size is the one most of its characters are set in. `level`: how high on page `page` a
+    /// character stands, where the file can tell.
+    static func bookPages(_ styled: [NSAttributedString?], level: @escaping (_ page: Int, _ character: Int) -> Double? = { _, _ in nil })
+        -> (pages: [PDFBookStructure.Page], markers: [String], bodySize: Double) {
+        var counts: [Double: Int] = [:]
+        for page in styled.compactMap({ $0 }) {
+            page.enumerateAttribute(.font, in: NSRange(location: 0, length: page.length)) { value, range, _ in
+                counts[fontSize(value), default: 0] += range.length
+            }
+        }
+        let bodySize = counts.filter { $0.key > 0 }.max { $0.value < $1.value }?.key ?? 0
+        var markers: [String] = []
+        var pages: [PDFBookStructure.Page] = []
+        for (index, page) in styled.enumerated() {
+            guard let page else {
+                pages.append(.init(text: ""))
+                continue
+            }
+            var result = PDFBookStructure.Page(text: "")
+            var lines: [String] = []
+            let source = page.string as NSString
+            source.enumerateSubstrings(in: NSRange(location: 0, length: source.length), options: .byLines) { _, range, _, _ in
+                let (text, size) = styledLine(page, range: range, bodySize: bodySize, markers: &markers)
+                lines.append(text)
+                guard !text.isEmpty else { return }
+                result.lineSizes[text] = size
+                if range.length > 0, let height = level(index, range.location) { result.lineLevels[text] = height }
+            }
+            result.text = lines.joined(separator: "\n")
+            pages.append(result)
+        }
+        return (pages, markers, bodySize)
+    }
+
+    private static func fontSize(_ value: Any?) -> Double { (value as? NSFont).map { Double($0.pointSize) } ?? 0 }
+
+    /// One line's text with its markers replaced, and the size most of it is set in. A small number opening a line is
+    /// a marker only in a line of body text: the sentence wrapped just before it. Opening a smaller line, it is that
+    /// note's own number.
+    private static func styledLine(_ page: NSAttributedString, range: NSRange, bodySize: Double, markers: inout [String])
+        -> (text: String, size: Double) {
+        let source = page.string as NSString
+        var line = ""
+        var opening: String?
+        var lengths: [Double: Int] = [:]
+        page.enumerateAttribute(.font, in: range) { value, run, _ in
+            let text = source.substring(with: run).replacingOccurrences(of: "\u{FFFC}", with: "")
+            let size = fontSize(value)
+            lengths[size, default: 0] += run.length
+            let bare = text.trimmingCharacters(in: .whitespaces)
+            guard bodySize > 0, size > 0, size <= bodySize * 0.8, PDFBookStructure.isMarkerText(bare) else {
+                line += text
+                return
+            }
+            if line.trimmingCharacters(in: .whitespaces).isEmpty {
+                opening = bare
+            } else if line.last?.isWhitespace == false, let scalar = PDFBookStructure.markerScalar(markers.count) {
+                markers.append(bare)
+                line.append(scalar)
+                if text.last?.isWhitespace == true { line += " " }
+            } else {
+                line += text
+            }
+        }
+        let size = lengths.max { $0.value < $1.value }?.key ?? 0
+        if let opening {
+            if size >= bodySize * 0.95, let scalar = PDFBookStructure.markerScalar(markers.count) {
+                markers.append(opening)
+                line = String(scalar) + line.trimmingCharacters(in: .whitespaces)
+            } else {
+                line = opening + " " + line.trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return (line.trimmingCharacters(in: .whitespaces), size)
+    }
+
+    /// The outline's entries at every level, with the page each opens.
+    private static func outline(of pdf: PDFDocument) -> [PDFBookStructure.OutlineEntry] {
+        var entries: [PDFBookStructure.OutlineEntry] = []
+        func walk(_ node: PDFOutline) {
+            for index in 0..<node.numberOfChildren {
+                guard let child = node.child(at: index) else { continue }
+                if let label = child.label, let page = child.destination?.page {
+                    entries.append(.init(label: label, page: pdf.index(for: page)))
+                }
+                walk(child)
+            }
+        }
+        if let root = pdf.outlineRoot { walk(root) }
+        return entries
     }
 
     /// The title is the metadata title, else a title-like first paragraph; a first paragraph that
@@ -88,7 +189,11 @@ public enum PDFReader {
     /// Hyphenated line ends are rejoined. Page furniture (page numbers and running headers and
     /// footers) is dropped only from the top and bottom of a page; see `pageContent`.
     public static func reflow(pages: [String]) -> [String] {
-        let content = pageContent(pages.map(lines(of:)))
+        reflow(content: pageContent(pages.map(lines(of:))))
+    }
+
+    /// The same, for pages `pageContent` has already taken the furniture off.
+    static func reflow(content: [[String]]) -> [String] {
         let lengths = content.joined().map(\.count).filter { $0 > 0 }.sorted()
         let fullLine = lengths.isEmpty ? 0 : lengths[min(lengths.count - 1, lengths.count * 9 / 10)]
         var paragraphs: [String] = []
@@ -141,7 +246,10 @@ public enum PDFReader {
     /// - "Page 3", "3 of 10", "3 / 10", "- 3 -": always;
     /// - a bare number: when it runs with the pages, that is, another page's edge number has the
     ///   same offset from its page index, or it is at the bottom and equals the page's position;
-    ///   at most one per page, the bottom one first.
+    ///   at most one per page, the bottom one first;
+    /// - a line with a page number at its start or end ("8 Chapter Name", "Chapter Name 9"), when at
+    ///   least three other pages' edge lines run with the pages in the same way: a chapter's own
+    ///   running head is on too few of a book's pages to count as repeated.
     /// Numbers, years, and repeated lines anywhere else on a page are text and are kept.
     static func pageContent(_ pages: [[String]]) -> [[String]] {
         var pages = pages
@@ -151,12 +259,14 @@ public enum PDFReader {
             var headers: [String: Int] = [:]
             var footers: [String: Int] = [:]
             var numberOffsets: [Int: Int] = [:]
+            var headOffsets: [Int: Int] = [:]
             for (index, page) in pages.enumerated() {
                 guard let first = page.first, let last = page.last else { continue }
                 headers[furnitureKey(first), default: 0] += 1
                 footers[furnitureKey(last), default: 0] += 1
                 for line in Set([first, last]) {
                     if let number = bareNumber(line) { numberOffsets[number - index, default: 0] += 1 }
+                    if let key = runningHeadKey(line, page: index) { headOffsets[key, default: 0] += 1 }
                 }
             }
             for index in pages.indices {
@@ -168,6 +278,9 @@ public enum PDFReader {
                         || isPageLabel(line)
                     if !furniture, !numbered.contains(index), let number = bareNumber(line) {
                         furniture = numberOffsets[number - index, default: 0] >= 2 || (bottom && number == index + 1)
+                    }
+                    if !furniture, let key = runningHeadKey(line, page: index), headOffsets[key, default: 0] >= 4 {
+                        furniture = true
                     }
                     if furniture && isNumber { numbered.insert(index) }
                     return furniture
@@ -196,6 +309,29 @@ public enum PDFReader {
         return Int(line)
     }
 
+    /// How a running head's page number ("8 Chapter Name", "Chapter Name 9", "Foreword xi") stands to its page's index,
+    /// the same for every page numbered in the same series; nil for a line without one.
+    static func runningHeadKey(_ line: String, page: Int) -> Int? {
+        guard line.count <= 90, bareNumber(line) == nil, line.contains(where: \.isLetter) else { return nil }
+        let words = line.split(whereSeparator: \.isWhitespace)
+        guard words.count >= 2, let first = words.first, let last = words.last else { return nil }
+        for word in [last, first] {
+            if word.count <= 4, word.allSatisfy({ $0.isASCII && $0.isNumber }), let number = Int(word) { return number - page }
+            if let number = romanNumeral(String(word)) { return 100_000 + number - page }
+        }
+        return nil
+    }
+
+    /// A lowercase roman numeral's value, as front matter is numbered.
+    private static func romanNumeral(_ word: String) -> Int? {
+        let values: [Character: Int] = ["i": 1, "v": 5, "x": 10, "l": 50, "c": 100]
+        guard (1...7).contains(word.count), word.allSatisfy({ values[$0] != nil }) else { return nil }
+        let digits = word.compactMap { values[$0] }
+        return digits.indices.reduce(0) { sum, index in
+            sum + (index + 1 < digits.count && digits[index] < digits[index + 1] ? -digits[index] : digits[index])
+        }
+    }
+
     /// "Page 3", "page 3 of 10", "3 of 10", "3 / 10", "- 3 -".
     static func isPageLabel(_ line: String) -> Bool {
         line.range(of: #"^(page\s+\d{1,4}(\s+(of|/)\s+\d{1,4})?|\d{1,4}\s+(of|/)\s+\d{1,4}|[-–—]\s*\d{1,4}\s*[-–—])$"#,
@@ -203,7 +339,9 @@ public enum PDFReader {
     }
 
     static func endsSentence(_ text: String) -> Bool {
-        guard let last = text.trimmingCharacters(in: .whitespaces).last else { return false }
+        guard let last = PDFBookStructure.withoutTrailingMarkers(text.trimmingCharacters(in: .whitespaces)).last else {
+            return false
+        }
         return ".!?:\"”’)".contains(last)
     }
 }
