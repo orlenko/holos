@@ -5,14 +5,16 @@ import PDFKit
 import Testing
 @testable import HolosContent
 
-/// Reading a book the way a person would (`PDFBookStructure`), from made-up pages.
-@Suite struct PDFBookStructureTests {
+/// Made-up pages for the tests of `PDFBookStructure`.
+protocol PDFBookPages {}
+
+extension PDFBookPages {
     /// Text differing on each page by more than a number: a line repeated across pages is furniture.
     static func differentWords(_ count: Int) -> [String] {
         (0..<count).map { String(repeating: "\(Character(Unicode.Scalar(97 + UInt8($0)))) word ", count: 3) + "ends." }
     }
 
-    static let filler = "This line of ordinary body text runs on from one margin of the page to the other one."
+    static var filler: String { "This line of ordinary body text runs on from one margin of the page to the other one." }
 
     func paragraphs(_ pages: [PDFBookStructure.Page], markers: [String] = [],
                             outline: [PDFBookStructure.OutlineEntry] = [], bodySize: Double = 10,
@@ -28,6 +30,22 @@ import Testing
 
     func marker(_ index: Int) throws -> String { String(try #require(PDFBookStructure.markerScalar(index))) }
 
+    func styled(_ runs: [(String, CGFloat)]) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        for (text, size) in runs {
+            result.append(NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: size)]))
+        }
+        return result
+    }
+
+    func read(_ pages: [NSAttributedString], outline: [PDFBookStructure.OutlineEntry] = []) throws -> [String] {
+        let (found, body) = try PDFReader.bookPages(pages)
+        return try PDFBookStructure.paragraphs(pages: found, outline: outline, bodySize: body, hasTitle: true)
+    }
+}
+
+/// Reading a book the way a person would (`PDFBookStructure`), from made-up pages.
+@Suite struct PDFBookStructureTests: PDFBookPages {
     // MARK: Parts of the book
 
     @Test func theOutlineNamesWhatIsNotReadAloud() {
@@ -156,19 +174,6 @@ import Testing
     }
 
     // MARK: From the fonts
-
-    func styled(_ runs: [(String, CGFloat)]) -> NSAttributedString {
-        let result = NSMutableAttributedString()
-        for (text, size) in runs {
-            result.append(NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: size)]))
-        }
-        return result
-    }
-
-    func read(_ pages: [NSAttributedString], outline: [PDFBookStructure.OutlineEntry] = []) throws -> [String] {
-        let (found, body) = try PDFReader.bookPages(pages)
-        return try PDFBookStructure.paragraphs(pages: found, outline: outline, bodySize: body, hasTitle: true)
-    }
 
     /// Three small numbers in body text, so they are a book's markers; none has a note, so they go silently.
     @Test func smallNumbersAfterTextAreMarkersAndEqualOnesAreNot() throws {

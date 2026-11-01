@@ -129,6 +129,8 @@ enum PDFBookStructure {
         if !resolved.endnotesPaired {
             roles = roles.map { $0 == .notes ? .body : $0 }
             for (page, sections) in notesBelow {
+                // What is left of the page may have been taken for the back matter it shared with.
+                roles[page] = .body
                 // Last first: each place was counted with those before it already gone.
                 for notes in sections.reversed() {
                     content[page].insert(contentsOf: notes.lines, at: min(notes.at, content[page].count))
