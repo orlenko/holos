@@ -78,6 +78,7 @@ public final class EngineSegmentOutput: ReadingSegmentOutput {
             MainActor.assumeIsolated {
                 // Invariant 2: the engine reset dropped what was queued.
                 self?.generation += 1
+                _ = self?.playedFrames
                 self?.onInterrupted?()
             }
         }
@@ -93,6 +94,8 @@ public final class EngineSegmentOutput: ReadingSegmentOutput {
     }
 
     public func pause() {
+        // Where it pauses, not where the position was last read.
+        _ = playedFrames
         node.pause()
     }
 

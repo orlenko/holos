@@ -126,7 +126,8 @@ final class ReadingTextWindow: NSWindowController, NSWindowDelegate, NSTextViewD
     /// The player's state for this reading (nil: another reading, or none, is loaded).
     func show(_ playback: ReadingRowView.Playback?) {
         primary.title = playback?.playing == true ? "❚❚ Pause" : "▶ Play"
-        seekBar.show(current: playback?.current ?? 0, duration: playback?.duration ?? length ?? 0)
+        seekBar.show(current: playback?.current ?? 0, duration: playback?.duration ?? length ?? 0,
+                     seekable: playback?.seekable ?? true, growing: playback?.final == false)
         guard playback != nil, let current = playback?.current, let span = timeline?.span(at: current) else {
             setHighlight(nil)
             return

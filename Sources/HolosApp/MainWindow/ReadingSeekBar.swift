@@ -33,7 +33,7 @@ final class ReadingSeekBar: NSView {
         slider.isContinuous = true
         slider.target = self
         slider.action = #selector(sliderMoved)
-        slider.toolTip = "Go to a place in the audio (← and → move 15 seconds)"
+        slider.toolTip = "Go to a place in the audio (← and → move 15 seconds). Not while it is still being made."
         slider.onStep = { [weak self] direction in self?.step(direction) }
         slider.setContentHuggingPriority(.defaultLow, for: .horizontal)
         slider.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -61,11 +61,12 @@ final class ReadingSeekBar: NSView {
     }
 
     /// The player's position; a drag in progress keeps its own (invariant 1).
-    func show(current: Double, duration: Double) {
+    /// `seekable` false shows the place without letting it move; `growing`: the length is what is made so far.
+    func show(current: Double, duration: Double, seekable: Bool = true, growing: Bool = false) {
         let length = duration.isFinite ? max(0, duration) : 0
-        slider.isEnabled = length > 0
+        slider.isEnabled = length > 0 && seekable
         slider.maxValue = max(length, 1)
-        total.stringValue = ReadingLibrary.clockText(length)
+        total.stringValue = ReadingLibrary.clockText(length) + (growing ? "…" : "")
         guard !dragging else { return }
         slider.doubleValue = current
         elapsed.stringValue = ReadingLibrary.clockText(current)
