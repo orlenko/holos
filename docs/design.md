@@ -697,9 +697,9 @@ waiting (Stop); loading or "Rendering part N of M" with a bar (Stop); joining; m
 (length · chapters · size · voice, and the speed when not 1×) with **▶ Play** (an
 `AVAudioPlayer` in the app, Space or double-click, one reading at a time; stopped when the
 window closes). The reading loaded in the player has a taller row with a seek bar
-(`ReadingSeekBar`): elapsed time, the bar, the length. While it plays from its parts, only those ahead being in
-memory, the bar shows its place ("4:10…" for the length so far) and cannot move it. The release of a drag seeks, the player does
-not move the knob meanwhile, and ← and → (and VoiceOver) move 15 seconds, since a pixel of a long
+(`ReadingSeekBar`): elapsed time, the bar, the length. Play or Pause stands on that line too, apart from the conversion's Stop Converting
+above it. While it plays from its parts the bar moves through what is made ("4:10…" for the length so far). The release of a drag seeks, the player does
+not move the knob meanwhile, and ← and → with the row selected (and VoiceOver) move 15 seconds, since a pixel of a long
 book's bar can be nearly a minute. **Show Text** opens the text window (see below); **Share…** (`NSSharingServicePicker`, ⇧⌘S), **Show in Finder**,
 **Delete…**; in a row narrower than 600 points Show Text, Share…, Show in Finder and Delete…
 show only their symbols; failed (the error, **Try Again**); stopped (where, **Resume**). A

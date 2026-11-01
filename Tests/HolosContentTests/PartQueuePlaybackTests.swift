@@ -228,6 +228,54 @@ struct PartFiles {
         #expect(playback.currentTime == 2.5)
     }
 
+    /// A seek goes to any place made: the part holding it is queued from there, with no silence, playing or paused as it
+    /// was, and the parts after it follow.
+    @Test func aSeekPlaysFromThatPlaceInWhatIsMade() async throws {
+        let files = try PartFiles()
+        defer { files.remove() }
+        let feed = ReadingPartFeed()
+        let output = QueueOutput()
+        let playback = PartQueuePlayback(feed: feed, output: output)
+        for index in 0..<3 { feed.add(try files.part(index, of: 4, seconds: 1)) }
+        #expect(playback.play())
+        #expect(await eventually { output.queued.count == 3 })
+        // Part 1 runs from 1.5 to 2.5.
+        playback.seek(to: 2)
+        #expect(playback.currentTime == 2)
+        #expect(await eventually { output.queued.first?.frames == 4_000 })
+        #expect(playback.isPlaying && output.playing)
+        // The rest of part 1, then part 2's silence and audio.
+        #expect(await eventually { output.queued.count == 3 })
+        output.playNext()
+        #expect(playback.currentTime == 2.5)
+        // Back, paused: it stays paused, at the place.
+        playback.pause()
+        playback.seek(to: 0.25)
+        #expect(playback.currentTime == 0.25)
+        #expect(await eventually { output.queued.first?.frames == 6_000 })
+        #expect(!output.playing && !playback.isPlaying)
+        // A place in the silence is the next part's start.
+        playback.seek(to: 1.2)
+        #expect(playback.currentTime == 1.5)
+    }
+
+    /// Once it is made its parts are going: the finished file takes over at the place.
+    @Test func aSeekAfterMakingFinishedHandsOverThere() async throws {
+        let files = try PartFiles()
+        defer { files.remove() }
+        let feed = ReadingPartFeed()
+        let output = QueueOutput()
+        let playback = PartQueuePlayback(feed: feed, output: output)
+        var handoffs: [TimeInterval] = []
+        playback.onHandoff = { handoffs.append($0) }
+        for index in 0..<3 { feed.add(try files.part(index, of: 3, seconds: 1)) }
+        #expect(playback.play())
+        #expect(await eventually { output.queued.count == 3 })
+        feed.finish(.finished)
+        playback.seek(to: 2)
+        #expect(handoffs == [2])
+    }
+
     /// Every part heard while they are joined, then that fails: it is told, never taken for the end of the reading.
     @Test func joiningThatFailsAfterAllIsHeardIsTold() async throws {
         let files = try PartFiles()

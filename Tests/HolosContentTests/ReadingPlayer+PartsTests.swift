@@ -24,23 +24,6 @@ private final class FinishedPlayback: ReadingPlayback, @unchecked Sendable {
 @MainActor @Suite struct ReadingPlayerPartsTests {
     private func file() -> FileHandle? { try? FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null")) }
 
-    /// Only the parts ahead are in memory: a reading playing from its parts stays where it is, and says it cannot move.
-    @Test func aReadingPlayingFromItsPartsDoesNotSeek() async throws {
-        let files = try PartFiles()
-        defer { files.remove() }
-        let output = QueueOutput()
-        let player = ReadingPlayer(open: { _ in OpenedPlayback(FinishedPlayback()) }, makeOutput: { output })
-        let feed = ReadingPartFeed()
-        feed.add(try files.part(0, of: 2, seconds: 1))
-        let id = UUID()
-        try player.play(id, feed: feed, finishedFile: { self.file() })
-        #expect(!player.canSeek)
-        #expect(player.seek(id, to: 0.5))
-        #expect(player.position?.current == 0)
-        player.stop()
-        #expect(!player.canSeek)
-    }
-
     @Test func aReadingBeingMadeIsHandedOverToItsFile() async throws {
         let files = try PartFiles()
         defer { files.remove() }

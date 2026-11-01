@@ -17,14 +17,11 @@ public protocol ReadingPlayback: AnyObject {
     func pause()
     func stop()
     func seek(to time: TimeInterval)
-    /// Whether `seek` can move it.
-    var canSeek: Bool { get }
 }
 
 extension ReadingPlayback {
     public var isWaiting: Bool { false }
     public var isDurationFinal: Bool { true }
-    public var canSeek: Bool { true }
 }
 
 extension AVAudioPlayer: ReadingPlayback {
@@ -49,8 +46,7 @@ public final class OpenedPlayback: @unchecked Sendable {
 /// 2. The latest interaction wins: a pause, a toggle, a seek or a stop advances `request`, and a reading still opening
 ///    starts only when `request` has not moved since it was asked for.
 /// 3. A callback from a player no longer loaded changes nothing.
-/// 4. A seek stays inside the loaded file and leaves it playing or paused as it was. A reading playing from its parts
-///    does not seek (`canSeek`), since only the parts ahead are in memory.
+/// 4. A seek stays inside what is loaded (a file, or the parts made so far) and leaves it playing or paused as it was.
 @MainActor
 public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
     /// Opens the file for playing; runs off the main actor (the player reads the file's start, which on a share whose
@@ -102,9 +98,6 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
         return (player.currentTime, player.duration, player.isDurationFinal)
     }
 
-    /// Whether the loaded reading can be moved: not while it plays from its parts.
-    public var canSeek: Bool { player?.canSeek ?? false }
-
     /// The loaded reading waits for a part that is not made yet.
     public var isWaiting: Bool { player?.isWaiting ?? false }
 
@@ -134,7 +127,7 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
         guard entryID == id, let player, time.isFinite else { return false }
         // Invariant 2.
         request += 1
-        if player.canSeek { player.seek(to: Self.clamped(time, duration: player.duration)) }
+        player.seek(to: Self.clamped(time, duration: player.duration))
         onChange?()
         return true
     }
