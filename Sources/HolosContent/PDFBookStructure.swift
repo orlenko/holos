@@ -184,7 +184,10 @@ enum PDFBookStructure {
             let occurrence = seen[line, default: 0]
             seen[line] = occurrence + 1
             let said = page.smallRuns[line] ?? []
-            let runs = said.indices.contains(occurrence) ? said[occurrence] : []
+            // The same words in other type, with some taken off the page: which is which cannot be told, so no marker.
+            let kept = lines.filter { $0 == line }.count
+            let runs = said.count == kept || Set(said.map(\.count)).count == 1
+                ? (said.indices.contains(occurrence) ? said[occurrence] : []) : []
             guard !runs.isEmpty else {
                 result.append(line)
                 continue
@@ -486,7 +489,10 @@ enum PDFBookStructure {
                 // open bracket or an unfinished note, it is that; "4 ibid., p. 12." after a finished note is a note.
                 if start.number == next, note == nil || start.text.first?.isLowercase != true
                     || (finished && bracketsClosed(pending.map { joined(note ?? "", $0) } ?? note ?? "")) { return start }
-                if start.number == 1, closed, startsABlock(lines.map(\.text), after: position, next: next) { return start }
+                // A larger chapter name has already said a block begins.
+                if start.number == 1, closed, heading != nil || startsABlock(lines.map(\.text), after: position, next: next) {
+                    return start
+                }
                 // A gap in the numbering: a sentence opening just past the next number, after a note that ended.
                 if start.number > next, start.number <= next + 3, finished, start.text.first?.isUppercase == true {
                     return start

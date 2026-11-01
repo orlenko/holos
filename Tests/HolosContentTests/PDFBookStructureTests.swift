@@ -330,6 +330,22 @@ import Testing
         #expect(result.contains("Footnote: First note cites Oxford University Press, 1999."))
     }
 
+    /// A chapter name set larger starts a block, however long that block's first note runs.
+    @Test func aLargerChapterNameNeedsNoNoteTwoNearby() throws {
+        let wrapped = (0..<45).map { "line number \($0) of a very long note" }
+        var sizes: [String: Double] = ["Notes": 14, "Chapter 2": 12, "1 Of one.": 9, "1 Of two begins": 9]
+        for line in wrapped { sizes[line] = 9 }
+        let text = (["Notes", "1 Of one.", "Chapter 2", "1 Of two begins"] + wrapped).joined(separator: "\n")
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0))"), .init(text: "B.\(try marker(1))"), .init(text: text, lineSizes: sizes),
+        ]
+        let result = paragraphs(pages, markers: ["1", "1"], outline: [
+            .init(label: "Chapter 1", page: 0), .init(label: "Chapter 2", page: 1), .init(label: "Notes", page: 2),
+        ])
+        #expect(result.contains("Footnote: Of one."))
+        #expect(result.contains { $0.hasPrefix("Footnote: Of two begins") })
+    }
+
     /// A number missing from the notes does not swallow the note after it.
     @Test func aGapInTheNumberingKeepsTheNoteAfterIt() throws {
         let body = try ["1", "2", "3", "5"].enumerated().map { "Sentence \($1).\(try marker($0))" }.joined(separator: " ")
