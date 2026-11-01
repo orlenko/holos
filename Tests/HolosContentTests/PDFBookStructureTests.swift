@@ -351,6 +351,41 @@ import Testing
             == ["Footnote: First.", "Footnote: Second. More about the second.", "Footnote: Third."])
     }
 
+    /// A chapter's first citation can rise past the last one's and still be its own.
+    @Test func aChapterFirstCitingTheNextNumberStillMovesOn() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0))"),
+            .init(text: "B.\(try marker(1))"),
+            .init(text: "Notes\n1 One.\n2 Two.\nChapter Two\n1 Other one.\n2 Other two."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "2"], outline: [.init(label: "One", page: 0), .init(label: "Two", page: 1),
+                                                                      .init(label: "Notes", page: 2)])
+        #expect(result.filter { $0.hasPrefix("Footnote:") }.prefix(2) == ["Footnote: One.", "Footnote: Other two."])
+    }
+
+    /// The first chapter with notes uses the first block, however many chapters came before without any.
+    @Test func theFirstCitationUsesTheFirstBlock() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "No notes here."), .init(text: "A.\(try marker(0))"), .init(text: "B.\(try marker(1))"),
+            .init(text: "Notes\n1 One.\nChapter Two\n1 Other one."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "1"],
+                                outline: [.init(label: "Zero", page: 0), .init(label: "One", page: 1), .init(label: "Two", page: 2),
+                                          .init(label: "Notes", page: 3)])
+        #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: One.", "Footnote: Other one."])
+    }
+
+    /// In a section the outline names as notes, a small number opens its note, in type the size of the body or not.
+    @Test func aNotesPagesSmallNumbersAreItsNotes() throws {
+        let body = styled([(String(repeating: Self.filler + "\n", count: 4), 10)])
+        let notes = styled([("3", 6), (" A note set in the size of the body.\n", 10)])
+        let (pages, markers, _) = try PDFReader.bookPages([body, notes], notesPages: [1])
+        #expect(markers.isEmpty)
+        #expect(pages[1].text == "3 A note set in the size of the body.")
+        #expect(PDFBookStructure.namedNotesPages([.init(label: "Body", page: 0), .init(label: "Notes", page: 1), .init(label: "Index", page: 2)],
+                                                 pageCount: 3) == [1])
+    }
+
     /// A chapter citing an earlier note again stays in its chapter's notes.
     @Test func citingANoteAgainDoesNotMoveToTheNextChapter() throws {
         let pages: [PDFBookStructure.Page] = [

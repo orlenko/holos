@@ -22,8 +22,10 @@ public enum PDFReader {
             let page = pdf.page(at: index)
             styled.append(page?.attributedString ?? page?.string.map { NSAttributedString(string: $0) })
         }
-        let (pages, markers, bodySize) = try bookPages(styled)
-        let paragraphs = try PDFBookStructure.paragraphs(pages: pages, markers: markers, outline: outline(of: pdf),
+        let contents = outline(of: pdf)
+        let (pages, markers, bodySize) = try bookPages(
+            styled, notesPages: PDFBookStructure.namedNotesPages(contents, pageCount: styled.count))
+        let paragraphs = try PDFBookStructure.paragraphs(pages: pages, markers: markers, outline: contents,
                                                      bodySize: bodySize, hasTitle: declared?.isEmpty == false)
         guard !paragraphs.isEmpty else {
             throw HolosError.invalidInput("\(url.lastPathComponent) has no text to read. Scanned PDFs need OCR, which is not supported.")
@@ -35,7 +37,8 @@ public enum PDFReader {
 
     /// Each page's text with its little note numbers marked (see `PDFBookStructure`), and what they say, from the
     /// fonts: the book's body size is the one most of its characters are set in.
-    static func bookPages(_ styled: [NSAttributedString?])
+    /// On `notesPages`, a small number opens its own note and cites nothing.
+    static func bookPages(_ styled: [NSAttributedString?], notesPages: Set<Int> = [])
         throws -> (pages: [PDFBookStructure.Page], markers: [String], bodySize: Double) {
         var counts: [Double: Int] = [:]
         for page in styled.compactMap({ $0 }) {
@@ -47,7 +50,7 @@ public enum PDFReader {
         let bodySize = counts.filter { $0.key > 0 }.max { ($0.value, $0.key) < ($1.value, $1.key) }?.key ?? 0
         var markers: [String] = []
         var pages: [PDFBookStructure.Page] = []
-        for page in styled {
+        for (index, page) in styled.enumerated() {
             try Task.checkCancellation()
             guard let page else {
                 pages.append(.init(text: ""))
@@ -60,7 +63,8 @@ public enum PDFReader {
             let lastText = NSMaxRange(source.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted,
                                                               options: .backwards))
             source.enumerateSubstrings(in: NSRange(location: 0, length: source.length), options: .byLines) { _, range, _, _ in
-                let styled = styledLine(page, range: range, bodySize: bodySize, markers: &markers)
+                let styled = styledLine(page, range: range, bodySize: notesPages.contains(index) ? 0 : bodySize,
+                                        markers: &markers)
                 var text = styled.text
                 let size = styled.size
                 // A marker the file gives as a line of its own belongs to the line before; left alone, it would break

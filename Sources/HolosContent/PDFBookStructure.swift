@@ -220,6 +220,17 @@ enum PDFBookStructure {
         }
     }
 
+    /// The pages the outline names as notes: their small numbers are the notes' own, not citations.
+    static func namedNotesPages(_ outline: [OutlineEntry], pageCount: Int) -> Set<Int> {
+        var pages = Set<Int>()
+        let entries = outline.filter { (0..<pageCount).contains($0.page) }
+        for (index, entry) in entries.enumerated() where role(named: entry.label, hasTitle: true) == .notes {
+            let end = entries[(index + 1)...].first { $0.level <= entry.level && $0.page > entry.page }?.page ?? pageCount
+            pages.formUnion(entry.page..<end)
+        }
+        return pages
+    }
+
     /// Pages no outline named: the contents and the copyright page near the start, the index and notes near the end.
     private static func recognize(_ content: [[String]], into roles: inout [Role]) {
         let early = min(content.count, max(8, min(30, content.count / 4)))
@@ -418,8 +429,8 @@ enum PDFBookStructure {
     }
 
     /// Each marker's note, going through the text in reading order. Past the start of a part where the outline names
-    /// chapters, a number that does not rise and that the next block has moves on to it; without chapters, only one
-    /// falling back to where that block begins does. A chapter citing an earlier note again does not. `endnotesPaired`: most of the markers not at a page's foot found theirs. `uncited`: the notes none of
+    /// chapters, a number the next block has moves on to it; without chapters, only one falling back to where that block
+    /// begins does. A chapter citing an earlier note again does not. `endnotesPaired`: most of the markers not at a page's foot found theirs. `uncited`: the notes none of
     /// them cited, in order.
     private static func resolve(content: [[String]], roles: [Role], markers: [String], footnotes: [[Note]],
                                 endnotes: [[Int: String]], partStarts: Set<Int>)
@@ -441,9 +452,10 @@ enum PDFBookStructure {
                 wanted += 1
                 let partBegan = partStarts.contains { $0 > lastPage && $0 <= page }
                 let nextBlock = block + 1 < endnotes.count ? endnotes[block + 1] : nil
-                let moves = partStarts.isEmpty ? number == nextBlock?.keys.min() : partBegan && nextBlock?[number] != nil
-                // A new chapter's first citation can also rise past the last one and be missing from this block.
-                if number <= last || endnotes[block][number] == nil, moves {
+                // Blocks mean numbering per chapter, so a chapter's first citation moves on, risen or not, past the first.
+                let moves = partStarts.isEmpty ? number <= last && number == nextBlock?.keys.min()
+                    : last > 0 && partBegan && nextBlock?[number] != nil
+                if moves {
                     block += 1
                     last = number
                 } else {
