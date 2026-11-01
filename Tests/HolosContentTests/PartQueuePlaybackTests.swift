@@ -359,6 +359,9 @@ struct PartFiles {
         #expect(await eventually { output.queued.count == 1 })
         feed.finish(.stopped)
         feed.reopen()
+        // The resumed run reports what it kept first, then what it makes.
+        #expect(feed.parts.isEmpty)
+        feed.add(try files.part(0, of: 3, seconds: 1))
         feed.add(try files.part(1, of: 3, seconds: 1))
         #expect(await eventually { output.queued.count == 3 })
         output.playNext()

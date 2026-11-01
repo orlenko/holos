@@ -41,6 +41,8 @@ import Testing
         #expect(feeds.feed(stopped) === stopping)
         feeds.add(part(1), to: stopped)
         #expect(stopping.end == nil && stopping.parts[1] != nil)
+        // Only what the resumed run reports counts: it may have found a cached file changed or gone.
+        #expect(stopping.parts[0] == nil)
         feeds.ended(stopped, as: nil)
         #expect(feeds.feed(stopped) == nil)
         feeds.add(part(0), to: stopped)

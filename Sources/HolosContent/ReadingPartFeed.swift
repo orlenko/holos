@@ -37,7 +37,8 @@ public struct ReadingMadePart: Sendable, Equatable {
 /// 1. `parts` only grows, by index, all with one `total`. The same part added again changes nothing; one made anew by a
 ///    resume (its cached file was gone or changed) takes the old one's place.
 /// 2. `end` is set once, and nothing is added after it, unless a stopped reading resumes (`reopen`): whoever plays it
-///    then goes on with the parts made next.
+///    then goes on with the parts made next. Only parts the resumed run reports count from then on: it checks those it
+///    keeps, and a file changed or gone meanwhile is made again.
 /// 3. `onChange` is called after every change, and only then.
 @MainActor
 public final class ReadingPartFeed {
@@ -72,6 +73,7 @@ public final class ReadingPartFeed {
     public func reopen() {
         guard end == .stopped else { return }
         end = nil
+        parts = [:]
         onChange?()
     }
 
