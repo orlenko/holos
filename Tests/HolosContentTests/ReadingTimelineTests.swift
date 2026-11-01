@@ -1,5 +1,6 @@
 import Foundation
 import HolosSynthesis
+import HolosTestSupport
 import Testing
 @testable import HolosContent
 
@@ -94,9 +95,9 @@ import Testing
     }
 
     @Test func loadReadsTheManifestInTheCacheAndNothingElse() async throws {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("timeline-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { #expect(throws: Never.self) { try FileManager.default.removeItem(at: folder) } }
+        let temporary = try TemporaryDirectory("reading")
+        defer { temporary.remove() }
+        let folder = temporary.url
         let text = "One two. Three four."
         var entry = ReadingEntry(source: .web(try #require(URL(string: "https://example.com"))),
                                  requestedVoice: nil, speed: 1)
