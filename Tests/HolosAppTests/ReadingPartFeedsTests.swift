@@ -43,6 +43,9 @@ import Testing
         #expect(stopping.end == nil && stopping.parts[1] != nil)
         feeds.ended(stopped, as: nil)
         #expect(feeds.feed(stopped) == nil)
+        feeds.add(part(0), to: stopped)
+        feeds.forget(stopped)
+        #expect(feeds.feed(stopped) == nil)
 
         // A reading with no part made has no feed to end.
         feeds.ended(UUID(), as: entry)

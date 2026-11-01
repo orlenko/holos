@@ -92,7 +92,11 @@ public final class PartQueuePlayback {
         self.feed = feed
         self.output = output
         self.read = read
-        feed.onChange = { [weak self] in self?.fill() }
+        feed.onChange = { [weak self] in
+            // A part not found may have been made again.
+            self?.missing = false
+            self?.fill()
+        }
         output.onInterrupted = { [weak self] in self?.interrupted() }
     }
 
@@ -319,7 +323,7 @@ public final class PartQueuePlayback {
         queuedFrames = 0
         next = unheard.first?.index ?? next
         // The part a seek landed in goes back to that place, which `base` already is.
-        let back = landed.flatMap { $0.index == next ? $0 : nil }
+        let back = [landed, landing].compactMap { $0 }.first { $0.index == next }
         dropQueued()
         landing = back
         onChange?()

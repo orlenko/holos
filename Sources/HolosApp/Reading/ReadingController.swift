@@ -700,6 +700,7 @@ final class ReadingController {
             return .kept(problem)
         }
         all.removeAll { $0.id == id }
+        feeds.forget(id)
         files[id] = nil
         checksummed[id] = nil
         unreadable[id] = nil

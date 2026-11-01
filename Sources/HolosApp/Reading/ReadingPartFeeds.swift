@@ -27,6 +27,11 @@ final class ReadingPartFeeds {
         onPartMade?(id)
     }
 
+    /// The reading was deleted: nothing will resume it.
+    func forget(_ id: UUID) {
+        feeds[id] = nil
+    }
+
     /// The reading's work ended; `entry` (as it is now) says how: made, failed, or stopped.
     func ended(_ id: UUID, as entry: ReadingEntry?) {
         guard let feed = feeds[id] else { return }

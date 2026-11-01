@@ -34,7 +34,8 @@ public struct ReadingMadePart: Sendable, Equatable {
 /// section").
 ///
 /// Invariants:
-/// 1. `parts` only grows: a part is added once, by its index; one added again is ignored. All share one `total`.
+/// 1. `parts` only grows, by index, all with one `total`. The same part added again changes nothing; one made anew by a
+///    resume (its cached file was gone or changed) takes the old one's place.
 /// 2. `end` is set once, and nothing is added after it, unless a stopped reading resumes (`reopen`): whoever plays it
 ///    then goes on with the parts made next.
 /// 3. `onChange` is called after every change, and only then.
@@ -61,7 +62,7 @@ public final class ReadingPartFeed {
 
     /// Invariants 1 and 2.
     public func add(_ part: ReadingMadePart) {
-        guard end == nil, parts[part.index] == nil, total == nil || total == part.total else { return }
+        guard end == nil, parts[part.index] != part, total == nil || total == part.total else { return }
         parts[part.index] = part
         total = part.total
         onChange?()

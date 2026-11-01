@@ -281,6 +281,40 @@ struct PartFiles {
         #expect(playback.currentTime == 2.5)
     }
 
+    /// A change of audio device while the part a seek lands in is still being read keeps the place too.
+    @Test func aDeviceChangeWhileTheSoughtPartIsReadKeepsThePlace() async throws {
+        let files = try PartFiles()
+        defer { files.remove() }
+        let feed = ReadingPartFeed()
+        let output = QueueOutput()
+        let playback = PartQueuePlayback(feed: feed, output: output)
+        for index in 0..<2 { feed.add(try files.part(index, of: 3, seconds: 1)) }
+        #expect(playback.play())
+        #expect(await eventually { output.queued.count == 3 })
+        playback.seek(to: 2)
+        output.onInterrupted?()
+        #expect(playback.currentTime == 2)
+        #expect(playback.play())
+        #expect(await eventually { output.queued.first?.frames == 4_000 })
+    }
+
+    /// A part made anew by a resume takes the old one's place, and a read that had found it gone tries again.
+    @Test func aPartMadeAgainIsPlayedAndTheOldOneIsNot() async throws {
+        let files = try PartFiles()
+        defer { files.remove() }
+        let feed = ReadingPartFeed()
+        let first = try files.part(0, of: 2, seconds: 1)
+        feed.add(first)
+        try FileManager.default.removeItem(at: first.audio)
+        let output = QueueOutput()
+        let playback = PartQueuePlayback(feed: feed, output: output)
+        #expect(playback.play())
+        #expect(await eventually { playback.isWaiting })
+        feed.add(try files.part(0, of: 2, seconds: 2))
+        #expect(await eventually { output.queued.first?.frames == 16_000 })
+        #expect(playback.duration == 2)
+    }
+
     /// A place asked for before the first part is read is gone to once it is.
     @Test func aSeekBeforeTheFirstPartIsReadIsKept() async throws {
         let files = try PartFiles()

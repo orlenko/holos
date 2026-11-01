@@ -10,7 +10,7 @@
 1756 Sources/HolosApp/MainWindow/MeetingsPane.swift
 794 Sources/HolosApp/MainWindow/ReadingPane.swift
 1350 Sources/HolosApp/MainWindow/SettingsPane.swift
-928 Sources/HolosApp/Reading/ReadingController.swift
+929 Sources/HolosApp/Reading/ReadingController.swift
 1756 Sources/HolosApp/Review/ReviewWindow.swift
 737 Sources/HolosAudio/MeetingScreenCapture.swift
 692 Sources/HolosAudio/TrackRenderer.swift
