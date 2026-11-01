@@ -307,8 +307,10 @@ enum PDFBookStructure {
             let start = noteStart(line.text).flatMap { start -> (number: Int, text: String)? in
                 Int(start.label).map { ($0, start.text) }
             }.flatMap { start -> (number: Int, text: String)? in
-                // A wrapped line can open with the next number: "26) that must be…". A note starts as a sentence does.
-                if start.number == next, note == nil || start.text.first?.isLowercase != true { return start }
+                // A wrapped line can open with the next number: "(CW 12, n.\n26) that must be…". In lowercase after an
+                // open bracket or an unfinished note, it is that; "4 ibid., p. 12." after a finished note is a note.
+                if start.number == next, note == nil || start.text.first?.isLowercase != true
+                    || (finished && bracketsClosed(pending.map { joined(note ?? "", $0) } ?? note ?? "")) { return start }
                 if start.number == 1, closed, startsABlock(lines.map(\.text), after: position, next: next) { return start }
                 return nil
             } ?? (line.stray.contains(next) && finished ? (next, line.text) : nil)
@@ -331,6 +333,10 @@ enum PDFBookStructure {
         }
         flush()
         return blocks
+    }
+
+    private static func bracketsClosed(_ text: String) -> Bool {
+        text.filter { $0 == "(" }.count <= text.filter { $0 == ")" }.count
     }
 
     /// A note 1 opens a block when a note 2 soon follows, or when the section soon ends without the note that would

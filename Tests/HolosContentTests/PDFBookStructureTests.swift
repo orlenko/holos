@@ -187,6 +187,16 @@ import Testing
         #expect(result.filter { $0.hasPrefix("Footnote:") }.last == "Footnote: The real second.")
     }
 
+    /// A note can start in lowercase, after a finished one; a line inside an open bracket is not a note.
+    @Test func lowercaseOpensANoteOnlyAfterAFinishedOne() throws {
+        let body = try (0..<3).map { "Sentence \($0).\(try marker($0))" }.joined(separator: " ")
+        let notes = PDFBookStructure.Page(text: "Notes\n1 One says (see p. 3, n.\n2) that this goes on.\n2 ibid., p. 12.\n3 Third.")
+        let result = paragraphs([.init(text: body), notes], markers: ["1", "2", "3"],
+                                outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 1)])
+        #expect(result.filter { $0.hasPrefix("Footnote:") }
+            == ["Footnote: One says (see p. 3, n. 2) that this goes on.", "Footnote: ibid., p. 12.", "Footnote: Third."])
+    }
+
     /// "1 Corinthians" wrapping to a line's start inside a note starts no new block of notes.
     @Test func aLineOpeningWithANumberInsideANoteStaysInIt() throws {
         let pages: [PDFBookStructure.Page] = [
