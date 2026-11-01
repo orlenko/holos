@@ -292,7 +292,8 @@ enum PDFBookStructure {
             // An outline gives only the page: back matter starting partway down one leaves that page to the text before.
             let start = opensMidPage(entry.label) && !opensPart(content[entry.page], named: entry.label)
                 ? entry.page + 1 : entry.page
-            let end = entries[(index + 1)...].first { $0.level <= entry.level && $0.page > entry.page }?.page ?? content.count
+            // A part beginning on this same page leaves it, and everything after, to that part.
+            let end = entries[(index + 1)...].first { $0.level <= entry.level && $0.page >= entry.page }?.page ?? content.count
             for page in min(start, end)..<end { roles[page] = role }
         }
         // A wrong outline, or one with nothing else in it, must not silence the book (invariant 1).

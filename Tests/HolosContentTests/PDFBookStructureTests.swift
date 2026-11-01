@@ -398,6 +398,15 @@ import Testing
         ])
     }
 
+    /// A part starting on the same page as the back matter before it is not swallowed by it.
+    @Test func aPartOnTheSamePageEndsTheOneBefore() {
+        let content = (0..<4).map { ["Page \($0) words."] }
+        let outline: [PDFBookStructure.OutlineEntry] = [
+            .init(label: "One", page: 0), .init(label: "References", page: 1), .init(label: "Appendix", page: 1), .init(label: "Index", page: 3),
+        ]
+        #expect(PDFBookStructure.roles(content: content, outline: outline, hasTitle: true).prefix(3) == [.body, .body, .body])
+    }
+
     /// Notes starting under the last of the text are still notes, and the text above them is still read.
     @Test func notesStartingPartwayDownAPageAreKept() throws {
         let pages: [PDFBookStructure.Page] = [
