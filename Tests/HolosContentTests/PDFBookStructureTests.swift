@@ -694,6 +694,34 @@ import Testing
         #expect(result.last == "Footnote: Of two.")
     }
 
+    /// A chapter's name set larger in the notes still names its block, though it is no part of a note.
+    @Test func aLargerChapterNameInTheNotesNamesItsBlock() throws {
+        let notes = "Notes\nChapter 1\n1 Of one.\nChapter 2\n1 Of two.\nChapter 3\n1 Of three."
+        let sizes = ["Notes": 14.0, "Chapter 1": 12, "Chapter 2": 12, "Chapter 3": 12, "1 Of one.": 9, "1 Of two.": 9, "1 Of three.": 9]
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0))"), .init(text: "No citations found."), .init(text: "B.\(try marker(1))"),
+            .init(text: notes, lineSizes: sizes),
+        ]
+        let result = paragraphs(pages, markers: ["1", "1"], outline: [
+            .init(label: "Chapter 1 A Start", page: 0), .init(label: "Chapter 2 A Middle", page: 1),
+            .init(label: "Chapter 3 An End", page: 2), .init(label: "Notes", page: 3),
+        ])
+        #expect(result.filter { $0.hasPrefix("Footnote:") }.prefix(2) == ["Footnote: Of one.", "Footnote: Of three."])
+    }
+
+    /// A section inside a chapter belongs to it: the chapter's name finds its block.
+    @Test func aSectionInsideAChapterStillFindsTheChaptersBlock() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0))"), .init(text: "No citations found."), .init(text: "Words."), .init(text: "B.\(try marker(1))"),
+            .init(text: "Notes\nChapter 1\n1 Of one.\nChapter 2\n1 Of two.\nChapter 3\n1 Of three."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "1"], outline: [
+            .init(label: "Chapter 1 A Start", page: 0), .init(label: "Chapter 2 A Middle", page: 1),
+            .init(label: "Chapter 3 An End", page: 2), .init(label: "A Section", page: 3, level: 1), .init(label: "Notes", page: 4),
+        ])
+        #expect(result.filter { $0.hasPrefix("Footnote:") }.prefix(2) == ["Footnote: Of one.", "Footnote: Of three."])
+    }
+
     /// The same file gives the same text: equally frequent sizes tie the same way each time.
     @Test func equallyFrequentSizesTieTheSameWay() throws {
         let page = styled([("Eight points text.\n", 8), ("Ten point text ok.\n", 10)])
