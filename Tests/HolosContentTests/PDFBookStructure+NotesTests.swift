@@ -601,6 +601,29 @@ extension PDFBookStructureTests {
         #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: First.", "Footnote: Second.", "Footnote: Third."])
     }
 
+    /// A capitalized opening after a label given apart is the note's, not a chapter's name.
+    @Test func aDetachedLabelsCapitalizedOpeningIsTheNote() throws {
+        let body = try (0..<3).map { "Sentence \($0).\(try marker($0))" }.joined(separator: " ")
+        let notes = "Notes\n1\nA citation that wraps\nonto a second line.\n2 Second.\n3 Third."
+        let result = paragraphs([.init(text: body), .init(text: notes)], markers: ["1", "2", "3"],
+                                outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 1)])
+        #expect(result.contains("Footnote: A citation that wraps onto a second line."))
+    }
+
+    /// Notes ending partway down a page, above the next part's heading, are all notes.
+    @Test func notesEndingPartwayDownAPageStayNotes() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0)) B.\(try marker(1)) C.\(try marker(2))"),
+            .init(text: "Notes\n1 One.\n2 Two begins"),
+            .init(text: "and ends here.\n3 Three.\nAppendix\nThe appendix says this."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "2", "3"], outline: [
+            .init(label: "Body", page: 0), .init(label: "Notes", page: 1), .init(label: "Appendix", page: 2),
+        ])
+        #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: One.", "Footnote: Two begins and ends here.", "Footnote: Three."])
+        #expect(result.joined(separator: " ").contains("The appendix says this."))
+    }
+
     /// A page reference wrapped onto its own line stays in its note.
     @Test func aNotesNumericLineStaysInIt() throws {
         let body = try (0..<3).map { "Sentence \($0).\(try marker($0))" }.joined(separator: " ")

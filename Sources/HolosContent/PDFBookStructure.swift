@@ -168,6 +168,20 @@ enum PDFBookStructure {
             framed[entry.page].removeSubrange(heading..<end)
             if role(named: entry.label, hasTitle: true) == .notes { notes[entry.page, default: []].append((heading, below)) }
         }
+        // The other end: a part starting partway down a page leaves what is above its heading to the part before.
+        for (index, entry) in outline.enumerated() where opensMidPage(entry.label) && framed.indices.contains(entry.page) {
+            guard let next = outline[(index + 1)...].first(where: { $0.level <= entry.level && $0.page > entry.page }),
+                  framed.indices.contains(next.page) else { continue }
+            let name = outlineName(next.label)
+            guard let heading = framed[next.page].firstIndex(where: { line in
+                let key = outlineName(line)
+                return !key.isEmpty && (key == name || name.hasPrefix(key + " "))
+            }), heading > 0 else { continue }
+            let above = Array(framed[next.page][..<heading])
+            framed[next.page].removeSubrange(..<heading)
+            // Its first line stands where a section's heading does, so nothing of the note is taken for one.
+            if role(named: entry.label, hasTitle: true) == .notes { notes[next.page, default: []].append((0, [""] + above)) }
+        }
         return notes
     }
 
@@ -501,7 +515,7 @@ enum PDFBookStructure {
                     return start
                 }
                 return nil
-            } ?? (line.stray.contains(next) && (finished || (note == nil && !namesAPart(line.text, parts: parts, afterFinished: true)))
+            } ?? (line.stray.contains(next) && (finished || (note == nil && !namesAPart(line.text, parts: parts, afterFinished: false)))
                 ? (next, line.text) : nil)
             lastLine = line.text
             guard let start else {
