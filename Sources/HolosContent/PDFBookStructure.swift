@@ -170,8 +170,8 @@ enum PDFBookStructure {
         }
         // The other end: a part starting partway down a page leaves what is above its heading to the part before.
         for (index, entry) in outline.enumerated() where opensMidPage(entry.label) && framed.indices.contains(entry.page) {
-            guard let next = outline[(index + 1)...].first(where: { $0.level <= entry.level && $0.page > entry.page }),
-                  framed.indices.contains(next.page) else { continue }
+            guard let next = outline[(index + 1)...].first(where: { $0.level <= entry.level && $0.page >= entry.page }),
+                  next.page > entry.page, framed.indices.contains(next.page) else { continue }
             let name = outlineName(next.label)
             guard let heading = framed[next.page].firstIndex(where: { line in
                 let key = outlineName(line)
@@ -515,7 +515,8 @@ enum PDFBookStructure {
                     return start
                 }
                 return nil
-            } ?? (line.stray.contains(next) && (finished || (note == nil && !namesAPart(line.text, parts: parts, afterFinished: false)))
+            } ?? (heading != nil && line.stray.contains(1) ? (1, line.text) : nil)
+                ?? (line.stray.contains(next) && (finished || (note == nil && !namesAPart(line.text, parts: parts, afterFinished: false)))
                 ? (next, line.text) : nil)
             lastLine = line.text
             guard let start else {

@@ -624,6 +624,33 @@ extension PDFBookStructureTests {
         #expect(result.joined(separator: " ").contains("The appendix says this."))
     }
 
+    /// A chapter's notes starting over with their labels given apart start a block.
+    @Test func detachedLabelsStartingOverStartABlock() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0))"), .init(text: "B.\(try marker(1))"),
+            .init(text: "Notes\n1 One."),
+            .init(text: "Chapter 2\n1\nOf two.", lineSizes: ["Chapter 2": 12, "1": 9, "Of two.": 9, "x": 9, "y": 9]),
+        ]
+        let result = paragraphs(pages, markers: ["1", "1"], outline: [
+            .init(label: "Chapter 1", page: 0), .init(label: "Chapter 2", page: 1), .init(label: "Notes", page: 2),
+        ])
+        #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: One.", "Footnote: Of two."])
+    }
+
+    /// Back matter ends at the next part, whichever page that is on.
+    @Test func backMatterEndsAtTheNextPartEvenOnItsOwnPage() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "Words first."),
+            .init(text: "References\nSomebody, A Book.\nAppendix\nThe appendix begins."),
+            .init(text: "The appendix goes on.\nEpilogue\nThe epilogue."),
+        ]
+        let text = paragraphs(pages, outline: [
+            .init(label: "One", page: 0), .init(label: "References", page: 1), .init(label: "Appendix", page: 1),
+            .init(label: "Epilogue", page: 2),
+        ]).joined(separator: " ")
+        #expect(text.contains("The appendix goes on.") && !text.contains("Somebody"))
+    }
+
     /// A page reference wrapped onto its own line stays in its note.
     @Test func aNotesNumericLineStaysInIt() throws {
         let body = try (0..<3).map { "Sentence \($0).\(try marker($0))" }.joined(separator: " ")
