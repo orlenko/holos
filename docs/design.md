@@ -637,6 +637,24 @@ rendered, and kept until the reading is deleted, so Resume and Try Again read th
 without fetching the page again, and **Show Text** shows it; a document that cannot be saved,
 or a saved one that cannot be read back, fails the reading rather than loading the source again.
 
+**Show Text** opens `ReadingTextWindow`, one window at a time, to read along with the voice: the
+saved text (`ReadableDocument.plainText`, the same string the script speaks), selectable and copyable
+but never editable, over ▶ Play, a seek bar, **Follow Voice**, and **Copy Text** (the whole text). Space
+plays or pauses. The bar of a reading not loaded in the player starts it from the place chosen. The
+sentence being spoken is highlighted with a rendering attribute, so it never touches the text, the
+selection, or what is copied, and the view scrolls to keep it in view while Follow Voice is on. Scrolling
+or selecting turns Follow Voice off so the place being read stays put; the highlight keeps moving, and
+turning it on goes back to the voice. The window closes with the main window and when its reading leaves
+the list. A reading an earlier version made has no saved text and says so.
+
+The times come from `ReadingTimeline` (HolosContent), read from the manifest the render cache keeps
+after the file is made, so readings already made follow too, without rendering again. A part's start is
+exact: its rendered duration, plus the silences the joiner put before it (`ReadingPart.silenceBefore`,
+the one rule both use). Inside a part, up to 3,000 UTF-16 units, a sentence's time is estimated from its
+place in the part's text, since no renderer reports word times, so the highlight can lead or lag within
+a part and is corrected at the next one. A manifest whose durations are missing, or whose parts' text hashes do not match the saved
+text, gives no timeline: the text shows with no highlight and Follow Voice is off and says why.
+
 `ReadingController` (HolosApp) runs the readings one at a time through
 `ReadingWorkQueue` (HolosContent): first come, first made; Stop takes a waiting one out at
 once and cancels a running one, which ends as stopped unless it finished anyway. The work
@@ -674,10 +692,11 @@ same file) is never used, so two readings never share, or delete, one file.
 Rows show the title and the source (the site without "www.", or the file's name), then:
 waiting (Stop); loading or "Rendering part N of M" with a bar (Stop); joining; made
 (length · chapters · size · voice, and the speed when not 1×) with **▶ Play** (an
-`AVAudioPlayer` in the app, Space or double-click, one reading at a time, position shown;
-stopped when the window closes), **Show Text** (the saved text, `ReadableDocument.plainText`,
-in a sheet to read, select, or copy whole with **Copy Text**; a reading an earlier version made
-has none and says so), **Share…** (`NSSharingServicePicker`, ⇧⌘S), **Show in Finder**,
+`AVAudioPlayer` in the app, Space or double-click, one reading at a time; stopped when the
+window closes). The reading loaded in the player has a taller row with a seek bar
+(`ReadingSeekBar`): elapsed time, the bar, the length. The release of a drag seeks, the player does
+not move the knob meanwhile, and ← and → (and VoiceOver) move 15 seconds, since a pixel of a long
+book's bar can be nearly a minute. **Show Text** opens the text window (see below); **Share…** (`NSSharingServicePicker`, ⇧⌘S), **Show in Finder**,
 **Delete…**; in a row narrower than 600 points Show Text, Share…, Show in Finder and Delete…
 show only their symbols; failed (the error, **Try Again**); stopped (where, **Resume**). A
 made reading whose file is no longer there, or was replaced by another file (its file
