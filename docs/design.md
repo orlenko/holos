@@ -1950,7 +1950,7 @@ holding the marker. Notes at a page's foot are the smaller lines closing the pag
 including one running over from the page before. Notes in a notes section, named by the outline or recognized by its
 look, pair with markers in reading order, a new block each time the numbers start over (a book numbering per chapter).
 When under 60% of the markers find a note, the section is read as ordinary text and the markers go silently; otherwise a
-note no marker cited is said at the end of the book, so no note is lost. With no note found anywhere, small numbers that do not count upward as citations do stay as text: H₂O, x². A note set in the body
+note no marker cited is said at the end of the book, so no note is lost. A small number with no note that does not count upward with those beside it, as citations do, stays as text: H₂O, x². A note set in the body
 size at a page's foot is not recognized: it stays where it stands, without its marker. Other formats and web pages do
 not get this yet. A reading made before this keeps its text until it is made again.
 ### Voice profiles

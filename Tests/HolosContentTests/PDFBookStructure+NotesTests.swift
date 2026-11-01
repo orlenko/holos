@@ -408,6 +408,32 @@ import Testing
         #expect(!text.contains("A reference."))
     }
 
+    /// A chapter's name set larger starts its block though its first note is not numbered 1.
+    @Test func aLargerChapterNameStartsABlockAtAnyNumber() throws {
+        let notes = "Notes\nChapter 1\n1 One.\n2 Two.\nChapter 2\n2 Other two."
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0)) B.\(try marker(1))"), .init(text: "C.\(try marker(2))"),
+            .init(text: notes, lineSizes: ["Notes": 14, "Chapter 1": 12, "Chapter 2": 12, "1 One.": 9, "2 Two.": 9, "2 Other two.": 9]),
+        ]
+        let result = paragraphs(pages, markers: ["1", "2", "2"], outline: [
+            .init(label: "Chapter 1", page: 0), .init(label: "Chapter 2", page: 1), .init(label: "Notes", page: 2),
+        ])
+        #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: One.", "Footnote: Two.", "Footnote: Other two."])
+    }
+
+    /// Unpaired notes go back before the same line, whatever else has left the page.
+    @Test func unpairedNotesGoBackBeforeTheSameLine() throws {
+        let notes = PDFBookStructure.Page(
+            text: "\(Self.filler)\nPrevious sentence\(try marker(3))\nNotes\n77 Unmatched.\nAppendix\nThe appendix says this.")
+        let pages: [PDFBookStructure.Page] = [.init(text: "A.\(try marker(0)) B.\(try marker(1)) C.\(try marker(2))"), notes]
+        let text = paragraphs(pages, markers: ["7", "8", "9", "10"], outline: [
+            .init(label: "Body", page: 0), .init(label: "Notes", page: 1), .init(label: "Appendix", page: 1),
+        ]).joined(separator: " ")
+        let order = ["Previous sentence", "77 Unmatched", "Appendix", "The appendix"].map { text.range(of: $0)?.lowerBound }
+        #expect(order.allSatisfy { $0 != nil })
+        #expect(order.compactMap { $0 } == order.compactMap { $0 }.sorted())
+    }
+
     /// Notes starting under the last of the text are still notes, and the text above them is still read.
     @Test func notesStartingPartwayDownAPageAreKept() throws {
         let pages: [PDFBookStructure.Page] = [

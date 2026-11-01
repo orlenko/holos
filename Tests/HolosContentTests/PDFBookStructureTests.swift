@@ -342,6 +342,16 @@ extension PDFBookPages {
         #expect(try read([page]).joined(separator: " ").contains("Water is H2O and so is more H2O"))
     }
 
+    /// A formula beside a book's real notes is still a formula.
+    @Test func aFormulaInABookWithNotesStays() throws {
+        let body = String(repeating: Self.filler + "\n", count: 3)
+        let page = styled([(body, 10), ("It cites one", 10), ("1", 6), (" and goes on.\n", 10), ("Water is H", 10), ("2", 6), ("O and again H", 10), ("2", 6), ("O here.\n", 10),
+                           ("1 The note.\n", 8)])
+        let text = try read([page]).joined(separator: " ")
+        #expect(text.contains("Footnote: The note."))
+        #expect(text.contains("again H2O here"))
+    }
+
     // MARK: The author
 
     @Test func theAuthorIsSaidOnlyWhenTheBookPrintsTheName() {

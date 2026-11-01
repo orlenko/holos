@@ -61,6 +61,11 @@ enum PDFBookStructure {
         return Int(value - markerBase)
     }
 
+    /// `text` without any markers.
+    private static func withoutMarkers(_ text: String) -> String {
+        String(String.UnicodeScalarView(text.unicodeScalars.filter { markerIndex($0) == nil }))
+    }
+
     /// `text` without trailing markers: what a line ends with when its sentence ended before the little number.
     static func withoutTrailingMarkers(_ text: String) -> String {
         var scalars = Substring(text).unicodeScalars
@@ -131,15 +136,17 @@ enum PDFBookStructure {
             for (page, sections) in notesBelow {
                 // What is left of the page may have been taken for the back matter it shared with.
                 roles[page] = .body
-                // Last first: each place was counted with those before it already gone.
+                // Last first, before the line each stood before, whatever has been taken off or marked since.
                 for notes in sections.reversed() {
-                    content[page].insert(contentsOf: notes.lines, at: min(notes.at, content[page].count))
+                    let place = notes.before.flatMap { before in
+                        content[page].firstIndex { withoutMarkers($0) == before }
+                    } ?? content[page].count
+                    content[page].insert(contentsOf: notes.lines, at: place)
                 }
             }
         }
         let bodyPages = content.indices.filter { roles[$0] == .body }.map { content[$0] }
-        // No notes, and numbers that do not count upward as citations do: they are text (H₂O, x²).
-        let literal = resolved.notes.isEmpty && !countUpward(markers)
+        let literal = textMarkers(markers, notes: resolved.notes)
         try Task.checkCancellation()
         let body = try PDFReader.reflow(content: bodyPages).flatMap { paragraph in
             try Task.checkCancellation()
@@ -151,12 +158,12 @@ enum PDFBookStructure {
     }
 
     /// Splits each page where the outline's parts change partway down, in reading order and before anything is removed,
-    /// so no boundary is missed for an earlier removal. What belongs to a notes section is returned, by page, with its
-    /// place among the lines left and its heading or a blank in the heading's place; other back matter goes as the part
+    /// so no boundary is missed for an earlier removal. What belongs to a notes section is returned, by page, with the
+    /// line it stood before and its heading or a blank in the heading's place; other back matter goes as the part
     /// does; text stays. A page in one part throughout is left for `roles`.
     private static func takeBackMatterBelow(_ framed: inout [[String]], outline: [OutlineEntry])
-        -> [Int: [(at: Int, lines: [String])]] {
-        var notes: [Int: [(at: Int, lines: [String])]] = [:]
+        -> [Int: [(before: String?, lines: [String])]] {
+        var notes: [Int: [(before: String?, lines: [String])]] = [:]
         // The back matter being read: nested entries are of it, until one at its depth or above.
         var active: (role: Role, level: Int)?
         for page in framed.indices {
@@ -192,10 +199,15 @@ enum PDFBookStructure {
                     if !piece.isEmpty {
                         // A section begun here opens on its heading; one going on from the page before has none.
                         let opens = start > 0 || first == nil || cuts.first?.line == 0
-                        notes[page, default: []].append((kept.count, (opens ? [] : [""]) + piece))
+                        notes[page, default: []].append((nil, (opens ? [] : [""]) + piece))
                     }
                 case .skipped?: break
-                case .body?, nil: kept += piece
+                case .body?, nil:
+                    // Sections found since the last text stood before this.
+                    if let next = piece.first(where: { !$0.isEmpty }), let sections = notes[page] {
+                        notes[page] = sections.map { $0.before == nil ? (next, $0.lines) : $0 }
+                    }
+                    kept += piece
                 }
                 start = cut.line
                 current = cut.active
@@ -215,12 +227,18 @@ enum PDFBookStructure {
         }
     }
 
-    /// Whether small numbers rise as citations do, most of the way through.
-    private static func countUpward(_ markers: [String]) -> Bool {
-        let numbers = markers.compactMap { Int($0) }
-        guard numbers.count >= 3 else { return false }
-        let rises = zip(numbers, numbers.dropFirst()).filter { $0 < $1 }.count
-        return rises * 10 >= (numbers.count - 1) * 6
+    /// The markers that are text after all (H₂O, x²): numbers with no note that do not count upward with those beside
+    /// them, as citations do. A symbol, or a number in step with its neighbours, goes silently.
+    private static func textMarkers(_ markers: [String], notes: [Int: String]) -> Set<Int> {
+        var text = Set<Int>()
+        for (index, marker) in markers.enumerated() where notes[index] == nil {
+            guard let number = Int(marker) else { continue }
+            let before = index > 0 ? Int(markers[index - 1]) : nil
+            let after = index + 1 < markers.count ? Int(markers[index + 1]) : nil
+            let inStep = before.map { $0 < number } ?? false || after.map { number < $0 } ?? false
+            if !inStep { text.insert(index) }
+        }
+        return text
     }
 
     // MARK: - Finding the markers
@@ -492,7 +510,7 @@ enum PDFBookStructure {
     /// their lines, at the top of the page, and at no height that can be trusted. So the numbers are not put back by
     /// place but by order: with the next note's number stray on this page, the line after a finished note opens it.
     private static func endnoteBlocks(content: [[String]], roles: [Role], pages: [Page], outline: [OutlineEntry],
-                                      notesBelow: [Int: [(at: Int, lines: [String])]])
+                                      notesBelow: [Int: [(before: String?, lines: [String])]])
         throws -> (blocks: [[Int: String]], names: [String?], symbolic: [String]) {
         let parts = outline.map { outlineName($0.label) }
         let lines = noteLines(content: content, roles: roles, pages: pages, notesBelow: notesBelow)
@@ -546,10 +564,9 @@ enum PDFBookStructure {
                 // open bracket or an unfinished note, it is that; "4 ibid., p. 12." after a finished note is a note.
                 if start.number == next, note == nil || start.text.first?.isLowercase != true
                     || (finished && bracketsClosed(pending.map { joined(note ?? "", $0) } ?? note ?? "")) { return start }
-                // A larger chapter name has already said a block begins.
-                if start.number == 1, closed, heading != nil || startsABlock(texts, after: position, next: next) {
-                    return start
-                }
+                // A larger chapter name has already said a block begins, whichever note it opens with.
+                if heading != nil { return start }
+                if start.number == 1, closed, startsABlock(texts, after: position, next: next) { return start }
                 // A gap in the numbering: a sentence opening just past the next number, after a note that ended.
                 if start.number > next, start.number <= next + 3, finished, start.text.first?.isUppercase == true {
                     return start
@@ -569,7 +586,7 @@ enum PDFBookStructure {
                 continue
             }
             inSymbolic = false
-            if start.number == 1 || blocks.isEmpty {
+            if start.number == 1 || blocks.isEmpty || heading != nil {
                 // A line right before a new block names that block's chapter only with evidence, since a note's last
                 // line can look just the same ("Oxford University Press, 1999"); anything else stays in the note.
                 var name = heading
@@ -599,7 +616,7 @@ enum PDFBookStructure {
     /// The notes pages' lines, with the numbers stray on each line's page. A larger line is no part of a note: it is
     /// a heading, which can name the block after it.
     private static func noteLines(content: [[String]], roles: [Role], pages: [Page],
-                                  notesBelow: [Int: [(at: Int, lines: [String])]])
+                                  notesBelow: [Int: [(before: String?, lines: [String])]])
         -> [(text: String, stray: Set<Int>, heading: Bool)] {
         var lines: [(text: String, stray: Set<Int>, heading: Bool)] = []
         for index in content.indices where roles[index] == .notes || notesBelow[index] != nil {
@@ -612,7 +629,7 @@ enum PDFBookStructure {
             let leading = page.dropFirst(headed).prefix { $0.isEmpty || PDFReader.bareNumber($0) != nil }
             let stray = Set(leading.compactMap(PDFReader.bareNumber))
             let sizes = pages[index].lineSizes.values.filter { $0 > 0 }.sorted()
-            let usual = sizes.isEmpty ? 0 : sizes[sizes.count / 2]
+            let usual = sizes.isEmpty ? 0 : sizes[(sizes.count - 1) / 2]
             for line in page.prefix(headed) + page.dropFirst(headed + leading.count) where !line.isEmpty {
                 let heading = pages[index].lineSizes[line].map { usual > 0 && $0 > usual * 1.08 } ?? false
                 lines.append((line, stray, heading))
@@ -754,8 +771,8 @@ enum PDFBookStructure {
     // MARK: - Saying the notes
 
     /// The paragraph without its markers, each note in a paragraph of its own after the sentence that cites it. With
-    /// `literal`, too few small numbers to be a book's notes (an exponent, say) stay as the text they were.
-    private static func expand(_ paragraph: String, notes: [Int: String], markers: [String], literal: Bool) -> [String] {
+    /// `literal`: the small numbers that are text after all, which stay as they were.
+    private static func expand(_ paragraph: String, notes: [Int: String], markers: [String], literal: Set<Int>) -> [String] {
         var text = String.UnicodeScalarView()
         var cited: [(offset: Int, note: String)] = []
         for scalar in paragraph.unicodeScalars {
@@ -765,7 +782,7 @@ enum PDFBookStructure {
             }
             if let note = notes[index] {
                 cited.append((String(text).utf16.count, note))
-            } else if literal, markers.indices.contains(index) {
+            } else if literal.contains(index), markers.indices.contains(index) {
                 text.append(contentsOf: markers[index].unicodeScalars)
             }
         }
