@@ -9,7 +9,8 @@ import Foundation
 /// 1. Nothing is left out unless a part names itself (the outline) or looks unmistakably like front or back matter.
 /// 2. A marker is a small run of digits or a symbol straight after text. It is never spoken: its note is, after the
 ///    sentence holding it, or it goes silently when no note is found.
-/// 3. Notes that do not pair with the text's markers are not lost: their section is read as ordinary text.
+/// 3. No note is lost: when the markers do not pair with the notes, the notes section is read as ordinary text, and
+///    when they do, a note no marker cited is said at the end of the book.
 /// 4. A note is said once per marker, in its own paragraph, as "Footnote: …".
 enum PDFBookStructure {
     /// One page's text, each marker replaced by a `markerScalar`, with the size of each line's main font.
@@ -23,6 +24,8 @@ enum PDFBookStructure {
     struct OutlineEntry: Equatable {
         let label: String
         let page: Int
+        /// How deep in the outline: a part runs to the next entry at its own depth or above.
+        var level = 0
     }
 
     enum Role: Equatable { case body, skipped, notes }
@@ -68,10 +71,12 @@ enum PDFBookStructure {
     /// without the parts nobody reads aloud, and with each note after the sentence that cites it.
     static func paragraphs(pages: [Page], markers: [String], outline: [OutlineEntry], bodySize: Double,
                            hasTitle: Bool) -> [String] {
+        // The furniture goes first, so a small running footer is not taken for the end of a footnote.
+        let framed = PDFReader.pageContent(pages.map { PDFReader.lines(of: $0.text) })
         var footnotes: [[Note]] = []
-        var stripped: [[String]] = []
-        for page in pages {
-            let (lines, notes) = pageFootnotes(page, markers: markers, bodySize: bodySize,
+        var content: [[String]] = []
+        for (page, framedLines) in zip(pages, framed) {
+            let (lines, notes) = pageFootnotes(page, lines: framedLines, markers: markers, bodySize: bodySize,
                                                previous: footnotes.last?.last)
             // A note running over from the page before belongs to that page's last note.
             if let carried = notes.carried, !footnotes.isEmpty, !footnotes[footnotes.count - 1].isEmpty {
@@ -79,30 +84,29 @@ enum PDFBookStructure {
                 footnotes[footnotes.count - 1][last].text = joined(footnotes[footnotes.count - 1][last].text, carried)
             }
             footnotes.append(notes.notes)
-            stripped.append(lines)
+            content.append(lines)
         }
-        let content = PDFReader.pageContent(stripped)
         var roles = self.roles(content: content, outline: outline, hasTitle: hasTitle)
         let endnotes = endnoteBlocks(content: content, roles: roles, pages: pages)
         let resolved = resolve(content: content, roles: roles, markers: markers, footnotes: footnotes,
                                endnotes: endnotes)
         // Invariant 3.
         if !resolved.endnotesPaired { roles = roles.map { $0 == .notes ? .body : $0 } }
-        let spoken = content.indices.filter { roles[$0] == .body }.map { content[$0] }
+        let bodyPages = content.indices.filter { roles[$0] == .body }.map { content[$0] }
         let literal = markers.count < 3
-        return PDFReader.reflow(content: spoken).flatMap { paragraph in
+        let body = PDFReader.reflow(content: bodyPages).flatMap { paragraph in
             expand(paragraph, notes: resolved.endnotesPaired ? resolved.notes : resolved.footnotesOnly, markers: markers,
                    literal: literal)
         }
+        return body + (resolved.endnotesPaired ? resolved.uncited.map(Self.spoken) : [])
     }
 
     // MARK: - Footnotes at the foot of a page
 
     /// Takes the block of smaller lines at the foot of `page` off it, when it opens with a marker this page uses (or
     /// runs on from the note before). A page number under the block stays, for `pageContent` to drop.
-    private static func pageFootnotes(_ page: Page, markers: [String], bodySize: Double, previous: Note?)
+    private static func pageFootnotes(_ page: Page, lines: [String], markers: [String], bodySize: Double, previous: Note?)
         -> (lines: [String], notes: (notes: [Note], carried: String?)) {
-        let lines = PDFReader.lines(of: page.text)
         guard bodySize > 0, !lines.isEmpty else { return (lines, ([], nil)) }
         var end = lines.count
         while end > 0, lines[end - 1].isEmpty || PDFReader.bareNumber(lines[end - 1]) != nil
@@ -153,10 +157,11 @@ enum PDFBookStructure {
     /// What each page is: named by the outline, else recognized by its look.
     static func roles(content: [[String]], outline: [OutlineEntry], hasTitle: Bool) -> [Role] {
         var roles = [Role](repeating: .body, count: content.count)
-        let sorted = outline.filter { content.indices.contains($0.page) }.sorted { $0.page < $1.page }
-        for (index, entry) in sorted.enumerated() {
+        // In outline order: a part's chapters inherit its role, and one naming its own overrides it.
+        let entries = outline.filter { content.indices.contains($0.page) }
+        for (index, entry) in entries.enumerated() {
             guard let role = role(named: entry.label, hasTitle: hasTitle) else { continue }
-            let end = sorted[(index + 1)...].first { $0.page > entry.page }?.page ?? content.count
+            let end = entries[(index + 1)...].first { $0.level <= entry.level && $0.page > entry.page }?.page ?? content.count
             for page in entry.page..<end { roles[page] = role }
         }
         // A wrong outline, or one with nothing else in it, must not silence the book (invariant 1).
@@ -306,13 +311,15 @@ enum PDFBookStructure {
     }
 
     /// Each marker's note, going through the text in reading order. A number that does not rise starts the next block
-    /// of notes. `endnotesPaired`: most of the markers not at a page's foot found theirs.
+    /// of notes. `endnotesPaired`: most of the markers not at a page's foot found theirs. `uncited`: the notes none of
+    /// them cited, in order.
     private static func resolve(content: [[String]], roles: [Role], markers: [String], footnotes: [[Note]],
                                 endnotes: [[Int: String]])
-        -> (notes: [Int: String], footnotesOnly: [Int: String], endnotesPaired: Bool) {
+        -> (notes: [Int: String], footnotesOnly: [Int: String], endnotesPaired: Bool, uncited: [String]) {
         var notes: [Int: String] = [:]
         var footnotesOnly: [Int: String] = [:]
         var block = 0, last = 0, wanted = 0, found = 0
+        var cited = endnotes.map { _ in Set<Int>() }
         for page in content.indices where roles[page] == .body {
             for scalar in content[page].joined().unicodeScalars {
                 guard let index = markerIndex(scalar), markers.indices.contains(index) else { continue }
@@ -328,11 +335,15 @@ enum PDFBookStructure {
                 last = number
                 if let note = endnotes[block][number] {
                     notes[index] = note
+                    cited[block].insert(number)
                     found += 1
                 }
             }
         }
-        return (notes, footnotesOnly, !endnotes.isEmpty && wanted > 0 && found * 10 >= wanted * 6)
+        let uncited = endnotes.indices.flatMap { block in
+            endnotes[block].keys.filter { !cited[block].contains($0) }.sorted().compactMap { endnotes[block][$0] }
+        }
+        return (notes, footnotesOnly, !endnotes.isEmpty && wanted > 0 && found * 10 >= wanted * 6, uncited)
     }
 
     // MARK: - Saying the notes

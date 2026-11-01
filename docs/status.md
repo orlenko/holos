@@ -383,8 +383,8 @@ timeline and a larger local-model benchmark are follow-ups.
   Secure fields and Secure Keyboard Entry are refused.
   Rex uses physical key codes from the active keyboard layout because it interprets those instead of the event's
   Unicode text. Only direct and Shift-modified characters are typed; an unrepresentable chunk requires Copy Result
-  before any of that chunk is sent. Layout planning and unposted event fields are unit-tested; the Rex input path
-  needs an interactive check against the installed beta.
+  before any of that chunk is sent. Layout planning and unposted event fields are unit-tested; dictating into Rex Beta was
+  checked by hand on a signed build on 2026-11-01.
   It never synthesizes Return and never pastes. Text it could not write (target
   changed, safety check failed, unverified write, forced stop) is kept for Copy Result
   or Discard in the menu; it is never put on the clipboard automatically, since

@@ -115,16 +115,16 @@ public enum PDFReader {
     /// The outline's entries at every level, with the page each opens.
     private static func outline(of pdf: PDFDocument) -> [PDFBookStructure.OutlineEntry] {
         var entries: [PDFBookStructure.OutlineEntry] = []
-        func walk(_ node: PDFOutline) {
+        func walk(_ node: PDFOutline, level: Int) {
             for index in 0..<node.numberOfChildren {
                 guard let child = node.child(at: index) else { continue }
                 if let label = child.label, let page = child.destination?.page {
-                    entries.append(.init(label: label, page: pdf.index(for: page)))
+                    entries.append(.init(label: label, page: pdf.index(for: page), level: level))
                 }
-                walk(child)
+                walk(child, level: level + 1)
             }
         }
-        if let root = pdf.outlineRoot { walk(root) }
+        if let root = pdf.outlineRoot { walk(root, level: 0) }
         return entries
     }
 

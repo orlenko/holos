@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import HolosTestSupport
 import PDFKit
 import Testing
 @testable import HolosContent
@@ -32,6 +33,27 @@ import Testing
         ]
         #expect(PDFBookStructure.roles(content: content, outline: outline, hasTitle: true)
             == [.skipped, .skipped, .skipped, .skipped, .body, .body, .notes, .skipped])
+    }
+
+    /// A part's chapters are still that part, until the next entry at its depth.
+    @Test func chaptersInsideANamedPartInheritItsRole() {
+        let content = (0..<7).map { ["Page \($0) words."] }
+        let outline: [PDFBookStructure.OutlineEntry] = [
+            .init(label: "Chapter", page: 0), .init(label: "Notes", page: 2),
+            .init(label: "Chapter One", page: 3, level: 1), .init(label: "Chapter Two", page: 4, level: 1),
+            .init(label: "Afterword", page: 5), .init(label: "Index", page: 6),
+        ]
+        #expect(PDFBookStructure.roles(content: content, outline: outline, hasTitle: true)
+            == [.body, .body, .notes, .notes, .notes, .body, .skipped])
+    }
+
+    /// A chapter's own notes, one level down, end with the next chapter.
+    @Test func aChildNamingItsOwnPartOverridesTheParent() {
+        let content = (0..<4).map { ["Page \($0) words."] }
+        let outline: [PDFBookStructure.OutlineEntry] = [
+            .init(label: "One", page: 0), .init(label: "Notes", page: 1, level: 1), .init(label: "Two", page: 2),
+        ]
+        #expect(PDFBookStructure.roles(content: content, outline: outline, hasTitle: true) == [.body, .notes, .body, .body])
     }
 
     /// With no title in the file's details, the title page is where the title is said.
@@ -137,6 +159,17 @@ import Testing
             == ["Footnote: As it says in 1 Corinthians, the verse.", "Footnote: Second 162 pages later.", "Footnote: Third."])
     }
 
+    /// A note no marker was found for still gets said.
+    @Test func aNoteNoMarkerCitedIsSaidAtTheEnd() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "One.\(try marker(0)) Two.\(try marker(1)) Three.\(try marker(2))"),
+            .init(text: "1 First.\n2 Second.\n3 Third.\n4 Never cited."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "2", "3"], outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 1)])
+        #expect(result.last == "Footnote: Never cited.")
+        #expect(result.filter { $0.hasPrefix("Footnote:") }.count == 4)
+    }
+
     /// Notes that cannot be paired stay readable as text, and the numbers still go.
     @Test func notesThatDoNotPairAreReadWhereTheyStand() throws {
         let pages: [PDFBookStructure.Page] = [
@@ -161,6 +194,19 @@ import Testing
         #expect(!result.joined().contains("The note begins and wraps to the next line. Then"))
         #expect(result.first { $0.contains("cited here") }?.hasSuffix("It is cited here.") == true)
         #expect(result.last == "Then more.")
+    }
+
+    /// A running footer in the same small type is not the end of the note above it.
+    @Test func aSmallRunningFooterStaysOutOfTheNote() throws {
+        let pages = try (0..<6).map { index -> PDFBookStructure.Page in
+            let note = "1 The note of page \(Character(Unicode.Scalar(97 + UInt8(index))))."
+            let footer = "A Book's Running Title"
+            return .init(text: "\(Self.filler)\nBody of page \(Character(Unicode.Scalar(97 + UInt8(index)))).\(try marker(index))\n\(note)\n\(footer)",
+                         lineSizes: [Self.filler: 10, note: 8, footer: 8])
+        }
+        let result = paragraphs(pages, markers: Array(repeating: "1", count: 6), bodySize: 10)
+        #expect(result.contains("Footnote: The note of page a."))
+        #expect(!result.joined().contains("Running Title"))
     }
 
     @Test func smallPrintWithNoMarkerOnThePageIsNotAFootnote() {
@@ -249,10 +295,9 @@ import Testing
 
     /// A made-up book in a real PDF: its outline, fonts and notes, through `DocumentLoader`.
     @MainActor @Test func aWholeBookReadsLikeOne() throws {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("book-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { #expect(throws: Never.self) { try FileManager.default.removeItem(at: folder) } }
-        let url = folder.appendingPathComponent("book.pdf")
+        let temporary = try TemporaryDirectory("book")
+        defer { temporary.remove() }
+        let url = temporary.url.appendingPathComponent("book.pdf")
         var box = CGRect(x: 0, y: 0, width: 612, height: 792)
         let info = [kCGPDFContextTitle as String: "A Made-Up Book", kCGPDFContextAuthor as String: "Jane Writer"] as CFDictionary
         let context = try #require(CGContext(url as CFURL, mediaBox: &box, info))

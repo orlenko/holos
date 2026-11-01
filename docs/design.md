@@ -1908,8 +1908,8 @@ a line of body text. It is never spoken. Its note is, as "Footnote: …" in a pa
 holding the marker. Notes at a page's foot are the smaller lines closing the page that open with a marker the page uses,
 including one running over from the page before. Notes in a notes section, named by the outline or recognized by its
 look, pair with markers in reading order, a new block each time the numbers start over (a book numbering per chapter).
-When under 60% of the markers find a note, the section is read as ordinary text and the markers go silently, so no
-note is lost. A book with fewer than three markers keeps them as text: they may be exponents. A note set in the body
+When under 60% of the markers find a note, the section is read as ordinary text and the markers go silently; otherwise a
+note no marker cited is said at the end of the book, so no note is lost. A book with fewer than three markers keeps them as text: they may be exponents. A note set in the body
 size at a page's foot is not recognized: it stays where it stands, without its marker. Other formats and web pages do
 not get this yet. A reading made before this keeps its text until it is made again.
 ### Voice profiles
