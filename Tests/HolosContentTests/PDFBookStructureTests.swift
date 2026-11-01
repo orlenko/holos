@@ -172,15 +172,15 @@ import Testing
 
     /// Three small numbers in body text, so they are a book's markers; none has a note, so they go silently.
     @Test func smallNumbersAfterTextAreMarkersAndEqualOnesAreNot() throws {
-        let page = styled([("In 1913 he said so", 10), ("14", 6), (" and went on, for 20 years.\n", 10),
+        let page = styled([("In 1913 he said so", 10), ("3", 6), (" and went on, for 20 years.\n", 10),
                            (Self.filler + "\n", 10), ("5", 6), (" wrapped to open this line of text.\n", 10),
-                           ("It names The Book,\n", 10), ("3\n", 5.8), ("and goes on to the end of its sentence.\n", 10),
+                           ("It names The Book,\n", 10), ("14\n", 5.8), ("and goes on to the end of its sentence.\n", 10),
                            (Self.filler + " Done.\n", 10)])
         let text = try read([page]).joined(separator: " ")
         #expect(text.contains("In 1913 he said so and went on, for 20 years."))
         #expect(text.contains("wrapped to open this line of text."))
         #expect(text.contains("It names The Book, and goes on to the end of its sentence."))
-        #expect(!text.contains("14") && !text.contains(" 5 ") && !text.contains(" 3 "))
+        #expect(!text.contains("14") && !text.contains(" 5 ") && !text.contains("said so3"))
     }
 
     /// A marker wrapped to open a line, or the first line of a page, follows the sentence it cites.
@@ -328,6 +328,13 @@ import Testing
         let page = styled([(body, 10), ("3", 5), (" The note itself.\n", 8)])
         let (pages, _) = try PDFReader.bookPages([page])
         #expect(pages[0].text.hasSuffix("3 The note itself."))
+    }
+
+    /// Small numbers that do not count upward, with no notes anywhere, are text.
+    @Test func chemicalSubscriptsStay() throws {
+        let page = styled([("Water is H", 10), ("2", 6), ("O and so is more H", 10), ("2", 6), ("O, as H", 10), ("2", 6), ("O says.\n", 10),
+                           (Self.filler + "\n", 10)])
+        #expect(try read([page]).joined(separator: " ").contains("Water is H2O and so is more H2O"))
     }
 
     // MARK: The author

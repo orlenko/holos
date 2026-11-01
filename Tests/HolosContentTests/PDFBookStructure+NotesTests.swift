@@ -678,6 +678,16 @@ extension PDFBookStructureTests {
         #expect(!result.joined(separator: " ").contains("Somebody"))
     }
 
+    /// With no outline to name it, a capitalized last line before the numbers start over stays in the note.
+    @Test func withoutAnOutlineACapitalizedLastLineStaysInTheNote() throws {
+        var pages = (0..<8).map { PDFBookStructure.Page(text: Self.differentWords(8)[$0]) }
+        pages[0] = .init(text: "One.\(try marker(0)) More.\(try marker(1))")
+        pages[1] = .init(text: "Two.\(try marker(2))")
+        pages[6] = .init(text: "Notes\n1 See the book.\nOxford University Press, 1999\n1 Second note.\n2 Third note.")
+        let result = paragraphs(pages, markers: ["1", "1", "2"])
+        #expect(result.joined(separator: " ").contains("See the book. Oxford University Press, 1999."))
+    }
+
     /// A page reference wrapped onto its own line stays in its note.
     @Test func aNotesNumericLineStaysInIt() throws {
         let body = try (0..<3).map { "Sentence \($0).\(try marker($0))" }.joined(separator: " ")

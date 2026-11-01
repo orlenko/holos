@@ -8,7 +8,7 @@ import Foundation
 /// Invariants:
 /// 1. Nothing is left out unless a part names itself (the outline) or looks unmistakably like front or back matter.
 /// 2. A marker is a small run of digits or a symbol straight after text. It is never spoken: its note is, after the
-///    sentence holding it, or it goes silently when no note is found. Small runs are judged only once the page's
+///    sentence holding it, or it goes silently when no note is found, unless nothing says it is a citation at all. Small runs are judged only once the page's
 ///    furniture is gone and the page is known to be text, so a page number or a note's own number is never taken for one.
 /// 3. No note is lost: when the markers do not pair with the notes, the notes section is read as ordinary text, and
 ///    when they do, a note no marker cited is said at the end of the book.
@@ -136,7 +136,8 @@ enum PDFBookStructure {
             }
         }
         let bodyPages = content.indices.filter { roles[$0] == .body }.map { content[$0] }
-        let literal = markers.count < 3
+        // No notes, and numbers that do not count upward as citations do: they are text (H₂O, x²).
+        let literal = resolved.notes.isEmpty && !countUpward(markers)
         try Task.checkCancellation()
         let body = try PDFReader.reflow(content: bodyPages).flatMap { paragraph in
             try Task.checkCancellation()
@@ -210,6 +211,14 @@ enum PDFBookStructure {
             let key = ReadableDocument.titleKey(line)
             return !key.isEmpty && (key == name || name.hasPrefix(key + " "))
         }
+    }
+
+    /// Whether small numbers rise as citations do, most of the way through.
+    private static func countUpward(_ markers: [String]) -> Bool {
+        let numbers = markers.compactMap { Int($0) }
+        guard numbers.count >= 3 else { return false }
+        let rises = zip(numbers, numbers.dropFirst()).filter { $0 < $1 }.count
+        return rises * 10 >= (numbers.count - 1) * 6
     }
 
     // MARK: - Finding the markers
@@ -564,9 +573,9 @@ enum PDFBookStructure {
                 var name = heading
                 heading = nil
                 if let line = pending {
-                    // With an outline to go by, only its names count: a note's last line can read like a heading.
-                    let finished = parts.isEmpty && PDFReader.endsSentence(note ?? ".") && note?.hasSuffix(":") != true
-                    if namesAPart(line, parts: parts, afterFinished: finished || note == nil) {
+                    // Only positive evidence makes it a heading: a note's last line can read just like one, and a heading
+                    // kept in a note loses nothing.
+                    if namesAPart(line, parts: parts, afterFinished: note == nil) {
                         name = name ?? ReadableDocument.titleKey(line)
                     } else {
                         flush()
