@@ -489,6 +489,25 @@ import Testing
         #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: Of one.", "Footnote: Of two."])
     }
 
+    /// Notes before the first that can be numbered in order are still said.
+    @Test func notesBeforeTheFirstBlockAreNotLost() throws {
+        let body = try ["5", "1", "2"].enumerated().map { "Sentence \($1).\(try marker($0))" }.joined(separator: " ")
+        let notes = PDFBookStructure.Page(text: "Notes\n5 The excerpt's first note.\n1 One.\n2 Two.")
+        let result = paragraphs([.init(text: body), notes], markers: ["5", "1", "2"],
+                                outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 1)])
+        #expect(result.joined(separator: " ").contains("The excerpt's first note."))
+    }
+
+    /// Two notes sections on one page are both kept.
+    @Test func twoNotesSectionsOnOnePageAreBothKept() throws {
+        let body = try (0..<2).map { "Sentence \($0).\(try marker($0))" }.joined(separator: " ")
+        let notes = PDFBookStructure.Page(text: "Last words.\nNotes\n1 One.\nFootnotes\n1 Other one.")
+        let result = paragraphs([.init(text: body), notes], markers: ["1", "1"], outline: [
+            .init(label: "Body", page: 0), .init(label: "Notes", page: 1), .init(label: "Footnotes", page: 1),
+        ])
+        #expect(result.joined(separator: " ").contains("One.") && result.joined(separator: " ").contains("Other one."))
+    }
+
     /// Notes starting under the last of the text are still notes, and the text above them is still read.
     @Test func notesStartingPartwayDownAPageAreKept() throws {
         let pages: [PDFBookStructure.Page] = [
