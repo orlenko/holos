@@ -26,6 +26,13 @@ public final class OpenedPlayback: @unchecked Sendable {
 /// Plays one finished reading at a time in the Reading section (▶ Play, Space), with its position. A failure while it
 /// plays (the file cannot be decoded, for one cut short while open) or when it continues is reported (`onError`),
 /// never taken for the end of the reading.
+///
+/// Invariants:
+/// 1. `player` and `entryID` are set and cleared together.
+/// 2. The latest interaction wins: a pause, a toggle, a seek or a stop advances `request`, and a reading still opening
+///    starts only when `request` has not moved since it was asked for.
+/// 3. A callback from a player no longer loaded changes nothing.
+/// 4. A seek stays inside the loaded file and leaves it playing or paused as it was.
 @MainActor
 public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
     /// Opens the file for playing; runs off the main actor (the player reads the file's start, which on a share whose
@@ -89,7 +96,7 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
     @discardableResult
     public func seek(_ id: UUID, to time: Double) -> Bool {
         guard entryID == id, let player, time.isFinite else { return false }
-        // A reading asked for before and not open yet is not played over this.
+        // Invariant 2.
         request += 1
         player.currentTime = Self.clamped(time, duration: player.duration)
         onChange?()

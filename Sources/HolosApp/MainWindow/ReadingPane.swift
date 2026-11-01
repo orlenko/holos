@@ -40,6 +40,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private var voicesObserver: NSObjectProtocol?
     /// Show Text's window, while it is open.
     private(set) var textWindow: ReadingTextWindow?
+    /// Counts Show Text's presses and the main window's closing: a load overtaken by either opens nothing.
+    private var textRequest = 0
     /// The card's chosen voice (nil: Automatic), kept while its pack is briefly missing (a reinstall).
     private var chosenVoice: String?
     /// The natural voice packs the menu offers (tests set it).
@@ -90,6 +92,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
                     if !(self.player.entryID.map(self.playsWithoutWindow) ?? false) { self.player.stop() }
                     self.preview.stop()
                     self.textWindow?.close()
+                    self.textRequest += 1
                 }
             }
         }
@@ -667,18 +670,24 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     /// window, one at a time.
     func showText(_ id: UUID) {
         guard let entry = controller.entry(id) else { return }
+        textRequest += 1
+        let request = textRequest
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 guard let document = try await self.controller.savedText(id) else {
+                    guard request == self.textRequest else { return }
                     self.showMessage("The text of “\(entry.title)” was not kept: an earlier version of Voice is "
                         + "Local made it, and kept only its audio.", problem: true)
                     return
                 }
                 let text = document.plainText
                 let timeline = await ReadingTimeline.load(for: entry, text: text)
+                // The window closed, another text was asked for, or the reading was deleted meanwhile.
+                guard request == self.textRequest, self.controller.entry(id) != nil else { return }
                 self.presentTextWindow(entry, text: text, timeline: timeline)
             } catch {
+                guard request == self.textRequest else { return }
                 self.showMessage("The text of “\(entry.title)” could not be read: \(error.localizedDescription)",
                                  problem: true)
             }

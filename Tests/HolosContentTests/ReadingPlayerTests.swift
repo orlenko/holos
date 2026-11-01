@@ -241,7 +241,7 @@ private final class FakePlayback: ReadingPlayback, @unchecked Sendable {
     @Test func aJoinedFileSeeksThroughDevFd() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("seek-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
+        defer { #expect(throws: Never.self) { try FileManager.default.removeItem(at: folder) } }
         let rate = ReadingAudioFormat.sampleRate
         let format = try #require(AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: rate, channels: 1,
                                                 interleaved: true))

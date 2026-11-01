@@ -5,6 +5,11 @@ import HolosSynthesis
 /// A reading in the list: its title and source, then either its progress with Stop, or its details with Play,
 /// Show Text, Share…, Show in Finder, and Delete… (and, loaded in the player, a seek bar under them), or its error with
 /// Try Again.
+///
+/// Invariants:
+/// 1. `show` sets every view from what it is given, so a reused row keeps nothing of the reading shown before.
+/// 2. The seek bar shows only for a reading loaded in the player, and only then does the row keep room for it.
+/// 3. An action always names the reading shown when it was pressed.
 @MainActor
 final class ReadingRowView: NSTableCellView {
     enum Action { case play, stop, retry, showText, share, reveal, delete, seek(Double) }
