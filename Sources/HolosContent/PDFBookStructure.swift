@@ -147,8 +147,12 @@ enum PDFBookStructure {
             && !opensPart(framed[entry.page], named: entry.label) {
             let name = outlineName(entry.label)
             guard let heading = framed[entry.page].firstIndex(where: { !$0.isEmpty && outlineName($0) == name }) else { continue }
-            let below = Array(framed[entry.page][heading...])
-            framed[entry.page].removeSubrange(heading...)
+            // Down to the next part the outline starts on this page, which stays.
+            let others = Set(outline.filter { $0.page == entry.page && $0.label != entry.label }.map { outlineName($0.label) })
+            let end = framed[entry.page][(heading + 1)...].firstIndex { others.contains(outlineName($0)) }
+                ?? framed[entry.page].count
+            let below = Array(framed[entry.page][heading..<end])
+            framed[entry.page].removeSubrange(heading..<end)
             if role(named: entry.label, hasTitle: true) == .notes { notes[entry.page] = Array(below.dropFirst()) }
         }
         return notes
@@ -354,7 +358,11 @@ enum PDFBookStructure {
         guard content.count >= 8 else { return }
         for page in (content.count * 3 / 5)..<content.count where roles[page] == .body {
             if opens(content[page], with: ["index"]), share(content[page], endingInANumber) >= 0.5 {
-                for rest in page..<content.count where roles[rest] == .body { roles[rest] = .skipped }
+                // While the pages look like an index: readable matter can follow it.
+                for rest in page..<content.count {
+                    guard roles[rest] == .body, rest == page || share(content[rest], endingInANumber) >= 0.5 else { break }
+                    roles[rest] = .skipped
+                }
                 break
             }
             if opens(content[page], with: ["notes", "endnotes"]), share(content[page], startingWithANumber) >= 0.3 {

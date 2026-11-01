@@ -407,6 +407,28 @@ import Testing
         #expect(PDFBookStructure.roles(content: content, outline: outline, hasTitle: true).prefix(3) == [.body, .body, .body])
     }
 
+    /// Back matter between the text and a next part, all on one page, goes alone.
+    @Test func backMatterOnASharedPageStopsAtTheNextPart() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "Words before."),
+            .init(text: "The last words.\nReferences\nSomebody, A Book, 1999.\nAppendix\nThe appendix says this."),
+            .init(text: "More of the appendix."),
+        ]
+        let text = paragraphs(pages, outline: [.init(label: "One", page: 0), .init(label: "References", page: 1),
+                                               .init(label: "Appendix", page: 1)]).joined(separator: " ")
+        #expect(text.contains("The last words.") && text.contains("The appendix says this.") && text.contains("More of the appendix."))
+        #expect(!text.contains("Somebody"))
+    }
+
+    /// Readable pages after a recognized index are read.
+    @Test func proseAfterAnIndexIsRead() {
+        var content: [[String]] = (0..<12).map { ["Prose on page \($0) in plain sentences."] }
+        content[9] = ["Index", "Apples 3, 7", "Bears 12"]
+        content[10] = ["Cats 40", "Dogs 3"]
+        let roles = PDFBookStructure.roles(content: content, outline: [], hasTitle: true)
+        #expect(roles[9] == .skipped && roles[10] == .skipped && roles[11] == .body)
+    }
+
     /// Notes starting under the last of the text are still notes, and the text above them is still read.
     @Test func notesStartingPartwayDownAPageAreKept() throws {
         let pages: [PDFBookStructure.Page] = [
