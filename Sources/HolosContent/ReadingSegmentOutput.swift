@@ -16,7 +16,7 @@ public protocol ReadingSegmentOutput: AnyObject {
     func stop()
     /// The frames played since the last `stop` (or the start), at the buffers' rate; a pause keeps it.
     var playedFrames: Int64 { get }
-    /// The output stopped by itself (the audio device changed); `play` starts it again.
+    /// The output stopped by itself and lost what was queued (the audio device changed); no `played` follows for it.
     var onInterrupted: (() -> Void)? { get set }
 }
 
@@ -25,8 +25,8 @@ public protocol ReadingSegmentOutput: AnyObject {
 ///
 /// Invariants:
 /// 1. The engine is connected once, with the first buffer's format, and every later buffer must have it.
-/// 2. A `played` callback is delivered only for the run that scheduled it: `stop` starts a new run, and earlier callbacks
-///    are dropped.
+/// 2. A `played` callback is delivered only for the run that scheduled it, and only for audio heard: `stop` and a change
+///    of audio device start a new run, and earlier callbacks are dropped.
 /// 3. The audio device is held only between `play` and `stop`.
 @MainActor
 public final class EngineSegmentOutput: ReadingSegmentOutput {
@@ -53,7 +53,8 @@ public final class EngineSegmentOutput: ReadingSegmentOutput {
         let kind: AVAudioPlayerNodeCompletionCallbackType = manualRendering ? .dataRendered : .dataPlayedBack
         node.scheduleBuffer(buffer, completionCallbackType: kind) { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.generation == scheduled else { return }
+                // A stopped engine drops its buffers and calls back as if they had played: unheard audio is not played.
+                guard let self, self.generation == scheduled, self.manualRendering || self.engine.isRunning else { return }
                 played()
             }
         }
@@ -75,6 +76,8 @@ public final class EngineSegmentOutput: ReadingSegmentOutput {
         observer = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
+                // Invariant 2: the engine reset dropped what was queued.
+                self?.generation += 1
                 _ = self?.playedFrames
                 self?.onInterrupted?()
             }

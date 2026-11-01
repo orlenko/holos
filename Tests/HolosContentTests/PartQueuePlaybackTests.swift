@@ -196,6 +196,38 @@ struct PartFiles {
         #expect(ends.isEmpty)
     }
 
+    /// A change of audio device loses what was queued: paused where the unheard part starts, with nothing skipped, and
+    /// a part read meanwhile is not queued over it.
+    @Test func aDeviceChangeGoesBackToThePartBeingHeard() async throws {
+        let files = try PartFiles()
+        defer { files.remove() }
+        let feed = ReadingPartFeed()
+        let output = QueueOutput()
+        let playback = PartQueuePlayback(feed: feed, output: output)
+        var ends: [PartQueuePlayback.End] = []
+        playback.onEnd = { ends.append($0) }
+        feed.add(try files.part(0, of: 3, seconds: 1))
+        feed.add(try files.part(1, of: 3, seconds: 1))
+        #expect(playback.play())
+        // Part 0, then part 1's silence and its audio.
+        #expect(await eventually { output.queued.count == 3 })
+        output.playNext()
+        #expect(playback.currentTime == 1)
+
+        output.onInterrupted?()
+        #expect(!playback.isPlaying)
+        #expect(output.queued.isEmpty && !output.playing)
+        #expect(playback.currentTime == 1)
+        #expect(ends.isEmpty)
+
+        #expect(playback.play())
+        #expect(await eventually { output.queued.count == 2 })
+        #expect(output.playing)
+        output.playNext()
+        output.playNext()
+        #expect(playback.currentTime == 2.5)
+    }
+
     /// Every part heard, then joining them fails: that is told, never taken for the end of the reading.
     @Test func makingThatFailsAfterTheLastPartIsTold() async throws {
         let files = try PartFiles()

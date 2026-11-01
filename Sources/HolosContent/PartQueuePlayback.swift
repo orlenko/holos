@@ -21,8 +21,9 @@ private struct ReadFailure: Error {
 /// `ReadingSegmentOutput`. Its timeline is the finished file's, frame for frame (`ReadingAudioFormat.silenceFrames`).
 ///
 /// Invariants:
-/// 1. Parts are queued in order, each once, at most `window` of them queued and not yet played; nothing is queued
-///    once making has finished (invariant 4) or the playback has ended.
+/// 1. Parts are queued in order, at most `window` of them queued and not yet played; nothing is queued once making has
+///    finished (invariant 4) or the playback has ended. A part is queued once, unless a change of audio device lost it:
+///    then it and those after it are queued again, from the start of the part being heard, paused.
 /// 2. `isPlaying` means engaged: true from `play` until `pause`, `stop`, or the end, also while it waits for a part
 ///    that is not made yet (`isWaiting`). Run dry, the output is stopped, so its count of played frames starts again
 ///    from where the parts end (`base`).
@@ -62,6 +63,12 @@ public final class PartQueuePlayback {
     /// The timeline frame where the output's count of played frames starts (invariant 2), and the frames queued since.
     private var base: Int64 = 0
     private var queuedFrames: Int64 = 0
+    /// The parts queued and not played yet, with their frames and the silence before them, and the frames of those
+    /// played since `base`: what a change of audio device goes back to.
+    private var unheard: [(index: Int, frames: Int64)] = []
+    private var heardFrames: Int64 = 0
+    /// Counts the changes of audio device, so a part read before one is not queued after it.
+    private var run = 0
 
     var onEnd: ((End) -> Void)?
     var onHandoff: ((TimeInterval) -> Void)?
@@ -164,6 +171,7 @@ public final class PartQueuePlayback {
     private func readAndQueue(_ part: ReadingMadePart) {
         reading = true
         let read = self.read
+        let asked = run
         Task { [weak self] in
             // Read and, when that fails, looked for off the main actor: the cache can be on a drive that hangs.
             let result = await Task.detached(priority: .userInitiated) { () -> Result<ReadPart, ReadFailure> in
@@ -174,12 +182,12 @@ public final class PartQueuePlayback {
                                                 gone: (try? ReadingOutput.exists(part.audio)) == false))
                 }
             }.value
-            guard let self, !self.done, !self.handingOver else { return }
+            guard let self, !self.done, !self.handingOver, asked == self.run else { return }
             self.reading = false
             switch result {
             case .success(let read):
                 do {
-                    try self.queue(read.buffer, silence: part.silenceBefore)
+                    try self.queue(read.buffer, silence: part.silenceBefore, index: part.index)
                 } catch {
                     let reason = error.localizedDescription
                     return self.end(.failed("Part \(part.index + 1) could not be played: \(reason)"))
@@ -195,7 +203,7 @@ public final class PartQueuePlayback {
         }
     }
 
-    private func queue(_ buffer: AVAudioPCMBuffer, silence seconds: Double) throws {
+    private func queue(_ buffer: AVAudioPCMBuffer, silence seconds: Double, index: Int) throws {
         let rate = self.rate ?? buffer.format.sampleRate
         self.rate = rate
         let silence = ReadingAudioFormat.silenceFrames(seconds, rate: rate)
@@ -211,6 +219,7 @@ public final class PartQueuePlayback {
         }
         try output.schedule(buffer) { [weak self] in self?.played() }
         queuedFrames += silence + Int64(buffer.frameLength)
+        unheard.append((index, silence + Int64(buffer.frameLength)))
         next += 1
         queued += 1
         if engaged { try output.play() }
@@ -220,11 +229,13 @@ public final class PartQueuePlayback {
     private func played() {
         guard !done, !handingOver else { return }
         queued -= 1
+        if !unheard.isEmpty { heardFrames += unheard.removeFirst().frames }
         if queued == 0 {
             // Run dry (invariant 2): the count of played frames starts again where the parts queued end.
             output.stop()
             base += queuedFrames
             queuedFrames = 0
+            heardFrames = 0
         }
         fill()
     }
@@ -243,11 +254,21 @@ public final class PartQueuePlayback {
         onEnd?(end)
     }
 
-    /// The audio device changed and the engine stopped: paused where it was, what is queued kept for Play.
+    /// The audio device changed and the engine lost what was queued: paused at the start of the part being heard, and
+    /// Play queues it and the rest again (invariant 1).
     private func interrupted() {
-        guard !done, !handingOver, engaged else { return }
+        guard !done, !handingOver else { return }
         engaged = false
-        output.pause()
+        output.stop()
+        base += heardFrames
+        heardFrames = 0
+        queuedFrames = 0
+        next = unheard.first?.index ?? next
+        unheard = []
+        queued = 0
+        missing = false
+        reading = false
+        run += 1
         onChange?()
     }
 }

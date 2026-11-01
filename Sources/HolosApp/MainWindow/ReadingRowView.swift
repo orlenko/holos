@@ -205,7 +205,13 @@ final class ReadingRowView: NSTableCellView {
             }
         case .done where fileProblem == .checking:
             status.stringValue = "Checking its file…"
-            buttons = [deleteButton]
+            // A reading that goes on playing while its file is checked keeps its Pause.
+            if playback != nil {
+                setPlay(playback)
+                buttons = [primary, deleteButton]
+            } else {
+                buttons = [deleteButton]
+            }
         case .done where fileProblem == .missing:
             status.stringValue = "The file made for it is no longer at "
                 + "\(entry.output.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "its place")."

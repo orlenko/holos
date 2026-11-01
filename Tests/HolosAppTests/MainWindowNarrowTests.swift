@@ -203,6 +203,13 @@ struct MainWindowNarrowTests {
         #expect(Self.allViews(row).compactMap { $0 as? NSSlider }.first?.isEnabled == false)
         #expect(Self.brokenConstraints(in: row).isEmpty)
 
+        // Made, its file being checked while it goes on playing: Pause stays.
+        var checked = entry
+        checked.state = .done
+        row.show(checked, activity: nil, fileProblem: .checking, size: nil,
+                 playback: .init(playing: true, current: 12, duration: 40), playable: true)
+        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHidden }.map(\.title).contains("❚❚ Pause"))
+
         // Not played yet, its first part made: Play beside Stop; none made: Stop alone.
         row.show(entry, activity: .rendering(part: 2, of: 5), fileProblem: nil, size: nil, playback: nil, playable: true)
         #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHidden }.map(\.title)
