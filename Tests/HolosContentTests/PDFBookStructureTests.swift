@@ -270,6 +270,55 @@ import Testing
         #expect(result.filter { $0.hasPrefix("Footnote:") }.count == 4)
     }
 
+    /// A symbol's note can wrap, before the numbered notes or after them.
+    @Test func aSymbolicNoteKeepsItsWrappedLines() throws {
+        let body = try (0..<3).map { "Sentence \($0).\(try marker($0))" }.joined(separator: " ")
+        let notes = PDFBookStructure.Page(text: "Notes\n* An opening note that wraps\nonto another line.\n1 First.\n2 Second.\n3 Third.")
+        let result = paragraphs([.init(text: body), notes], markers: ["1", "2", "3"],
+                                outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 1)])
+        #expect(result.contains("Footnote: An opening note that wraps onto another line."))
+        #expect(result.contains("Footnote: First."))
+    }
+
+    /// A section inside a chapter is not a new chapter: citing an earlier note there stays in the chapter's notes.
+    @Test func aNestedSectionIsNoNewChapter() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0)) B.\(try marker(1))"),
+            .init(text: "Again.\(try marker(2))"),
+            .init(text: "Next.\(try marker(3))"),
+            .init(text: "Notes\n1 Note one.\n2 Note two.\nChapter Two\n1 Other one.\n2 Other two."),
+        ]
+        let outline: [PDFBookStructure.OutlineEntry] = [
+            .init(label: "One", page: 0), .init(label: "A Section", page: 1, level: 1), .init(label: "Two", page: 2),
+            .init(label: "Notes", page: 3),
+        ]
+        let result = paragraphs(pages, markers: ["1", "2", "1", "1"], outline: outline)
+        #expect(Array(result.filter { $0.hasPrefix("Footnote:") }.prefix(4)) == [
+            "Footnote: Note one.", "Footnote: Note two.", "Footnote: Note one.", "Footnote: Other one.",
+        ])
+    }
+
+    /// A number missing from the notes does not swallow the note after it.
+    @Test func aGapInTheNumberingKeepsTheNoteAfterIt() throws {
+        let body = try ["1", "2", "3", "5"].enumerated().map { "Sentence \($1).\(try marker($0))" }.joined(separator: " ")
+        let notes = PDFBookStructure.Page(text: "Notes\n1 First.\n2 Second.\n3 Third.\n5 Fifth.")
+        let result = paragraphs([.init(text: body), notes], markers: ["1", "2", "3", "5"],
+                                outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 1)])
+        #expect(result.filter { $0.hasPrefix("Footnote:") }
+            == ["Footnote: First.", "Footnote: Second.", "Footnote: Third.", "Footnote: Fifth."])
+    }
+
+    /// A printed page number equal to the next note's is not that note's stray number.
+    @Test func aPageNumberIsNotAStrayNoteNumber() throws {
+        let body = try (0..<3).map { "Sentence \($0).\(try marker($0))" }.joined(separator: " ")
+        let filler = PDFBookStructure.Page(text: "Words of the page between.")
+        let notes = PDFBookStructure.Page(text: "Notes\n1 First.\n2 Second.\nMore about the second.\n3 Third.\n3")
+        let result = paragraphs([.init(text: body), filler, notes], markers: ["1", "2", "3"],
+                                outline: [.init(label: "Body", page: 0), .init(label: "Notes", page: 2)])
+        #expect(result.filter { $0.hasPrefix("Footnote:") }
+            == ["Footnote: First.", "Footnote: Second. More about the second.", "Footnote: Third."])
+    }
+
     /// A chapter citing an earlier note again stays in its chapter's notes.
     @Test func citingANoteAgainDoesNotMoveToTheNextChapter() throws {
         let pages: [PDFBookStructure.Page] = [

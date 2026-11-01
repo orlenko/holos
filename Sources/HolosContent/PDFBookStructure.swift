@@ -278,7 +278,8 @@ enum PDFBookStructure {
         -> (blocks: [[Int: String]], symbolic: [String]) {
         var lines: [(text: String, stray: Set<Int>)] = []
         for index in content.indices where roles[index] == .notes {
-            let stray = Set(PDFReader.lines(of: pages[index].text).compactMap(PDFReader.bareNumber))
+            // After the furniture has gone, so a printed page number is not taken for a note's.
+            let stray = Set(content[index].compactMap(PDFReader.bareNumber))
             let sizes = pages[index].lineSizes.values.filter { $0 > 0 }.sorted()
             let usual = sizes.isEmpty ? 0 : sizes[sizes.count / 2]
             for line in content[index] where !line.isEmpty && PDFReader.bareNumber(line) == nil {
@@ -290,6 +291,7 @@ enum PDFBookStructure {
         var blocks: [[Int: String]] = []
         // "* A note": no number to pair by, so said with those no marker cited rather than lost.
         var symbolic: [String] = []
+        var inSymbolic = false
         var last: Int?
         var pending: String?
         var lastLine = ""
@@ -305,6 +307,7 @@ enum PDFBookStructure {
             if let symbol = noteStart(line.text), Int(symbol.label) == nil {
                 flush()
                 symbolic.append(symbol.text)
+                inSymbolic = true
                 lastLine = line.text
                 continue
             }
@@ -321,14 +324,23 @@ enum PDFBookStructure {
                 if start.number == next, note == nil || start.text.first?.isLowercase != true
                     || (finished && bracketsClosed(pending.map { joined(note ?? "", $0) } ?? note ?? "")) { return start }
                 if start.number == 1, closed, startsABlock(lines.map(\.text), after: position, next: next) { return start }
+                // A gap in the numbering: a sentence opening just past the next number, after a note that ended.
+                if start.number > next, start.number <= next + 3, finished, start.text.first?.isUppercase == true {
+                    return start
+                }
                 return nil
             } ?? (line.stray.contains(next) && finished ? (next, line.text) : nil)
             lastLine = line.text
             guard let start else {
+                if inSymbolic, !symbolic.isEmpty {
+                    symbolic[symbolic.count - 1] = joined(symbolic[symbolic.count - 1], line.text)
+                    continue
+                }
                 flush()
                 pending = line.text
                 continue
             }
+            inSymbolic = false
             if start.number == 1 || blocks.isEmpty {
                 // A short line with no end of its own, right before a new block, names that block's chapter.
                 if let line = pending, line.count > 90 || PDFReader.endsSentence(line) { flush() }
@@ -356,9 +368,16 @@ enum PDFBookStructure {
         return position + 1 + rest.count == lines.count && !rest.contains { noteStart($0)?.label == String(next) }
     }
 
-    /// Where the outline's text parts start. One that names only front and back matter says nothing about chapters.
+    /// Where the outline's chapters start: the entries it calls chapters, else its shallowest level with several text
+    /// parts, so a section inside a chapter is no new chapter. One naming only front and back matter says nothing.
     private static func chapterStarts(_ outline: [OutlineEntry], hasTitle: Bool) -> Set<Int> {
-        let starts = Set(outline.filter { role(named: $0.label, hasTitle: hasTitle) == nil }.map(\.page))
+        let parts = outline.filter { role(named: $0.label, hasTitle: hasTitle) == nil }
+        let named = parts.filter { $0.label.lowercased().hasPrefix("chapter") }
+        let levels = Set(parts.map(\.level)).sorted()
+        let shallowest = levels.first { level in parts.filter { $0.level == level }.count >= 2 }
+        // Text before the chapters (a foreword, an introduction) has notes of its own, at the chapters' depth.
+        let level = named.first?.level ?? shallowest
+        let starts = Set(parts.filter { $0.level == level }.map(\.page))
         return starts.count >= 2 ? starts : []
     }
 
