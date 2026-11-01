@@ -1,5 +1,7 @@
 import Foundation
+import AVFoundation
 import Synchronization
+import HolosSynthesis
 import Testing
 @testable import HolosContent
 
@@ -28,6 +30,49 @@ private final class FakePlayback: ReadingPlayback, @unchecked Sendable {
 @MainActor @Suite struct ReadingPlayerTests {
     private func file() throws -> FileHandle {
         try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+    }
+
+    /// Only the loaded reading moves, within its length, and it stays playing or paused as it was.
+    @Test func seekMovesTheLoadedReading() async throws {
+        let playback = FakePlayback()
+        let player = ReadingPlayer(open: { _ in OpenedPlayback(playback) })
+        var changes = 0
+        player.onChange = { changes += 1 }
+        let id = UUID()
+        #expect(!player.seek(id, to: 10))
+        try await player.play(id, file: { try? self.file() })
+
+        changes = 0
+        #expect(player.seek(id, to: 30))
+        #expect(playback.currentTime == 30)
+        #expect(player.isPlaying)
+        #expect(changes == 1)
+        #expect(!player.seek(UUID(), to: 5))
+        #expect(playback.currentTime == 30)
+
+        #expect(player.seek(id, to: -5))
+        #expect(playback.currentTime == 0)
+        #expect(player.seek(id, to: 500))
+        #expect(playback.currentTime < 60 && playback.currentTime > 59)
+        #expect(!player.seek(id, to: .nan))
+
+        #expect(player.toggleLoaded(id))
+        #expect(player.seek(id, to: 20))
+        #expect(!player.isPlaying)
+        #expect(playback.currentTime == 20)
+    }
+
+    /// A reading not loaded yet starts from the place asked for; a loaded one moves there rather than pausing.
+    @Test func playFromAPlace() async throws {
+        let playback = FakePlayback()
+        let player = ReadingPlayer(open: { _ in OpenedPlayback(playback) })
+        let id = UUID()
+        try await player.play(id, from: 42, file: { try? self.file() })
+        #expect(playback.currentTime == 42)
+        #expect(player.isPlaying)
+        try await player.play(id, from: 7, file: { nil })
+        #expect(playback.currentTime == 7)
+        #expect(player.isPlaying)
     }
 
     /// A reading that cannot continue after a pause, or whose file cannot be decoded while it plays, is stopped and
@@ -174,5 +219,36 @@ private final class FakePlayback: ReadingPlayback, @unchecked Sendable {
     func release() {
         permit?.resume()
         permit = nil
+    }
+}
+
+/// The real player on a real joined file, never started (nothing is played aloud).
+@MainActor @Suite struct ReadingPlayerFileTests {
+    @Test func aJoinedFileSeeksThroughDevFd() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("seek-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let rate = ReadingAudioFormat.sampleRate
+        let format = try #require(AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: rate, channels: 1,
+                                                interleaved: true))
+        var parts: [AudioBookPart] = []
+        for index in 0..<2 {
+            let url = folder.appendingPathComponent("part\(index).caf")
+            let file = try AVAudioFile(forWriting: url, settings: format.settings, commonFormat: .pcmFormatInt16,
+                                       interleaved: true)
+            let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(rate * 20)))
+            buffer.frameLength = buffer.frameCapacity
+            try file.write(from: buffer)
+            parts.append(AudioBookPart(url: url, silenceBefore: index == 0 ? 0 : ReadingAudioFormat.partGap,
+                                       chapter: nil))
+        }
+        let output = folder.appendingPathComponent("book.m4a")
+        let summary = try await AudioBookWriter.write(parts: parts, metadata: AudioBookMetadata(title: "T"), to: output)
+        let opened = try ReadingPlayer.openAudio(FileHandle(forReadingFrom: output))
+        let playback = opened.playback
+        #expect(abs(playback.duration - summary.duration) < 0.2)
+        playback.currentTime = 30
+        #expect(abs(playback.currentTime - 30) < 0.2)
+        playback.stop()
     }
 }
