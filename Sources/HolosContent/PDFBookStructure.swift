@@ -83,7 +83,9 @@ enum PDFBookStructure {
         // The furniture goes first, so a small running footer is not taken for the end of a footnote, and a page number
         // for a marker; then the parts, read from the text as it stands.
         var framed = PDFReader.pageContent(pages.map { PDFReader.lines(of: $0.text) })
-        let notesBelow = takeBackMatterBelow(&framed, outline: outline)
+        // An outline that would silence the book is ignored (`roles`), so it takes nothing off a page either.
+        let notesBelow = namedRoles(content: framed, outline: outline, hasTitle: hasTitle) == nil ? [:]
+            : takeBackMatterBelow(&framed, outline: outline)
         var roles = self.roles(content: framed, outline: outline, hasTitle: hasTitle)
         var markers = given
         // The page each marker was found on, where its footnote is, wherever its sentence is.
@@ -148,13 +150,15 @@ enum PDFBookStructure {
         -> [Int: (at: Int, lines: [String])] {
         var notes: [Int: (at: Int, lines: [String])] = [:]
         for entry in outline where framed.indices.contains(entry.page) && opensMidPage(entry.label) {
-            let sharing = outline.contains { $0.page == entry.page && $0.label != entry.label }
+            // Entries nested in this part are of it; only one at its own depth or above ends it.
+            let others = outline.filter { $0.page == entry.page && $0.label != entry.label && $0.level <= entry.level }
+            let sharing = !others.isEmpty
             guard sharing || !opensPart(framed[entry.page], named: entry.label) else { continue }
             let name = outlineName(entry.label)
             guard let heading = framed[entry.page].firstIndex(where: { !$0.isEmpty && outlineName($0) == name }) else { continue }
             // Down to the next part the outline starts on this page, which stays.
-            let others = Set(outline.filter { $0.page == entry.page && $0.label != entry.label }.map { outlineName($0.label) })
-            let end = framed[entry.page][(heading + 1)...].firstIndex { others.contains(outlineName($0)) }
+            let names = Set(others.map { outlineName($0.label) })
+            let end = framed[entry.page][(heading + 1)...].firstIndex { names.contains(outlineName($0)) }
                 ?? framed[entry.page].count
             let below = Array(framed[entry.page][heading..<end])
             framed[entry.page].removeSubrange(heading..<end)
@@ -256,7 +260,9 @@ enum PDFBookStructure {
             let start = noteStart(line)
             let follows = start.flatMap { Int($0.label) } != nil
                 && notes.last.flatMap { Int($0.label) }.map { $0 + 1 } == start.flatMap { Int($0.label) }
-            if let start, used.contains(start.label) || follows {
+            // "2 million entries." wrapped inside a note that has not ended is that note's.
+            let wrapped = start?.text.first?.isLowercase == true && notes.last.map { !PDFReader.endsSentence($0.text) } ?? false
+            if let start, !wrapped, used.contains(start.label) || follows {
                 notes.append(Note(label: start.label, text: start.text))
             } else if !notes.isEmpty {
                 notes[notes.count - 1].text = joined(notes[notes.count - 1].text, line)
@@ -293,6 +299,14 @@ enum PDFBookStructure {
 
     /// What each page is: named by the outline, else recognized by its look.
     static func roles(content: [[String]], outline: [OutlineEntry], hasTitle: Bool) -> [Role] {
+        var roles = namedRoles(content: content, outline: outline, hasTitle: hasTitle)
+            ?? [Role](repeating: .body, count: content.count)
+        recognize(content, into: &roles)
+        return roles
+    }
+
+    /// What the outline names each page; nil when that would silence nearly the whole book, which then ignores it.
+    private static func namedRoles(content: [[String]], outline: [OutlineEntry], hasTitle: Bool) -> [Role]? {
         var roles = [Role](repeating: .body, count: content.count)
         // In outline order: a part's chapters inherit its role, and one naming its own overrides it.
         let entries = outline.filter { content.indices.contains($0.page) }
@@ -306,10 +320,7 @@ enum PDFBookStructure {
             for page in min(start, end)..<end { roles[page] = role }
         }
         // A wrong outline, or one with nothing else in it, must not silence the book (invariant 1).
-        let silent = roles.filter { $0 != .body }.count
-        if silent * 10 > content.count * 8 { roles = [Role](repeating: .body, count: content.count) }
-        recognize(content, into: &roles)
-        return roles
+        return roles.filter { $0 != .body }.count * 10 > content.count * 8 ? nil : roles
     }
 
     private static func outlineName(_ label: String) -> String {

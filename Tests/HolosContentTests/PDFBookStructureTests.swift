@@ -469,6 +469,26 @@ import Testing
         #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: One without an end.", "Footnote: Of two."])
     }
 
+    /// A sole References bookmark that would silence the book takes nothing off its page either.
+    @Test func anIgnoredOutlineTakesNothingOffAPage() {
+        let pages = ["Words first.\nReferences\nA paragraph that stays."] + (1..<6).map { "Page number \($0) reads on." }
+        let text = paragraphs(pages.map { .init(text: $0) }, outline: [.init(label: "References", page: 0)]).joined(separator: " ")
+        #expect(text.contains("A paragraph that stays."))
+    }
+
+    /// A chapter nested in Notes on its opening page is part of the notes, not the end of them.
+    @Test func aNestedChapterOnTheOpeningPageStaysInTheNotes() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0))"), .init(text: "B.\(try marker(1))"),
+            .init(text: "Notes\nChapter 1\n1 Of one.\nChapter 2\n1 Of two."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "1"], outline: [
+            .init(label: "Chapter 1", page: 0), .init(label: "Chapter 2", page: 1), .init(label: "Notes", page: 2),
+            .init(label: "Chapter 1", page: 2, level: 1),
+        ])
+        #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: Of one.", "Footnote: Of two."])
+    }
+
     /// Notes starting under the last of the text are still notes, and the text above them is still read.
     @Test func notesStartingPartwayDownAPageAreKept() throws {
         let pages: [PDFBookStructure.Page] = [
@@ -756,6 +776,15 @@ import Testing
                             (Self.filler + " Two", 10), ("2", 6), (" and three", 10), ("3", 6), (".\n", 10)])
         let (pages, _) = try PDFReader.bookPages([small])
         #expect(pages[0].smallRuns["See page 1"]?.map(\.count) == [1, 0])
+    }
+
+    /// A line wrapped inside a footnote can open with the next number, in lowercase.
+    @Test func aWrappedFootnoteLineOpeningWithTheNextNumberStaysInIt() throws {
+        let lines = ["1 The sample contains", "2 million entries.", "2 The real second."]
+        let page = PDFBookStructure.Page(text: "A.\(try marker(0)) B.\(try marker(1))\n" + lines.joined(separator: "\n"),
+                                         lineSizes: Dictionary(uniqueKeysWithValues: lines.map { ($0, 8.0) }))
+        let result = paragraphs([page], markers: ["1", "2"], bodySize: 10)
+        #expect(result.filter { $0.hasPrefix("Footnote:") } == ["Footnote: The sample contains 2 million entries.", "Footnote: The real second."])
     }
 
     /// A footnote whose marker was not found is still said, not merged into the one before.
