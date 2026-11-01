@@ -572,6 +572,10 @@ timeline and a larger local-model benchmark are follow-ups.
   A PDF reads like a book: title and author, no contents, index, or page numbers, and each note as "Footnote: …" after
   its sentence (`PDFBookStructure`). Unit-tested with made-up pages and a generated PDF, and its extracted text checked
   on one real published book with end-of-book notes. Books with notes at the page's foot have been seen only in tests.
+  A loaded reading's row has a seek bar, and Show Text is a window that highlights and follows the sentence being
+  spoken, its times from the render cache's manifest (`ReadingTimeline`). The timeline, the player's seek on a real
+  `.m4a`, the bar's drag rules and the window's highlight are unit-tested, and the views were checked rendered offscreen;
+  dragging the bar in the real list and how closely the highlight tracks a voice by ear are still to check.
 - Natural voices (docs/design.md "Natural voices"): Reading can use Kyutai's Pocket TTS through
   FluidAudio 0.17.1, rendered by the bundled `voiceislocal say` (the app does not link
   FluidAudio). `voiceislocal setup --natural-voices [--language fr]` or Settings › Reading

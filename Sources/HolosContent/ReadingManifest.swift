@@ -14,6 +14,11 @@ public struct ReadingPart: Codable, Sendable, Equatable {
     public var status: String
     public var audioSHA256: String?
     public var duration: Double?
+
+    /// The silence the finished file has before this part.
+    public func silenceBefore(_ format: ReadingFormatSettings) -> Double {
+        index == 0 ? 0 : startsSection ? format.chapterGap : format.partGap
+    }
 }
 
 /// The fixed encoding settings a reading's file is made with. Saved in the manifest so a reading
