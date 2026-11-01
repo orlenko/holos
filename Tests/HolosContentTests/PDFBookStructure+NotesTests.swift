@@ -651,6 +651,33 @@ extension PDFBookStructureTests {
         #expect(text.contains("The appendix goes on.") && !text.contains("Somebody"))
     }
 
+    /// A page holding the end of one notes section and the start of another keeps both in reading order.
+    @Test func twoSectionsMeetingOnAPageStayInOrder() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0)) B.\(try marker(1))"),
+            .init(text: "Notes\n1 One begins"),
+            .init(text: "and ends here.\nFootnotes\n1 Other one."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "1"], outline: [
+            .init(label: "Body", page: 0), .init(label: "Notes", page: 1), .init(label: "Footnotes", page: 2),
+        ])
+        #expect(result.contains("Footnote: One begins and ends here."))
+    }
+
+    /// Notes going on to a page where other back matter begins partway down are all notes.
+    @Test func notesEndingAboveReferencesAreAllNotes() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A.\(try marker(0)) B.\(try marker(1)) C.\(try marker(2))"),
+            .init(text: "Notes\n1 One.\n2 Two.\n3 Three begins"),
+            .init(text: "and ends here.\nReferences\nSomebody, A Book."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "2", "3"], outline: [
+            .init(label: "Body", page: 0), .init(label: "Notes", page: 1), .init(label: "References", page: 2),
+        ])
+        #expect(result.contains("Footnote: Three begins and ends here."))
+        #expect(!result.joined(separator: " ").contains("Somebody"))
+    }
+
     /// A page reference wrapped onto its own line stays in its note.
     @Test func aNotesNumericLineStaysInIt() throws {
         let body = try (0..<3).map { "Sentence \($0).\(try marker($0))" }.joined(separator: " ")

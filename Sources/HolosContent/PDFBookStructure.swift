@@ -147,42 +147,69 @@ enum PDFBookStructure {
         return body + unsaid.map(Self.spoken)
     }
 
-    /// Back matter on a page it shares with other text: its lines leave the page, so the rest stays and is read. Those of
-    /// a notes section are returned, heading and all, by page and with their place, for the notes; the rest go as the
-    /// part does.
+    /// Splits each page where the outline's parts change partway down, in reading order and before anything is removed,
+    /// so no boundary is missed for an earlier removal. What belongs to a notes section is returned, by page, with its
+    /// place among the lines left and its heading or a blank in the heading's place; other back matter goes as the part
+    /// does; text stays. A page in one part throughout is left for `roles`.
     private static func takeBackMatterBelow(_ framed: inout [[String]], outline: [OutlineEntry])
         -> [Int: [(at: Int, lines: [String])]] {
         var notes: [Int: [(at: Int, lines: [String])]] = [:]
-        for entry in outline where framed.indices.contains(entry.page) && opensMidPage(entry.label) {
-            // Entries nested in this part are of it; only one at its own depth or above ends it.
-            let others = outline.filter { $0.page == entry.page && $0.label != entry.label && $0.level <= entry.level }
-            let sharing = !others.isEmpty
-            guard sharing || !opensPart(framed[entry.page], named: entry.label) else { continue }
-            let name = outlineName(entry.label)
-            guard let heading = framed[entry.page].firstIndex(where: { !$0.isEmpty && outlineName($0) == name }) else { continue }
-            // Down to the next part the outline starts on this page, which stays.
-            let names = Set(others.map { outlineName($0.label) })
-            let end = framed[entry.page][(heading + 1)...].firstIndex { names.contains(outlineName($0)) }
-                ?? framed[entry.page].count
-            let below = Array(framed[entry.page][heading..<end])
-            framed[entry.page].removeSubrange(heading..<end)
-            if role(named: entry.label, hasTitle: true) == .notes { notes[entry.page, default: []].append((heading, below)) }
-        }
-        // The other end: a part starting partway down a page leaves what is above its heading to the part before.
-        for (index, entry) in outline.enumerated() where opensMidPage(entry.label) && framed.indices.contains(entry.page) {
-            guard let next = outline[(index + 1)...].first(where: { $0.level <= entry.level && $0.page >= entry.page }),
-                  next.page > entry.page, framed.indices.contains(next.page) else { continue }
-            let name = outlineName(next.label)
-            guard let heading = framed[next.page].firstIndex(where: { line in
-                let key = outlineName(line)
-                return !key.isEmpty && (key == name || name.hasPrefix(key + " "))
-            }), heading > 0 else { continue }
-            let above = Array(framed[next.page][..<heading])
-            framed[next.page].removeSubrange(..<heading)
-            // Its first line stands where a section's heading does, so nothing of the note is taken for one.
-            if role(named: entry.label, hasTitle: true) == .notes { notes[next.page, default: []].append((0, [""] + above)) }
+        // The back matter being read: nested entries are of it, until one at its depth or above.
+        var active: (role: Role, level: Int)?
+        for page in framed.indices {
+            let lines = framed[page]
+            var cuts: [(line: Int, active: (role: Role, level: Int)?)] = []
+            var state = active
+            var from = 0
+            for entry in outline where entry.page == page {
+                let named = role(named: entry.label, hasTitle: true)
+                let backMatter = named != nil && opensMidPage(entry.label)
+                if named == nil, let current = state, entry.level > current.level { continue }
+                // Front matter has its pages to itself, for `roles`.
+                if named != nil, !backMatter { continue }
+                let heading = headingLine(of: entry.label, in: lines, from: from)
+                // Back matter with no heading here begins on the next page, and text at the top of this one.
+                let line = heading ?? (backMatter ? lines.count : 0)
+                state = named.map { ($0, entry.level) }
+                cuts.append((line, state))
+                from = max(from, line)
+            }
+            defer { active = state }
+            let first = active
+            let partway = cuts.contains { $0.line > 0 && $0.line < lines.count } || (cuts.first?.line == 0 && cuts.count > 1)
+            let endsWithin = first != nil && cuts.contains { $0.line > 0 && $0.line < lines.count }
+            guard partway || endsWithin else { continue }
+            var kept: [String] = []
+            var start = 0
+            var current = first
+            for cut in cuts + [(line: lines.count, active: nil)] {
+                let piece = Array(lines[min(start, lines.count)..<max(start, min(cut.line, lines.count))])
+                switch current?.role {
+                case .notes?:
+                    if !piece.isEmpty {
+                        // A section begun here opens on its heading; one going on from the page before has none.
+                        let opens = start > 0 || first == nil || cuts.first?.line == 0
+                        notes[page, default: []].append((kept.count, (opens ? [] : [""]) + piece))
+                    }
+                case .skipped?: break
+                case .body?, nil: kept += piece
+                }
+                start = cut.line
+                current = cut.active
+            }
+            framed[page] = kept
         }
         return notes
+    }
+
+    /// The line on a page that heads the outline's `label`: its words, or the start of them ("Chapter 1" for "Chapter 1
+    /// Its Long Name").
+    private static func headingLine(of label: String, in lines: [String], from start: Int) -> Int? {
+        let name = ReadableDocument.titleKey(label)
+        return lines[min(start, lines.count)...].firstIndex { line in
+            let key = ReadableDocument.titleKey(line)
+            return !key.isEmpty && (key == name || name.hasPrefix(key + " "))
+        }
     }
 
     // MARK: - Finding the markers
@@ -383,7 +410,7 @@ enum PDFBookStructure {
         while index < early {
             defer { index += 1 }
             guard roles[index] == .body else { continue }
-            if isCopyrightPage(content[index]) { roles[index] = .skipped }
+            if content.count >= 8, isCopyrightPage(content[index]) { roles[index] = .skipped }
             guard opens(content[index], with: ["contents", "table of contents"]), share(content[index], endingInANumber) >= 0.5
             else { continue }
             var page = index
@@ -438,7 +465,9 @@ enum PDFBookStructure {
     private static func isCopyrightPage(_ lines: [String]) -> Bool {
         let text = lines.joined(separator: " ").lowercased()
         guard text.count < 2_500 else { return false }
-        let claims = text.contains("all rights reserved") || text.contains("©") || text.contains("copyright")
+        // A notice, not a page that merely talks about copyright.
+        let claims = text.contains("all rights reserved") || text.contains("©")
+            || text.range(of: #"copyright\s+\d{4}"#, options: .regularExpression) != nil
         return claims && (text.contains("isbn") || text.contains("first published") || text.contains("library of congress"))
     }
 

@@ -93,6 +93,15 @@ import Testing
         #expect(roles[0] == .body && roles[4] == .body && roles[9] == .body)
     }
 
+    /// A page about copyright is not a copyright page, and a short document is not silenced by one.
+    @Test func proseAboutCopyrightIsRead() {
+        var content: [[String]] = (0..<10).map { ["Prose on page \($0) in plain sentences."] }
+        content[1] = ["An ISBN does not establish copyright ownership, as this page explains."]
+        #expect(PDFBookStructure.roles(content: content, outline: [], hasTitle: true)[1] == .body)
+        let short = [["Copyright © 2020 Someone. All rights reserved. ISBN 000-0."]]
+        #expect(PDFBookStructure.roles(content: short, outline: [], hasTitle: true) == [.body])
+    }
+
     /// A chapter called Contents in prose is not a table of contents.
     @Test func aPageOpeningWithTheWordContentsIsNotSkippedForThat() {
         var content: [[String]] = (0..<8).map { ["Prose on page \($0)."] }
