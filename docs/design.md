@@ -143,6 +143,11 @@ respect secure input. Do not synthesize Return or auto-submit. A terminal must n
 receive an unexpected trailing newline. "Anywhere" means broad tested coverage,
 with a visible copy fallback for unsupported fields.
 
+Rex translates synthetic input from physical key codes. Its dictation events carry the key code and Shift state
+that produce each character in the active keyboard layout, as well as the Unicode text. Each chunk is checked in
+full before typing. Characters needing a dead key, Option, an input method or a different keyboard layout keep
+that chunk for Copy Result; typing never substitutes a different character or sends terminal modifier shortcuts.
+
 The first app matrix should include TextEdit, a browser textarea/contenteditable,
 VS Code, a terminal, and the user's actual chat/mail applications. The latter list
 can be supplied with the Wispr references. The app needs Microphone and

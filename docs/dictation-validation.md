@@ -306,6 +306,12 @@ Electron apps are asked to expose accessibility (`AXManualAccessibility`) when t
 become active, since they otherwise report no focused element. A password/secure
 field or Secure Keyboard Entry is refused.
 
+Rex receives physical key codes and Shift states matching the active keyboard layout. Check a mixture of lower-
+and uppercase letters, spaces and punctuation at an empty prompt without pressing Return. Characters the layout
+cannot type directly (including emoji and dead-key combinations) keep the entire unwritten chunk for Copy Result.
+Check another keyboard layout too: letters must follow that layout, and text requiring another layout must be
+kept for copying. No Option or Control combinations are synthesized.
+
 Hesitation sounds ("um", "uh", "ah", "erm", "hmm") and the commas around them are
 removed before corrections are applied, unless **Remove filler words** is turned
 off in Settings. "mm", "hm", and "er" are kept because they collide with
