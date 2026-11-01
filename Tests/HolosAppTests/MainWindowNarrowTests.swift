@@ -214,6 +214,13 @@ struct MainWindowNarrowTests {
                  playback: .init(playing: true, current: 12, duration: 40), playable: true)
         #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.title).contains("❚❚ Pause"))
 
+        // Queued again behind another conversion while it plays: Pause and the bar stay.
+        var queued = entry
+        queued.state = .queued
+        row.show(queued, activity: nil, fileProblem: nil, size: nil, playback: .init(playing: true, current: 12, duration: 40, final: false))
+        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.title).contains("❚❚ Pause"))
+        #expect(Self.allViews(row).compactMap { $0 as? ReadingSeekBar }.first?.isHiddenOrHasHiddenAncestor == false)
+
         // Not played yet, its first part made: Play beside Stop Converting; none made: that alone.
         row.show(entry, activity: .rendering(part: 2, of: 5), fileProblem: nil, size: nil, playback: nil, playable: true)
         #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.title)

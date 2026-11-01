@@ -232,7 +232,8 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
             current.stop()
             let playback = opened.playback
             (playback as? AVAudioPlayer)?.delegate = self
-            playback.seek(to: place)
+            // The latest place asked for while it opened.
+            playback.seek(to: (current as? PartQueuePlayback)?.handoverPlace ?? place)
             self.player = playback
             if wasPlaying, !playback.play() { return self.fail("The audio could not continue playing.") }
             self.tick()

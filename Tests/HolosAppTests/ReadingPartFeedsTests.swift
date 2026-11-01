@@ -37,6 +37,12 @@ import Testing
         entry.state = .stopped
         feeds.ended(stopped, as: entry)
         #expect(stopping.end == .stopped)
+        // Kept for Resume: the next run's first part reopens the same feed, so what plays goes on with it.
+        #expect(feeds.feed(stopped) === stopping)
+        feeds.add(part(1), to: stopped)
+        #expect(stopping.end == nil && stopping.parts[1] != nil)
+        feeds.ended(stopped, as: nil)
+        #expect(feeds.feed(stopped) == nil)
 
         // A reading with no part made has no feed to end.
         feeds.ended(UUID(), as: entry)

@@ -177,6 +177,8 @@ final class ReadingRowView: NSTableCellView {
         status.textColor = .secondaryLabelColor
         progress.isHidden = true
         showsSeekBar = false
+        // Whatever the conversion is doing, a reading in the player keeps its playback line (invariant 2).
+        showPlayback(playback)
         var buttons: [NSButton] = []
         switch entry.state {
         case .queued:
@@ -285,12 +287,20 @@ final class ReadingRowView: NSTableCellView {
         for button in buttons { button.setAccessibilityLabel("\(fullTitle(button)) — \(entry.title)") }
     }
 
-    /// ▶ Play or ❚❚ Pause, and the place of the reading loaded on the seek bar ("4:10…" while it is made).
+    /// ▶ Play or ❚❚ Pause, on the row's buttons until the reading is loaded.
     private func setPlay(_ playback: Playback?) {
-        setPrimary(playback?.playing == true ? "❚❚ Pause" : "▶ Play", .play, help: "Play or pause here (Space)")
+        setPrimary(Self.playTitle(playback), .play, help: "Play or pause here (Space)")
+    }
+
+    private static func playTitle(_ playback: Playback?) -> String {
+        playback?.playing == true ? "❚❚ Pause" : "▶ Play"
+    }
+
+    /// The line of the reading loaded: Play or Pause, and its place on the seek bar ("4:10…" while it is converted).
+    private func showPlayback(_ playback: Playback?) {
         guard let playback, let current = playback.current, let duration = playback.duration else { return }
         showsSeekBar = true
-        transport.title = primary.title
+        transport.title = Self.playTitle(playback)
         seekBar.show(current: current, duration: duration, growing: !playback.final)
     }
 

@@ -259,6 +259,76 @@ struct PartFiles {
         #expect(playback.currentTime == 1.5)
     }
 
+    /// A change of audio device after a seek goes back to the place the seek landed, not the part's start.
+    @Test func aDeviceChangeAfterASeekKeepsThePlace() async throws {
+        let files = try PartFiles()
+        defer { files.remove() }
+        let feed = ReadingPartFeed()
+        let output = QueueOutput()
+        let playback = PartQueuePlayback(feed: feed, output: output)
+        for index in 0..<2 { feed.add(try files.part(index, of: 3, seconds: 1)) }
+        #expect(playback.play())
+        #expect(await eventually { output.queued.count == 3 })
+        playback.seek(to: 2)
+        #expect(await eventually { output.queued.first?.frames == 4_000 })
+        output.onInterrupted?()
+        #expect(playback.currentTime == 2)
+        #expect(playback.play())
+        #expect(await eventually { output.queued.first?.frames == 4_000 })
+        output.playNext()
+        #expect(playback.currentTime == 2.5)
+    }
+
+    /// A place asked for before the first part is read is gone to once it is.
+    @Test func aSeekBeforeTheFirstPartIsReadIsKept() async throws {
+        let files = try PartFiles()
+        defer { files.remove() }
+        let feed = ReadingPartFeed()
+        let output = QueueOutput()
+        let playback = PartQueuePlayback(feed: feed, output: output)
+        for index in 0..<2 { feed.add(try files.part(index, of: 3, seconds: 1)) }
+        #expect(playback.play())
+        playback.seek(to: 2)
+        #expect(await eventually { playback.currentTime == 2 && output.queued.first?.frames == 4_000 })
+    }
+
+    /// Made while it played: a new place while the finished file opens is the one it plays from.
+    @Test func theLatestSeekWhileTheFileOpensIsKept() async throws {
+        let files = try PartFiles()
+        defer { files.remove() }
+        let feed = ReadingPartFeed()
+        let output = QueueOutput()
+        let playback = PartQueuePlayback(feed: feed, output: output)
+        for index in 0..<3 { feed.add(try files.part(index, of: 3, seconds: 1)) }
+        #expect(playback.play())
+        #expect(await eventually { output.queued.count == 3 })
+        feed.finish(.finished)
+        playback.seek(to: 2)
+        playback.seek(to: 3)
+        #expect(playback.handoverPlace == 3)
+        #expect(playback.currentTime == 3)
+    }
+
+    /// Stopped, then resumed while it still plays: the parts made next join what is playing.
+    @Test func aResumedConversionFeedsWhatIsPlaying() async throws {
+        let files = try PartFiles()
+        defer { files.remove() }
+        let feed = ReadingPartFeed()
+        let output = QueueOutput()
+        let playback = PartQueuePlayback(feed: feed, output: output)
+        var ends: [PartQueuePlayback.End] = []
+        playback.onEnd = { ends.append($0) }
+        feed.add(try files.part(0, of: 3, seconds: 1))
+        #expect(playback.play())
+        #expect(await eventually { output.queued.count == 1 })
+        feed.finish(.stopped)
+        feed.reopen()
+        feed.add(try files.part(1, of: 3, seconds: 1))
+        #expect(await eventually { output.queued.count == 3 })
+        output.playNext()
+        #expect(ends.isEmpty)
+    }
+
     /// Once it is made its parts are going: the finished file takes over at the place.
     @Test func aSeekAfterMakingFinishedHandsOverThere() async throws {
         let files = try PartFiles()

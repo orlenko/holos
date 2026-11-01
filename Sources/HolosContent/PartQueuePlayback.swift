@@ -73,8 +73,14 @@ public final class PartQueuePlayback {
     private var heardFrames: Int64 = 0
     /// Counts the changes of audio device and the seeks, so a part read before one is not queued after it.
     private var run = 0
-    /// Where a seek lands in the part it lands in, in frames of that part.
+    /// Where a seek lands in the part it lands in, in frames of that part, until that part is queued.
     private var landing: (index: Int, frames: Int64)?
+    /// The same, while that part is queued: it is what a change of audio device goes back to.
+    private var landed: (index: Int, frames: Int64)?
+    /// A place asked for before the first part was read: nothing tells frames from seconds until then.
+    private var pendingSeek: TimeInterval?
+    /// Where the finished file is to play from: the latest place asked for while it opens.
+    private(set) var handoverPlace: TimeInterval?
 
     var onEnd: ((End) -> Void)?
     var onHandoff: ((TimeInterval) -> Void)?
@@ -136,6 +142,7 @@ public final class PartQueuePlayback {
     }
 
     public var currentTime: TimeInterval {
+        if let handoverPlace { return handoverPlace }
         guard let rate else { return 0 }
         return Double(base + min(output.playedFrames, queuedFrames)) / rate
     }
@@ -204,6 +211,10 @@ public final class PartQueuePlayback {
                     let reason = error.localizedDescription
                     return self.end(.failed("Part \(part.index + 1) could not be played: \(reason)"))
                 }
+                if let place = self.pendingSeek {
+                    self.pendingSeek = nil
+                    return self.seek(to: place)
+                }
             case .failure(let failure):
                 // Gone from the cache: the reading was published meanwhile (or making failed); its end says which.
                 Self.log.notice("Part \(part.index + 1) could not be read (gone: \(failure.gone)): \(failure.reason, privacy: .public)")
@@ -221,6 +232,7 @@ public final class PartQueuePlayback {
         self.rate = rate
         // A seek lands inside this part: no silence, and the audio from there.
         let lands = landing?.index == index ? landing?.frames : nil
+        landed = lands.map { (index, $0) }
         landing = nil
         let silence = lands == nil ? ReadingAudioFormat.silenceFrames(seconds, rate: rate) : 0
         let buffer = try lands.map { try Self.tail(of: whole, from: $0) } ?? whole
@@ -263,7 +275,11 @@ public final class PartQueuePlayback {
     private func played() {
         guard !done, !handingOver else { return }
         queued -= 1
-        if !unheard.isEmpty { heardFrames += unheard.removeFirst().frames }
+        if !unheard.isEmpty {
+            let part = unheard.removeFirst()
+            heardFrames += part.frames
+            if landed?.index == part.index { landed = nil }
+        }
         if queued == 0 {
             // Run dry (invariant 2): the count of played frames starts again where the parts queued end.
             output.stop()
@@ -280,6 +296,7 @@ public final class PartQueuePlayback {
 
     private func handOff(at place: TimeInterval) {
         handingOver = true
+        handoverPlace = place
         feed.onChange = nil
         output.onInterrupted = nil
         output.stop()
@@ -301,7 +318,10 @@ public final class PartQueuePlayback {
         heardFrames = 0
         queuedFrames = 0
         next = unheard.first?.index ?? next
+        // The part a seek landed in goes back to that place, which `base` already is.
+        let back = landed.flatMap { $0.index == next ? $0 : nil }
         dropQueued()
+        landing = back
         onChange?()
     }
 
@@ -311,12 +331,22 @@ public final class PartQueuePlayback {
         missing = false
         reading = false
         landing = nil
+        landed = nil
         run += 1
     }
 
     /// Invariant 5.
     public func seek(to time: TimeInterval) {
-        guard !done, !handingOver, let rate else { return }
+        guard !done else { return }
+        if handingOver {
+            handoverPlace = time
+            onChange?()
+            return
+        }
+        guard let rate else {
+            pendingSeek = time
+            return
+        }
         // Once it is made its parts go: the finished file has every place.
         if case .finished? = feed.end { return handOff(at: time) }
         let made = feed.madeInOrder
