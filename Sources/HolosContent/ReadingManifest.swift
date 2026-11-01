@@ -17,7 +17,8 @@ public struct ReadingPart: Codable, Sendable, Equatable {
 
     /// The silence the finished file has before this part.
     public func silenceBefore(_ format: ReadingFormatSettings) -> Double {
-        index == 0 ? 0 : startsSection ? format.chapterGap : format.partGap
+        ReadingAudioFormat.silenceBefore(part: index, startsSection: startsSection, partGap: format.partGap,
+                                         chapterGap: format.chapterGap)
     }
 }
 

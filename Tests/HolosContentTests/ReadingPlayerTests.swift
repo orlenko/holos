@@ -26,6 +26,8 @@ private final class FakePlayback: ReadingPlayback, @unchecked Sendable {
         isPlaying = false
         stops += 1
     }
+
+    func seek(to time: TimeInterval) { currentTime = time }
 }
 
 @MainActor @Suite struct ReadingPlayerTests {
@@ -61,6 +63,20 @@ private final class FakePlayback: ReadingPlayback, @unchecked Sendable {
         #expect(player.seek(id, to: 20))
         #expect(!player.isPlaying)
         #expect(playback.currentTime == 20)
+    }
+
+    /// A failure is said with its reading while that is still loaded, whoever started it.
+    @Test func aFailureNamesItsReading() async throws {
+        let playback = FakePlayback()
+        let player = ReadingPlayer(open: { _ in OpenedPlayback(playback) })
+        var failures: [(UUID, String, UUID?)] = []
+        player.onFailure = { [weak player] id, reason in failures.append((id, reason, player?.entryID)) }
+        let id = UUID()
+        try await player.play(id, file: { try? self.file() })
+        player.ended(ObjectIdentifier(try #require(player.loaded)), failure: "It broke.")
+        #expect(failures.count == 1)
+        #expect(failures.first?.0 == id && failures.first?.1 == "It broke." && failures.first?.2 == id)
+        #expect(player.entryID == nil)
     }
 
     /// Moving the loaded reading is a later request than a reading still opening: that one does not start over it.
@@ -262,7 +278,7 @@ private final class FakePlayback: ReadingPlayback, @unchecked Sendable {
         let opened = try ReadingPlayer.openAudio(FileHandle(forReadingFrom: output))
         let playback = opened.playback
         #expect(abs(playback.duration - summary.duration) < 0.2)
-        playback.currentTime = 30
+        playback.seek(to: 30)
         #expect(abs(playback.currentTime - 30) < 0.2)
         playback.stop()
     }

@@ -12,11 +12,12 @@ extension HolosAppDelegate {
         return made
     }
 
-    /// At launch, once the Reading list is read: readings the shortcut added play when made; the menu and Settings
-    /// follow its state; the shortcut is registered when on.
+    /// At launch, once the Reading list is read: readings the shortcut added play once their first part is made; the
+    /// menu and Settings follow its state; the shortcut is registered when on.
     func startReadAloud() {
         let readAloud = readAloud
         readings.onEnded = { [weak readAloud] id in readAloud?.readingEnded(id) }
+        readings.feeds.onPartMade = { [weak readAloud] id in readAloud?.readingProgressed(id) }
         readAloud.onChange = { [weak self] in self?.rebuildMenu() }
         readAloud.start()
     }

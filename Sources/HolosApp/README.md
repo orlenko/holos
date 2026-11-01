@@ -22,7 +22,8 @@ wiring between them and the library controllers (docs/design.md "Main window").
   `ReviewWordEditHost`), `TurnListView` (+WordEditing, +Splitting, +Joining) with its `TurnTableView`,
   `TurnTextView`, `TurnScrollView` and `AssignMenu`, `SpeakerSidebarView`, `ReviewPlayer`, `ScreenTextPanel`. The
   model is `HolosMeeting`'s `ReviewSession`.
-- `Reading/`: `ReadingController`, `ReadingPreferences`, `ReadAloud` (the read-aloud shortcut's queue), voice
+- `Reading/`: `ReadingController` (what Play plays in `+Playing`), `ReadingPartFeeds` (the parts of readings being
+  made, to play them before they are finished), `ReadingPreferences`, `ReadAloud` (the read-aloud shortcut's queue), voice
   preview, natural voices (`HelperNaturalRenderer` runs each natural part in `voiceislocal say`;
   `NaturalVoiceDownload` is Settings › Reading's pack rows). Dictation UI:
   `DictationOverlay`, `DictationFixing`, and `DictationSessionNotifications` (paired sleep/session return events). Setup: `SetupAssistantWindow`. Meeting start: `MeetingStartPanel`.

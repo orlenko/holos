@@ -2,18 +2,34 @@ import AVFoundation
 import Foundation
 import HolosCore
 
-/// What `ReadingPlayer` plays through: an `AVAudioPlayer` (tests use a stand-in).
+/// What `ReadingPlayer` plays through: an `AVAudioPlayer` for a finished reading, a `PartQueuePlayback` for one being
+/// made (tests use a stand-in).
 public protocol ReadingPlayback: AnyObject {
+    /// Engaged: playing, or waiting for audio that is not made yet (`isWaiting`).
     var isPlaying: Bool { get }
-    var currentTime: TimeInterval { get set }
+    var currentTime: TimeInterval { get }
+    /// The length so far: it grows while the reading is made, until `isDurationFinal`.
     var duration: TimeInterval { get }
+    var isWaiting: Bool { get }
+    var isDurationFinal: Bool { get }
     /// False when playback could not start.
     func play() -> Bool
     func pause()
     func stop()
+    func seek(to time: TimeInterval)
+    /// Whether `seek` can move it.
+    var canSeek: Bool { get }
 }
 
-extension AVAudioPlayer: ReadingPlayback {}
+extension ReadingPlayback {
+    public var isWaiting: Bool { false }
+    public var isDurationFinal: Bool { true }
+    public var canSeek: Bool { true }
+}
+
+extension AVAudioPlayer: ReadingPlayback {
+    public func seek(to time: TimeInterval) { currentTime = time }
+}
 
 /// A playback opened off the main actor, handed to it (an `AVAudioPlayer` is used from one thread at a time: made on
 /// one, then only on the main actor).
@@ -23,16 +39,18 @@ public final class OpenedPlayback: @unchecked Sendable {
     public init(_ playback: any ReadingPlayback) { self.playback = playback }
 }
 
-/// Plays one finished reading at a time in the Reading section (▶ Play, Space), with its position. A failure while it
-/// plays (the file cannot be decoded, for one cut short while open) or when it continues is reported (`onError`),
-/// never taken for the end of the reading.
+/// Plays one reading at a time in the Reading section (▶ Play, Space), with its position: a finished one from its
+/// file, one being made from its parts as they are made (`PartQueuePlayback`), handed over to its file once it is
+/// finished. A failure while it plays (the file cannot be decoded, for one cut short while open; making it failed) or
+/// when it continues is reported (`onError`), never taken for the end of the reading.
 ///
 /// Invariants:
 /// 1. `player` and `entryID` are set and cleared together.
 /// 2. The latest interaction wins: a pause, a toggle, a seek or a stop advances `request`, and a reading still opening
 ///    starts only when `request` has not moved since it was asked for.
 /// 3. A callback from a player no longer loaded changes nothing.
-/// 4. A seek stays inside the loaded file and leaves it playing or paused as it was.
+/// 4. A seek stays inside the loaded file and leaves it playing or paused as it was. A reading playing from its parts
+///    does not seek (`canSeek`), since only the parts ahead are in memory.
 @MainActor
 public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
     /// Opens the file for playing; runs off the main actor (the player reads the file's start, which on a share whose
@@ -46,15 +64,24 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
     /// Counts the plays asked for, so one whose file opened after another was asked for (or a stop) is dropped.
     private var request = 0
     private let open: Open
+    /// Where a reading being made plays.
+    private let makeOutput: @MainActor () -> any ReadingSegmentOutput
     /// The state or the position changed.
     public var onChange: (() -> Void)?
     /// Playback stopped on an error: what to tell (a sentence).
     public var onError: ((String) -> Void)?
+    /// Reading `id` stopped on an error, said before it leaves the player: for whoever started it, with or without the
+    /// Reading section's window (which has `onError`).
+    public var onFailure: ((UUID, String) -> Void)?
     /// The reading played to its end (never called for a stop, a pause, or another reading played over it).
     public var onEnded: ((UUID) -> Void)?
+    /// A reading left the player: its end (before `onEnded`), a stop, a failure, or another reading played over it.
+    public var onUnloaded: ((UUID) -> Void)?
 
-    public init(open: @escaping Open = ReadingPlayer.openAudio) {
+    public init(open: @escaping Open = ReadingPlayer.openAudio,
+                makeOutput: @escaping @MainActor () -> any ReadingSegmentOutput = { EngineSegmentOutput() }) {
         self.open = open
+        self.makeOutput = makeOutput
     }
 
     /// An `AVAudioPlayer` on `file`, a descriptor open on the very file checked: the player reads that object through
@@ -69,11 +96,20 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
 
     public var isPlaying: Bool { player?.isPlaying ?? false }
 
-    /// Where the loaded reading is, and how long it is.
-    public var position: (current: Double, duration: Double)? {
+    /// Where the loaded reading is, and how long it is (so far, while it is made: `isFinal` false).
+    public var position: (current: Double, duration: Double, isFinal: Bool)? {
         guard let player else { return nil }
-        return (player.currentTime, player.duration)
+        return (player.currentTime, player.duration, player.isDurationFinal)
     }
+
+    /// Whether the loaded reading can be moved: not while it plays from its parts.
+    public var canSeek: Bool { player?.canSeek ?? false }
+
+    /// The loaded reading waits for a part that is not made yet.
+    public var isWaiting: Bool { player?.isWaiting ?? false }
+
+    /// The loaded reading plays from its parts (it is being made), not from its file.
+    public var playsParts: Bool { player is PartQueuePlayback }
 
     /// Pauses or continues reading `id` when it is the one loaded; false when it is not. One that cannot continue is
     /// stopped, and the reason reported.
@@ -98,7 +134,7 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
         guard entryID == id, let player, time.isFinite else { return false }
         // Invariant 2.
         request += 1
-        player.currentTime = Self.clamped(time, duration: player.duration)
+        if player.canSeek { player.seek(to: Self.clamped(time, duration: player.duration)) }
         onChange?()
         return true
     }
@@ -139,13 +175,76 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
         unload()
         let player = opened.playback
         (player as? AVAudioPlayer)?.delegate = self
-        if let start, start.isFinite { player.currentTime = Self.clamped(start, duration: player.duration) }
+        if let start, start.isFinite { player.seek(to: Self.clamped(start, duration: player.duration)) }
         guard player.play() else { throw HolosError.unavailable("The audio could not start playing.") }
         self.player = player
         entryID = id
         tick()
         onChange?()
         return true
+    }
+
+    /// Plays reading `id` while it is being made, from its parts in `feed` (at least its first made). Once making has
+    /// finished, the rest plays from the file `finishedFile` gives, from the same place. Throws when it cannot start.
+    public func play(_ id: UUID, feed: ReadingPartFeed, finishedFile: @escaping () async -> FileHandle?) throws {
+        if toggleLoaded(id) { return }
+        // A finished reading asked for before and not open yet is not played over this.
+        request += 1
+        unload()
+        let parts = PartQueuePlayback(feed: feed, output: makeOutput())
+        let loaded = ObjectIdentifier(parts)
+        parts.onEnd = { [weak self] end in self?.partsEnded(loaded, end) }
+        parts.onHandoff = { [weak self] place in self?.handOff(loaded, id: id, at: place, file: finishedFile) }
+        parts.onChange = { [weak self] in
+            self?.tick()
+            self?.onChange?()
+        }
+        guard parts.play() else { throw HolosError.unavailable("The audio could not start playing.") }
+        player = parts
+        entryID = id
+        tick()
+        onChange?()
+    }
+
+    private func partsEnded(_ loaded: ObjectIdentifier, _ end: PartQueuePlayback.End) {
+        switch end {
+        case .finished: ended(loaded, failure: nil)
+        case .failed(let reason): ended(loaded, failure: reason)
+        case .stopped:
+            guard let player, ObjectIdentifier(player) == loaded else { return }
+            unload()
+        }
+    }
+
+    /// Making finished while its parts played: the rest plays from the finished file (`file`), from `place`, playing or
+    /// paused as the parts are once it is open (Space while it opens changes that, see `PartQueuePlayback`). Dropped
+    /// when another reading was loaded meanwhile.
+    private func handOff(_ loaded: ObjectIdentifier, id: UUID, at place: TimeInterval,
+                         file: @escaping () async -> FileHandle?) {
+        guard let current = player, ObjectIdentifier(current) == loaded else { return }
+        let open = self.open
+        Task { [weak self] in
+            let opened: OpenedPlayback?
+            if let handle = await file() {
+                opened = try? await Task.detached(priority: .userInitiated) { try open(handle) }.value
+            } else {
+                opened = nil
+            }
+            guard let self, let current = self.player, ObjectIdentifier(current) == loaded, self.entryID == id else {
+                opened?.playback.stop()
+                return
+            }
+            guard let opened else { return self.fail("The finished audio file could not be opened.") }
+            let wasPlaying = current.isPlaying
+            current.stop()
+            let playback = opened.playback
+            (playback as? AVAudioPlayer)?.delegate = self
+            playback.seek(to: place)
+            self.player = playback
+            if wasPlaying, !playback.play() { return self.fail("The audio could not continue playing.") }
+            self.tick()
+            self.onChange?()
+        }
     }
 
     /// Pauses the loaded reading (a voice preview is about to speak).
@@ -171,9 +270,10 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
         ticker = nil
         player?.stop()
         player = nil
-        guard entryID != nil else { return }
+        guard let id = entryID else { return }
         entryID = nil
         onChange?()
+        onUnloaded?(id)
     }
 
     /// Updates the position twice a second while playing.
@@ -190,6 +290,7 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
     }
 
     private func fail(_ message: String) {
+        if let entryID { onFailure?(entryID, message) }
         unload()
         onError?(message)
     }

@@ -2,13 +2,14 @@ import AppKit
 import HolosContent
 import HolosSynthesis
 
-/// A reading in the list: its title and source, then either its progress with Stop, or its details with Play,
-/// Show Text, Share…, Show in Finder, and Delete… (and, loaded in the player, a seek bar under them), or its error with
-/// Try Again.
+/// A reading in the list: its title and source, then either its progress with Stop (and Play once its first part is
+/// made), or its details with Play, Show Text, Share…, Show in Finder, and Delete…, or its error with Try Again. A
+/// reading loaded in the player has a seek bar under them.
 ///
 /// Invariants:
 /// 1. `show` sets every view from what it is given, so a reused row keeps nothing of the reading shown before.
-/// 2. The seek bar shows only for a reading loaded in the player, and only then does the row keep room for it.
+/// 2. The seek bar shows only for a reading loaded in the player, and only then does the row keep room for it. It moves
+///    the reading only when `seekable`: one playing from its parts shows its place and stays there.
 /// 3. An action always names the reading shown when it was pressed.
 @MainActor
 final class ReadingRowView: NSTableCellView {
@@ -17,8 +18,14 @@ final class ReadingRowView: NSTableCellView {
     /// The player's state for the reading it has loaded.
     struct Playback {
         var playing: Bool
+        /// Engaged, waiting for a part that is not made yet.
+        var waiting = false
         var current: Double?
         var duration: Double?
+        /// False while the reading is made: the duration is what is made so far.
+        var final = true
+        /// The seek bar can move it: not while it plays from its parts.
+        var seekable = true
     }
 
     var onAction: ((UUID, Action) -> Void)?
@@ -29,6 +36,8 @@ final class ReadingRowView: NSTableCellView {
     private let progress = NSProgressIndicator()
     private let seekBar = ReadingSeekBar()
     private let primary = NSButton(title: "", target: nil, action: nil)
+    /// Stop beside Play while the reading is made.
+    private let stopButton = NSButton(title: "Stop", target: nil, action: nil)
     private let textButton = NSButton(title: "Show Text", target: nil, action: nil)
     private let shareButton = NSButton(title: "Share…", target: nil, action: nil)
     private let revealButton = NSButton(title: "Show in Finder", target: nil, action: nil)
@@ -36,6 +45,8 @@ final class ReadingRowView: NSTableCellView {
     private var primaryAction: Action = .play
     /// Show Text, Share…, Show in Finder and Delete… show only their symbols, in a row narrower than `compactWidth`.
     private var compact = false
+    /// The reading shown is loaded in the player.
+    private var showsSeekBar = false
     /// Keeps the title and buttons in the row's part above the seek bar.
     private var contentBottom: NSLayoutConstraint?
     /// A row's height, and how much taller one with the seek bar is.
@@ -67,7 +78,8 @@ final class ReadingRowView: NSTableCellView {
         progress.controlSize = .small
         progress.widthAnchor.constraint(equalToConstant: 140).isActive = true
         seekBar.onSeek = { [weak self] time in self?.send(.seek(time)) }
-        for (button, selector) in [(primary, #selector(primaryPressed)), (textButton, #selector(textPressed)),
+        for (button, selector) in [(primary, #selector(primaryPressed)), (stopButton, #selector(stopPressed)),
+                                   (textButton, #selector(textPressed)),
                                    (shareButton, #selector(sharePressed)), (revealButton, #selector(revealPressed)),
                                    (deleteButton, #selector(deletePressed))] {
             button.target = self
@@ -75,6 +87,7 @@ final class ReadingRowView: NSTableCellView {
             button.bezelStyle = .push
             button.controlSize = .small
         }
+        stopButton.toolTip = "Stop making and playing this reading; Resume continues where it stopped"
         textButton.toolTip = "Read or copy the text this reading reads"
         shareButton.toolTip = "Send the audio file with AirDrop, Messages, Mail… (⇧⌘S)"
         revealButton.toolTip = "Show the audio file in Finder"
@@ -88,7 +101,7 @@ final class ReadingRowView: NSTableCellView {
         text.orientation = .vertical
         text.alignment = .leading
         text.spacing = 2
-        let buttons = NSStackView(views: [primary, textButton, shareButton, revealButton, deleteButton])
+        let buttons = NSStackView(views: [primary, stopButton, textButton, shareButton, revealButton, deleteButton])
         buttons.spacing = 6
         buttons.alignment = .centerY
         buttons.setHuggingPriority(.required, for: .horizontal)
@@ -147,14 +160,15 @@ final class ReadingRowView: NSTableCellView {
         return button.title
     }
 
+    /// `playable`: a reading being made has its first part made, so Play can start it.
     func show(_ entry: ReadingEntry, activity: ReadingController.Activity?, fileProblem: ReadingController.FileProblem?,
-              size: Int64?, playback: Playback?) {
+              size: Int64?, playback: Playback?, playable: Bool = false) {
         entryID = entry.id
         title.stringValue = entry.title
         source.stringValue = entry.source.label
         status.textColor = .secondaryLabelColor
         progress.isHidden = true
-        var showsSeekBar = false
+        showsSeekBar = false
         var buttons: [NSButton] = []
         switch entry.state {
         case .queued:
@@ -163,6 +177,10 @@ final class ReadingRowView: NSTableCellView {
             buttons = [primary]
         case .rendering:
             switch activity {
+            case .rendering(let part, let total)? where playback?.waiting == true:
+                status.stringValue = "Waiting for part \(part) of \(total)…"
+                progress.isHidden = false
+                progress.doubleValue = Double(part - 1) / Double(max(1, total))
             case .rendering(let part, let total)?:
                 status.stringValue = "Rendering part \(part) of \(total)"
                 progress.isHidden = false
@@ -178,11 +196,22 @@ final class ReadingRowView: NSTableCellView {
                 case .selection: status.stringValue = "Preparing…"
                 }
             }
-            setPrimary("Stop", .stop, help: "Stop making this reading; Resume continues where it stopped")
-            buttons = [primary]
+            if playable || playback != nil {
+                setPlay(playback)
+                buttons = [primary, stopButton]
+            } else {
+                setPrimary("Stop", .stop, help: "Stop making this reading; Resume continues where it stopped")
+                buttons = [primary]
+            }
         case .done where fileProblem == .checking:
             status.stringValue = "Checking its file…"
-            buttons = [deleteButton]
+            // A reading that goes on playing while its file is checked keeps its Pause.
+            if playback != nil {
+                setPlay(playback)
+                buttons = [primary, deleteButton]
+            } else {
+                buttons = [deleteButton]
+            }
         case .done where fileProblem == .missing:
             status.stringValue = "The file made for it is no longer at "
                 + "\(entry.output.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "its place")."
@@ -206,26 +235,30 @@ final class ReadingRowView: NSTableCellView {
             if let message = entry.message {
                 status.stringValue += " — \(message)"
             }
-            let playing = playback?.playing ?? false
-            setPrimary(playing ? "❚❚ Pause" : "▶ Play", .play, help: "Play or pause here (Space)")
-            if let current = playback?.current, let duration = playback?.duration {
-                showsSeekBar = true
-                seekBar.show(current: current, duration: duration)
-            }
+            setPlay(playback)
             buttons = [primary, textButton, shareButton, revealButton, deleteButton]
         case .failed:
             status.stringValue = entry.message ?? "The reading failed."
             status.textColor = .systemOrange
-            setPrimary("Try Again", .retry, help: "Make it again; parts already rendered are kept")
+            if playback != nil {
+                // What was made before it failed still plays; Try Again once it stops.
+                setPlay(playback)
+            } else {
+                setPrimary("Try Again", .retry, help: "Make it again; parts already rendered are kept")
+            }
             buttons = [primary, deleteButton]
         case .stopped:
             var text = "Stopped"
             if let part = entry.part, let parts = entry.parts { text += " at part \(part) of \(parts)" }
             status.stringValue = text + (entry.message.map { ". \($0)" } ?? ".")
-            setPrimary("Resume", .retry, help: "Continue where it stopped")
+            if playback != nil {
+                setPlay(playback)
+            } else {
+                setPrimary("Resume", .retry, help: "Continue where it stopped")
+            }
             buttons = [primary, deleteButton]
         }
-        for button in [primary, textButton, shareButton, revealButton, deleteButton] {
+        for button in [primary, stopButton, textButton, shareButton, revealButton, deleteButton] {
             button.isHidden = !buttons.contains(button)
         }
         seekBar.isHidden = !showsSeekBar
@@ -235,6 +268,14 @@ final class ReadingRowView: NSTableCellView {
         let label = [entry.title, entry.source.label, status.stringValue].joined(separator: ", ")
         setAccessibilityLabel(label)
         for button in buttons { button.setAccessibilityLabel("\(fullTitle(button)) — \(entry.title)") }
+    }
+
+    /// ▶ Play or ❚❚ Pause, and the place of the reading loaded on the seek bar ("4:10…" while it is made).
+    private func setPlay(_ playback: Playback?) {
+        setPrimary(playback?.playing == true ? "❚❚ Pause" : "▶ Play", .play, help: "Play or pause here (Space)")
+        guard let playback, let current = playback.current, let duration = playback.duration else { return }
+        showsSeekBar = true
+        seekBar.show(current: current, duration: duration, seekable: playback.seekable, growing: !playback.final)
     }
 
     override var backgroundStyle: NSView.BackgroundStyle {
@@ -248,6 +289,7 @@ final class ReadingRowView: NSTableCellView {
     }
 
     @objc private func primaryPressed() { send(primaryAction) }
+    @objc private func stopPressed() { send(.stop) }
     @objc private func textPressed() { send(.showText) }
     @objc private func sharePressed() { send(.share) }
     @objc private func revealPressed() { send(.reveal) }

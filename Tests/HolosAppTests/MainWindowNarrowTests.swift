@@ -176,6 +176,58 @@ struct MainWindowNarrowTests {
         #expect(Self.brokenConstraints(in: row).isEmpty)
     }
 
+    /// A reading being made that plays from its parts: Pause and Stop, what it waits for, and a length still
+    /// growing ("…"), fitting the narrowest window as well as a wide one.
+    @Test(arguments: [CGFloat(316), 700])
+    func aReadingBeingMadeOffersPauseAndStop(width: CGFloat) throws {
+        var entry = ReadingEntry(source: .web(try #require(URL(string: "https://example.com/story"))),
+                                 requestedVoice: nil, speed: 1)
+        entry.title = "A long story about planning the next quarter"
+        entry.state = .rendering
+        let row = ReadingRowView(identifier: NSUserInterfaceItemIdentifier("reading"))
+        row.frame = NSRect(x: 0, y: 0, width: width, height: 52)
+        row.show(entry, activity: .rendering(part: 2, of: 5), fileProblem: nil, size: nil,
+                 playback: .init(playing: true, waiting: true, current: 12, duration: 40, final: false, seekable: false), playable: true)
+        row.layoutSubtreeIfNeeded()
+        row.layoutSubtreeIfNeeded()
+        let buttons = Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
+        #expect(buttons.map(\.title) == ["❚❚ Pause", "Stop"])
+        for button in buttons {
+            let frame = try #require(button.superview).convert(button.frame, to: row)
+            #expect(frame.minX >= 0 && frame.maxX <= row.bounds.width, "\(button.title) is cut off")
+        }
+        let labels = Self.allViews(row).compactMap { $0 as? NSTextField }.filter { !$0.isHiddenOrHasHiddenAncestor }
+        #expect(labels.contains { $0.stringValue == "Waiting for part 2 of 5…" })
+        // Its place is shown at any width, on a bar that cannot move while the parts play.
+        #expect(labels.contains { $0.stringValue == "0:12" } && labels.contains { $0.stringValue == "0:40…" })
+        #expect(Self.allViews(row).compactMap { $0 as? NSSlider }.first?.isEnabled == false)
+        #expect(Self.brokenConstraints(in: row).isEmpty)
+
+        // Made, its file being checked while it goes on playing: Pause stays.
+        var checked = entry
+        checked.state = .done
+        row.show(checked, activity: nil, fileProblem: .checking, size: nil,
+                 playback: .init(playing: true, current: 12, duration: 40), playable: true)
+        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHidden }.map(\.title).contains("❚❚ Pause"))
+
+        // Not played yet, its first part made: Play beside Stop; none made: Stop alone.
+        row.show(entry, activity: .rendering(part: 2, of: 5), fileProblem: nil, size: nil, playback: nil, playable: true)
+        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHidden }.map(\.title)
+            == ["▶ Play", "Stop"])
+        row.show(entry, activity: .rendering(part: 1, of: 5), fileProblem: nil, size: nil, playback: nil)
+        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHidden }.map(\.title) == ["Stop"])
+
+        // Making failed while it plays what was made: Pause until that stops, then Try Again.
+        entry.state = .failed
+        row.show(entry, activity: nil, fileProblem: nil, size: nil,
+                 playback: .init(playing: true, current: 30, duration: 40, final: false))
+        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHidden }.map(\.title).first
+            == "❚❚ Pause")
+        row.show(entry, activity: nil, fileProblem: nil, size: nil, playback: nil)
+        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHidden }.map(\.title).first
+            == "Try Again")
+    }
+
     /// People with a person selected whose (made-up) name is long: the name goes into the suggestion checkbox,
     /// which wraps, and into Forget…, which truncates and keeps the whole title in its tooltip.
     @Test(.timeLimit(.minutes(1)), arguments: [true, false])

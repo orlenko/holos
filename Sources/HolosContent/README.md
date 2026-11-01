@@ -20,13 +20,16 @@ list (docs/design.md "Reading section", "Text-to-speech").
   `SemanticChunker`, `ReadingOutput` (output names and locations), `ReadingPreview`. `RoutingSpeechRenderer`
   (`ReadingAudioRenderer.swift`) sends natural voices to the natural renderer and the rest to Apple's; a reading
   saves the renderer's settings and the natural voices' model commit in its manifest (`ReadingPipeline+Plan.swift`).
-  `ReadingResumeVoice` finds the saved reading a resume continues.
+  `ReadingResumeVoice` finds the saved reading a resume continues. Each part is reported as soon as it is made
+  (`ReadingMadePart`), and `ReadingPartFeed` collects one reading's parts so it can play before it is finished.
 - `DocumentText` (`DocumentText+Strict.swift`): strict reading of a text file for `voiceislocal say --text-file`.
 - `ReadingLibraryStore` / `ReadingLibrary`: the Reading list's index under `<supportRoot>/ReadingLibrary`, and the
   decisions about it and its readings' files, in `ReadingLibrary+<Part>.swift` extensions (LaunchPolicy, Location,
   Ownership, FileStatus, Sharing, Deletion, Saved). The list's duration and position texts are the app's
   (`ReadingLibrary+Formatting.swift` in HolosApp). `ReadingWorkQueue` runs readings one at a time; `ReadingPlayer`
-  plays a finished one, and `ReadingTimeline` says which sentence is spoken when, from its manifest.
+  plays a finished one from its file, and one being made from its parts (`PartQueuePlayback` on a
+  `ReadingSegmentOutput`, an `AVAudioEngine` in the app), handed over to its file once it is made, and `ReadingTimeline` says which sentence is spoken
+  when, from its manifest.
 
 **Must not own:** speech recognition, meetings, session folders. Voice rendering stays in `HolosSynthesis`.
 
