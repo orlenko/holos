@@ -187,7 +187,7 @@ struct MainWindowNarrowTests {
         let row = ReadingRowView(identifier: NSUserInterfaceItemIdentifier("reading"))
         row.frame = NSRect(x: 0, y: 0, width: width, height: 52)
         row.show(entry, activity: .rendering(part: 2, of: 5), fileProblem: nil, size: nil,
-                 playback: .init(playing: true, waiting: true, current: 12, duration: 40, final: false), playable: true)
+                 playback: .init(playing: true, waiting: true, current: 12, duration: 40, final: false, seekable: false), playable: true)
         row.layoutSubtreeIfNeeded()
         row.layoutSubtreeIfNeeded()
         let buttons = Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
