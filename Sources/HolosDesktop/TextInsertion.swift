@@ -412,6 +412,11 @@ struct AXHandle: Equatable {
 
 /// Terminals draw their input line rather than exposing a writable text field, so text reaches them
 /// only as keystrokes. Keystrokes go to the captured process and cannot be read back.
+///
+/// Invariants:
+/// 1. Every chunk checks secure input and the captured app, window and element before posting events.
+/// 2. Typing rechecks the captured focus every 16 characters and stops when it changes.
+/// 3. Rex receives only characters whose physical key and Shift state match the active keyboard layout.
 @MainActor public final class KeystrokeTarget {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "insertion")
 
@@ -420,7 +425,7 @@ struct AXHandle: Equatable {
 
     static let terminalBundleIDs: Set<String> = [
         "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "com.github.wez.wezterm",
-        "net.kovidgoyal.kitty", "org.alacritty", "dev.warp.Warp-Stable",
+        "net.kovidgoyal.kitty", "org.alacritty", "dev.warp.Warp-Stable", "com.superlogical.rex",
     ]
 
     public let pid: pid_t
@@ -429,16 +434,18 @@ struct AXHandle: Equatable {
     private let element: AXUIElement?
     /// For a terminal, the window and session focused at key-down, which must still have focus before each chunk.
     private let terminalFocus: TerminalFocus<AXHandle>?
+    private let requiresPhysicalKeys: Bool
 
     /// A known terminal (`captureTerminal`), not a web editor or another app's field.
     public var isTerminal: Bool { terminalFocus != nil }
 
     private init(pid: pid_t, appName: String, element: AXUIElement? = nil,
-                 terminalFocus: TerminalFocus<AXHandle>? = nil) {
+                 terminalFocus: TerminalFocus<AXHandle>? = nil, requiresPhysicalKeys: Bool = false) {
         self.pid = pid
         self.appName = appName
         self.element = element
         self.terminalFocus = terminalFocus
+        self.requiresPhysicalKeys = requiresPhysicalKeys
     }
 
     /// A target when the frontmost app is a known terminal; nil otherwise. Typing stops when the terminal's
@@ -454,7 +461,8 @@ struct AXHandle: Equatable {
             throw TextInsertionError.unsupported("The terminal's focus changed as dictation started.")
         }
         log.notice("Terminal \(bundleID, privacy: .public) focus tracked by \(String(describing: focus.tracking), privacy: .public)")
-        return KeystrokeTarget(pid: pid, appName: app.localizedName ?? bundleID, terminalFocus: focus)
+        return KeystrokeTarget(pid: pid, appName: app.localizedName ?? bundleID, terminalFocus: focus,
+                               requiresPhysicalKeys: bundleID == "com.superlogical.rex")
     }
 
     /// A target for a focused editable field that cannot take a direct Accessibility write, such as a
@@ -497,6 +505,16 @@ struct AXHandle: Equatable {
             let moved = terminalFocus == nil ? "a different field" : "a different terminal tab, pane or window"
             return .targetChanged("Focus moved to \(moved); copy the transcript explicitly.")
         }
+        let strokes: [KeyboardStroke]?
+        if requiresPhysicalKeys {
+            guard let map = KeyboardTyping.currentKeyMap(),
+                  let plan = KeyboardTyping.strokes(for: text, in: map) else {
+                return .needsCopy("\(appName) needs physical keys; this text cannot be typed with the current keyboard layout. Use Copy Result.")
+            }
+            strokes = plan
+        } else {
+            strokes = nil
+        }
         // A private source keeps the held shortcut modifier out of the typed characters.
         let source = CGEventSource(stateID: .privateState)
         let started = ContinuousClock.now
@@ -514,16 +532,11 @@ struct AXHandle: Equatable {
             if index > 0, index.isMultiple(of: 16), !stillTargeted() {
                 return .unverified("Focus moved while typing; check \(appName) before pasting the rest.")
             }
-            let units = Array(String(character).utf16)
-            for keyDown in [true, false] {
-                guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: keyDown) else {
-                    return .unverified("Could not create a keystroke; inspect \(appName) before copying.")
-                }
-                event.flags = []
-                units.withUnsafeBufferPointer {
-                    event.keyboardSetUnicodeString(stringLength: $0.count, unicodeString: $0.baseAddress)
-                }
-                event.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventMarker)
+            let stroke = strokes?[index] ?? KeyboardStroke(keyCode: 0, flags: [])
+            guard let events = stroke.events(for: character, source: source, marker: Self.syntheticEventMarker) else {
+                return .unverified("Could not create a keystroke; inspect \(appName) before copying.")
+            }
+            for event in events {
                 event.postToPid(pid)
             }
         }

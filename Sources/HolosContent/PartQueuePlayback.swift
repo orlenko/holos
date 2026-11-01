@@ -10,6 +10,12 @@ final class ReadPart: @unchecked Sendable {
     init(_ buffer: AVAudioPCMBuffer) { self.buffer = buffer }
 }
 
+/// A part that could not be read, and whether it is no longer there.
+private struct ReadFailure: Error {
+    let reason: String
+    let gone: Bool
+}
+
 /// Plays a reading while it is being made (docs/design.md "Reading section"): its parts in order from the first, each
 /// after the silence the finished file puts before it, read into memory a few parts ahead and queued on a
 /// `ReadingSegmentOutput`. Its timeline is the finished file's, frame for frame (`ReadingAudioFormat.silenceFrames`).
@@ -136,7 +142,14 @@ public final class PartQueuePlayback {
             return readAndQueue(part)
         }
         guard queued == 0 else { return }
-        if next >= total { return end(.finished) }
+        if next >= total {
+            // All heard. Making can still have failed since, joining them: that is told, never taken for the end.
+            switch feed.end {
+            case .failed(let reason)?: return end(.failed("The reading could not be finished: \(reason)"))
+            case .stopped?: return end(.stopped)
+            case .finished?, nil: return end(.finished)
+            }
+        }
         switch feed.end {
         case .failed(let reason)?:
             end(.failed("Playback stopped at part \(next + 1) of \(total): \(reason)"))
@@ -152,7 +165,15 @@ public final class PartQueuePlayback {
         reading = true
         let read = self.read
         Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) { Result { try read(part.audio) } }.value
+            // Read and, when that fails, looked for off the main actor: the cache can be on a drive that hangs.
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<ReadPart, ReadFailure> in
+                do {
+                    return .success(try read(part.audio))
+                } catch {
+                    return .failure(ReadFailure(reason: error.localizedDescription,
+                                                gone: (try? ReadingOutput.exists(part.audio)) == false))
+                }
+            }.value
             guard let self, !self.done, !self.handingOver else { return }
             self.reading = false
             switch result {
@@ -163,10 +184,10 @@ public final class PartQueuePlayback {
                     let reason = error.localizedDescription
                     return self.end(.failed("Part \(part.index + 1) could not be played: \(reason)"))
                 }
-            case .failure(let error):
+            case .failure(let failure):
                 // Gone from the cache: the reading was published meanwhile (or making failed); its end says which.
-                guard (try? ReadingOutput.exists(part.audio)) == false else {
-                    return self.end(.failed("Part \(part.index + 1) could not be read: \(error.localizedDescription)"))
+                guard failure.gone else {
+                    return self.end(.failed("Part \(part.index + 1) could not be read: \(failure.reason)"))
                 }
                 self.missing = true
             }
@@ -234,6 +255,7 @@ public final class PartQueuePlayback {
 extension PartQueuePlayback: @MainActor ReadingPlayback {
     public var isPlaying: Bool { engaged }
 
-    /// Not offered while the reading is being made.
+    /// Only the parts ahead are in memory: not offered while the reading is being made.
+    public var canSeek: Bool { false }
     public func seek(to time: TimeInterval) {}
 }

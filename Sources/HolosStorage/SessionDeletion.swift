@@ -153,6 +153,15 @@ public enum SessionDeletion {
         log.notice("Session \(manifest.id, privacy: .public): deleted the audio of \(manifest.chunks.count, privacy: .public) chunks")
     }
 
+    /// Whether a deletion of the session's audio began and did not finish: `audio-deleted.json` is written (first) and
+    /// the `audio` folder, which `deleteAudio` removes last, is still there. Running `deleteAudio` again finishes it.
+    public static func audioDeletionUnfinished(session: URL) -> Bool {
+        var info = stat()
+        guard lstat(SessionPaths.audioDeleted(session).path, &info) == 0 else { return false }
+        let audio = session.appendingPathComponent("audio", isDirectory: true)
+        return lstat(audio.path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFDIR
+    }
+
     /// The review pages' copies of the audio (`eval/review/<run>/review-audio/`, written by `voiceislocal eval
     /// review`). The evaluation's upload files live under `derived/`, which goes with the rest of the audio.
     static func removeEvaluationAudio(_ session: URL) throws {

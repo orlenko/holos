@@ -42,11 +42,11 @@ import Testing
 /// is 4,000 frames.
 struct PartFiles {
     static let rate = 8_000.0
-    let folder: URL
+    private let temporary: TemporaryDirectory
+    var folder: URL { temporary.url }
 
     init() throws {
-        folder = FileManager.default.temporaryDirectory.appendingPathComponent("holos-queue-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        temporary = try TemporaryDirectory("queue")
     }
 
     /// Part `index` of `total`, `seconds` long, written as a 16-bit CAF like a renderer's.
@@ -70,7 +70,7 @@ struct PartFiles {
                                silenceBefore: silence)
     }
 
-    func remove() { try? FileManager.default.removeItem(at: folder) }
+    func remove() { temporary.remove() }
 }
 
 @MainActor @Suite struct PartQueuePlaybackTests {
@@ -194,6 +194,24 @@ struct PartFiles {
         // Once the read of the gone part has come back.
         #expect(await eventually { handoffs == [1] })
         #expect(ends.isEmpty)
+    }
+
+    /// Every part heard, then joining them fails: that is told, never taken for the end of the reading.
+    @Test func makingThatFailsAfterTheLastPartIsTold() async throws {
+        let files = try PartFiles()
+        defer { files.remove() }
+        let feed = ReadingPartFeed()
+        let output = QueueOutput()
+        let playback = PartQueuePlayback(feed: feed, output: output)
+        var ends: [PartQueuePlayback.End] = []
+        playback.onEnd = { ends.append($0) }
+        feed.add(try files.part(0, of: 1, seconds: 1))
+        feed.finish(.failed("The disk is full."))
+        #expect(playback.play())
+        #expect(await eventually { output.queued.count == 1 })
+        output.playNext()
+        #expect(await eventually { !ends.isEmpty })
+        #expect(ends == [.failed("The reading could not be finished: The disk is full.")])
     }
 
     /// The last part played is the end of the reading; making stopped is a stop, told as one.

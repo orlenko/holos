@@ -63,6 +63,8 @@ final class DeepTranscriptionAppState {
     }
     /// Runs the passes and the echo analyses, one background job at a time on this Mac (invariant 4).
     var coordinator: BackgroundJobCoordinator?
+    /// The automatic audio cleanup's job kind, stopped when a final-transcript reconciliation starts.
+    var audioCleanup: AudioCleanupJobs?
     /// Meetings whose Review was asked for while this app's pass works on them: opened when the pass ends.
     var reviewAfterPass: [String: (directory: URL, name: String)] = [:]
     /// Counts every turn of the setting on or off: a scan begun before one is dropped when it ends.

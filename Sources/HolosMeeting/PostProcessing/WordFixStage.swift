@@ -820,15 +820,6 @@ public enum WordFixStage {
     /// that was not corrected; `transcriptID` itself when it was not. Every bookkeeping that names transcripts by ID
     /// (a merge's languages, a rebuild) asks about that one, since a corrected transcript stands for it.
     static func unfixedID(_ transcriptID: String, events: [ArchiveEvent]) -> String {
-        var id = transcriptID
-        var seen: Set<String> = [id]
-        while let base = events.last(where: {
-            ($0.kind == MeetingEventKind.wordsFixed || $0.kind == MeetingEventKind.liveHintsApplied
-                || $0.kind == MeetingEventKind.transcriptEdited)
-                && $0.details["transcriptID"] == id
-        })?.details["base"], !base.isEmpty, seen.insert(base).inserted {
-            id = base
-        }
-        return id
+        correctionChain(transcriptID, events: events).last ?? transcriptID
     }
 }

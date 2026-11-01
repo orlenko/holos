@@ -1,10 +1,15 @@
 import Foundation
 import HolosCore
 import HolosSynthesis
+import HolosTestSupport
 import Testing
 @testable import HolosContent
 
 /// Writes each part's text as its audio, with a duration of one second per call; fails the call `failOnCall`.
+///
+/// Invariants:
+/// 1. `calls` counts every call, failed ones too, and goes on counting across a resume with the same renderer.
+/// 2. Only the call numbered `failOnCall` fails, and it writes nothing.
 @MainActor private final class TextRenderer: ReadingAudioRenderer {
     var calls = 0
     var failOnCall: Int?
@@ -28,15 +33,9 @@ import Testing
 }
 
 /// `partMade`: each part as soon as it is made and saved, so a reading can play before it is finished.
-@MainActor @Suite(.serialized) struct ReadingPipelinePartMadeTests {
+@MainActor @Suite struct ReadingPipelinePartMadeTests {
     private let voice = "test.voice"
     private let metadata = AudioBookMetadata(title: "Book")
-
-    private func root() throws -> URL {
-        let parent = FileManager.default.temporaryDirectory.appendingPathComponent("holos-parts-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
-        return parent
-    }
 
     private func location(_ parent: URL) -> ReadingLocation {
         ReadingLocation(workDirectory: parent.appendingPathComponent("work"),
@@ -53,8 +52,9 @@ import Testing
     /// Every part once, in order, while its file is in the cache with the text rendered for it, its duration as
     /// rendered, and the silence the joined file puts before it.
     @Test func eachPartIsReportedOnceItIsMade() async throws {
-        let parent = try root()
-        defer { try? FileManager.default.removeItem(at: parent) }
+        let temporary = try TemporaryDirectory("parts")
+        defer { temporary.remove() }
+        let parent = temporary.url
         let script = script(4, sections: 2)
         let planned = script.parts(maxUTF16Units: 120)
         #expect(planned.count > 3)
@@ -82,8 +82,9 @@ import Testing
     /// A part that fails is never reported; a resume reports the parts it keeps (after checking them), then each
     /// part it makes.
     @Test func aResumeReportsTheKeptPartsThenTheNewOnes() async throws {
-        let parent = try root()
-        defer { try? FileManager.default.removeItem(at: parent) }
+        let temporary = try TemporaryDirectory("parts")
+        defer { temporary.remove() }
+        let parent = temporary.url
         let place = location(parent)
         let renderer = TextRenderer()
         renderer.failOnCall = 4

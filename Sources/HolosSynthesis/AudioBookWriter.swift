@@ -16,7 +16,8 @@ public enum ReadingAudioFormat {
 
     /// The silence before part `index` of a reading: none before the first, `chapterGap` before one that starts a
     /// section, else `partGap`.
-    public static func silenceBefore(part index: Int, startsSection: Bool) -> Double {
+    public static func silenceBefore(part index: Int, startsSection: Bool, partGap: Double = ReadingAudioFormat.partGap,
+                                     chapterGap: Double = ReadingAudioFormat.chapterGap) -> Double {
         index == 0 ? 0 : startsSection ? chapterGap : partGap
     }
 

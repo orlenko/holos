@@ -323,10 +323,13 @@ public enum DeepTranscriptGuards {
         public var droppedSilent: Int
         /// Repeats past the first of a run of `repeatRunLength` or more identical segments.
         public var droppedRepeats: Int
+        /// Speaker labels the model invented, removed from their passages (`withoutLabels`).
+        public var droppedLabels = 0
     }
 
-    /// Drops, per track, each segment that is both over near-silent audio (`silenceThresholdDB`) and where the
-    /// recorded transcript (`reference`, nil when there is none) has no word within `referencePaddingSeconds`; then
+    /// Removes the speaker labels the model invented (`withoutLabels`, a passage that held nothing else going with
+    /// them); then drops, per track, each segment that is both over near-silent audio (`silenceThresholdDB`) and where
+    /// the recorded transcript (`reference`, nil when there is none) has no word within `referencePaddingSeconds`; then
     /// each repeat past the first in a run of at least `repeatRunLength` consecutive segments with the same text
     /// (compared lowercased, letters and digits only), each starting within
     /// `repeatGapSeconds` of the one before, with no other track's speech starting between them (the same reply given
@@ -334,9 +337,16 @@ public enum DeepTranscriptGuards {
     /// rest keep their order.
     public static func apply(_ segments: [DeepHeardSegment], reference: [TranscriptSegment]?,
                              silenceThresholdDB: Double = silenceThresholdDB) -> Result {
+        let spoken = reference.map(SpokenWords.init)
+        var droppedLabels = 0
+        let unlabelled = segments.compactMap { segment -> DeepHeardSegment? in
+            let result = withoutLabels(segment, spoken: spoken)
+            droppedLabels += result.labels
+            return result.segment
+        }
         let heard = ReferenceWords(reference ?? [])
         var droppedSilent = 0
-        let audible = segments.filter { segment in
+        let audible = unlabelled.filter { segment in
             let silent = segment.levelDB < silenceThresholdDB
                 && !heard.hasWord(track: segment.track, from: segment.start - referencePaddingSeconds,
                                   to: segment.end + referencePaddingSeconds)
@@ -383,7 +393,8 @@ public enum DeepTranscriptGuards {
             }
         }
         let kept = audible.indices.filter { !drop.contains($0) }.map { audible[$0] }
-        return Result(kept: kept, droppedSilent: droppedSilent, droppedRepeats: drop.count)
+        return Result(kept: kept, droppedSilent: droppedSilent, droppedRepeats: drop.count,
+                      droppedLabels: droppedLabels)
     }
 
     /// Lowercased letters and digits, words separated by one space.

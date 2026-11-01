@@ -22,6 +22,12 @@ public protocol ReadingSegmentOutput: AnyObject {
 
 /// Plays buffers through an `AVAudioPlayerNode` on an `AVAudioEngine`, connected with the first buffer's format. With
 /// `manualRendering`, the engine renders offline into buffers a test pulls (`renderManually`), and nothing is heard.
+///
+/// Invariants:
+/// 1. The engine is connected once, with the first buffer's format, and every later buffer must have it.
+/// 2. A `played` callback is delivered only for the run that scheduled it: `stop` starts a new run, and earlier callbacks
+///    are dropped.
+/// 3. The audio device is held only between `play` and `stop`.
 @MainActor
 public final class EngineSegmentOutput: ReadingSegmentOutput {
     private let engine = AVAudioEngine()

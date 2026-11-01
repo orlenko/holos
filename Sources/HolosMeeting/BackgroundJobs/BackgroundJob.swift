@@ -118,6 +118,9 @@ public enum BackgroundJobEnd: Sendable, Equatable {
     /// A check run off the main actor once the meeting is taken and before the command starts (false: nothing to
     /// do); nil when the command starts at once.
     func preparation(for pick: BackgroundJobPick) -> (@Sendable () -> Bool)?
+    /// After the check, on the main actor, just before the command starts: whether the pick still stands (a setting
+    /// changed while the check ran). False: it stays queued (`.stopped`).
+    func stillWanted(_ pick: BackgroundJobPick) -> Bool
     /// The check found nothing to do.
     func nothingToDo(_ sessionID: String) -> BackgroundJobEnd
     /// The command could not start (a transient process limit).
@@ -138,6 +141,7 @@ extension BackgroundJobKind {
     public func lookForWork(_ holds: BackgroundJobHolds) {}
     public func askedForWaiting(_ holds: BackgroundJobHolds) -> Bool { false }
     public func preparation(for pick: BackgroundJobPick) -> (@Sendable () -> Bool)? { nil }
+    public func stillWanted(_ pick: BackgroundJobPick) -> Bool { true }
     public func nothingToDo(_ sessionID: String) -> BackgroundJobEnd { .finished }
     public func startFailed(_ sessionID: String) -> BackgroundJobEnd { .retryAll }
     public func settled(_ sessionID: String) {}
