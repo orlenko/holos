@@ -2,18 +2,19 @@ import AppKit
 import HolosContent
 import HolosSynthesis
 
-/// A reading in the list: its title and source, then either its progress with Stop (and Play once its first part is
-/// made), or its details with Play, Show Text, Share…, Show in Finder, and Delete…, or its error with Try Again. A
+/// A reading in the list: its title and source, then either its progress with Stop Converting (and Play once its first
+/// part is made), or its details with Play, Show Text, Share…, Show in Finder, and Delete…, or its error with Try Again. A
 /// reading loaded in the player has a seek bar under them.
 ///
 /// Invariants:
 /// 1. `show` sets every view from what it is given, so a reused row keeps nothing of the reading shown before.
-/// 2. The seek bar shows only for a reading loaded in the player, and only then does the row keep room for it. It moves
-///    the reading only when `seekable`: one playing from its parts shows its place and stays there.
+/// 2. The seek bar shows only for a reading loaded in the player, and only then does the row keep room for it.
+///    Playback's controls (Play or Pause, the bar) then stand together on that line, apart from those of the conversion
+///    (Stop Converting, Resume Converting) above: they act on different things.
 /// 3. An action always names the reading shown when it was pressed.
 @MainActor
 final class ReadingRowView: NSTableCellView {
-    enum Action { case play, stop, retry, showText, share, reveal, delete, seek(Double) }
+    enum Action: Equatable { case play, stop, retry, showText, share, reveal, delete, seek(Double) }
 
     /// The player's state for the reading it has loaded.
     struct Playback {
@@ -24,8 +25,6 @@ final class ReadingRowView: NSTableCellView {
         var duration: Double?
         /// False while the reading is made: the duration is what is made so far.
         var final = true
-        /// The seek bar can move it: not while it plays from its parts.
-        var seekable = true
     }
 
     var onAction: ((UUID, Action) -> Void)?
@@ -36,8 +35,11 @@ final class ReadingRowView: NSTableCellView {
     private let progress = NSProgressIndicator()
     private let seekBar = ReadingSeekBar()
     private let primary = NSButton(title: "", target: nil, action: nil)
-    /// Stop beside Play while the reading is made.
-    private let stopButton = NSButton(title: "Stop", target: nil, action: nil)
+    /// Beside Play while the reading is converted: Stop Converting, or once stopped and still playing, Resume Converting.
+    private let stopButton = NSButton(title: "Stop Converting", target: nil, action: nil)
+    private var stopAction: Action = .stop
+    /// Play or Pause on the seek bar's line, for the reading loaded.
+    private let transport = NSButton(title: "", target: nil, action: nil)
     private let textButton = NSButton(title: "Show Text", target: nil, action: nil)
     private let shareButton = NSButton(title: "Share…", target: nil, action: nil)
     private let revealButton = NSButton(title: "Show in Finder", target: nil, action: nil)
@@ -47,11 +49,12 @@ final class ReadingRowView: NSTableCellView {
     private var compact = false
     /// The reading shown is loaded in the player.
     private var showsSeekBar = false
+    private var playbackLine: NSStackView?
     /// Keeps the title and buttons in the row's part above the seek bar.
     private var contentBottom: NSLayoutConstraint?
     /// A row's height, and how much taller one with the seek bar is.
     static let height: CGFloat = 72
-    static let seekBarHeight: CGFloat = 26
+    static let seekBarHeight: CGFloat = 30
     /// Narrower than this (the window beside a call's), Show Text, Share…, Show in Finder and Delete… are symbols, so
     /// the title keeps some room.
     static let compactWidth: CGFloat = 600
@@ -79,7 +82,7 @@ final class ReadingRowView: NSTableCellView {
         progress.widthAnchor.constraint(equalToConstant: 140).isActive = true
         seekBar.onSeek = { [weak self] time in self?.send(.seek(time)) }
         for (button, selector) in [(primary, #selector(primaryPressed)), (stopButton, #selector(stopPressed)),
-                                   (textButton, #selector(textPressed)),
+                                   (transport, #selector(transportPressed)), (textButton, #selector(textPressed)),
                                    (shareButton, #selector(sharePressed)), (revealButton, #selector(revealPressed)),
                                    (deleteButton, #selector(deletePressed))] {
             button.target = self
@@ -87,7 +90,7 @@ final class ReadingRowView: NSTableCellView {
             button.bezelStyle = .push
             button.controlSize = .small
         }
-        stopButton.toolTip = "Stop making and playing this reading; Resume continues where it stopped"
+        transport.toolTip = "Play or pause here (Space)"
         textButton.toolTip = "Read or copy the text this reading reads"
         shareButton.toolTip = "Send the audio file with AirDrop, Messages, Mail… (⇧⌘S)"
         revealButton.toolTip = "Show the audio file in Finder"
@@ -105,7 +108,12 @@ final class ReadingRowView: NSTableCellView {
         buttons.spacing = 6
         buttons.alignment = .centerY
         buttons.setHuggingPriority(.required, for: .horizontal)
-        for view in [text, buttons, seekBar] {
+        let playbackLine = NSStackView(views: [transport, seekBar])
+        playbackLine.spacing = 8
+        playbackLine.alignment = .centerY
+        transport.setContentHuggingPriority(.required, for: .horizontal)
+        self.playbackLine = playbackLine
+        for view in [text, buttons, playbackLine] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
@@ -124,9 +132,9 @@ final class ReadingRowView: NSTableCellView {
             text.trailingAnchor.constraint(lessThanOrEqualTo: buttons.leadingAnchor, constant: -12),
             buttons.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             buttons.centerYAnchor.constraint(equalTo: content.centerYAnchor),
-            seekBar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            seekBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            seekBar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+            playbackLine.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            playbackLine.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            playbackLine.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
         ])
     }
 
@@ -169,6 +177,8 @@ final class ReadingRowView: NSTableCellView {
         status.textColor = .secondaryLabelColor
         progress.isHidden = true
         showsSeekBar = false
+        // Whatever the conversion is doing, a reading in the player keeps its playback line (invariant 2).
+        showPlayback(playback)
         var buttons: [NSButton] = []
         switch entry.state {
         case .queued:
@@ -198,9 +208,10 @@ final class ReadingRowView: NSTableCellView {
             }
             if playable || playback != nil {
                 setPlay(playback)
+                setStopButton("Stop Converting", .stop, help: Self.stopHelp)
                 buttons = [primary, stopButton]
             } else {
-                setPrimary("Stop", .stop, help: "Stop making this reading; Resume continues where it stopped")
+                setPrimary("Stop Converting", .stop, help: Self.stopHelp)
                 buttons = [primary]
             }
         case .done where fileProblem == .checking:
@@ -252,16 +263,23 @@ final class ReadingRowView: NSTableCellView {
             if let part = entry.part, let parts = entry.parts { text += " at part \(part) of \(parts)" }
             status.stringValue = text + (entry.message.map { ". \($0)" } ?? ".")
             if playback != nil {
+                // What is ready goes on playing.
                 setPlay(playback)
+                setStopButton("Resume Converting", .retry,
+                              help: "Continue converting where it stopped. This stops what is playing; press Play when part of it is ready.")
+                buttons = [primary, stopButton, deleteButton]
             } else {
                 setPrimary("Resume", .retry, help: "Continue where it stopped")
+                buttons = [primary, deleteButton]
             }
-            buttons = [primary, deleteButton]
         }
+        // Playback's button stands on the bar's line, when there is one (invariant 2).
+        if showsSeekBar, primaryAction == .play { buttons.removeAll { $0 === primary } }
         for button in [primary, stopButton, textButton, shareButton, revealButton, deleteButton] {
             button.isHidden = !buttons.contains(button)
         }
-        seekBar.isHidden = !showsSeekBar
+        playbackLine?.isHidden = !showsSeekBar
+        transport.setAccessibilityLabel("\(transport.title) — \(entry.title)")
         seekBar.setSubject(entry.title)
         contentBottom?.constant = showsSeekBar ? -Self.seekBarHeight : 0
         status.toolTip = status.stringValue
@@ -270,16 +288,33 @@ final class ReadingRowView: NSTableCellView {
         for button in buttons { button.setAccessibilityLabel("\(fullTitle(button)) — \(entry.title)") }
     }
 
-    /// ▶ Play or ❚❚ Pause, and the place of the reading loaded on the seek bar ("4:10…" while it is made).
+    /// ▶ Play or ❚❚ Pause, on the row's buttons until the reading is loaded.
     private func setPlay(_ playback: Playback?) {
-        setPrimary(playback?.playing == true ? "❚❚ Pause" : "▶ Play", .play, help: "Play or pause here (Space)")
+        setPrimary(Self.playTitle(playback), .play, help: "Play or pause here (Space)")
+    }
+
+    private static func playTitle(_ playback: Playback?) -> String {
+        playback?.playing == true ? "❚❚ Pause" : "▶ Play"
+    }
+
+    /// The line of the reading loaded: Play or Pause, and its place on the seek bar ("4:10…" while it is converted).
+    private func showPlayback(_ playback: Playback?) {
         guard let playback, let current = playback.current, let duration = playback.duration else { return }
         showsSeekBar = true
-        seekBar.show(current: current, duration: duration, seekable: playback.seekable, growing: !playback.final)
+        transport.title = Self.playTitle(playback)
+        seekBar.show(current: current, duration: duration, growing: !playback.final)
     }
 
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet { seekBar.setEmphasized(backgroundStyle == .emphasized) }
+    }
+
+    private static let stopHelp = "Stop converting this text to audio. What is ready keeps playing; converting can resume."
+
+    private func setStopButton(_ title: String, _ action: Action, help: String) {
+        stopButton.title = title
+        stopAction = action
+        stopButton.toolTip = help
     }
 
     private func setPrimary(_ title: String, _ action: Action, help: String) {
@@ -289,7 +324,8 @@ final class ReadingRowView: NSTableCellView {
     }
 
     @objc private func primaryPressed() { send(primaryAction) }
-    @objc private func stopPressed() { send(.stop) }
+    @objc private func stopPressed() { send(stopAction) }
+    @objc private func transportPressed() { send(.play) }
     @objc private func textPressed() { send(.showText) }
     @objc private func sharePressed() { send(.share) }
     @objc private func revealPressed() { send(.reveal) }

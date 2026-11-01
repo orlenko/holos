@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import HolosCore
 import HolosSynthesis
+import os
 
 /// A PCM buffer read off the main actor, handed to it (only the main actor uses it after).
 final class ReadPart: @unchecked Sendable {
@@ -29,11 +30,14 @@ private struct ReadFailure: Error {
 ///    from where the parts end (`base`).
 /// 3. `onEnd` is called once: `.finished` once the last part has played and making has finished, `.failed` once the made parts have played
 ///    after making failed (or a part could not be read), `.stopped` once making was stopped; never after `stop`.
+/// 5. A seek goes anywhere in what is made: what is queued is dropped, and the part holding that place is queued from
+///    there. Playing or paused stays as it was. Once making has finished, the finished file takes over at that place.
 /// 4. Once making has finished, what is not queued yet plays from the finished file: at the end of the parts queued
 ///    (the start of the next part's silence), `onHandoff` gives that place in seconds. Until `stop`, play and pause
 ///    only change whether the file is to play (`isPlaying`), with no error.
 @MainActor
 public final class PartQueuePlayback {
+    private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "reading")
     public enum End: Equatable, Sendable {
         case finished
         case failed(String)
@@ -67,8 +71,16 @@ public final class PartQueuePlayback {
     /// played since `base`: what a change of audio device goes back to.
     private var unheard: [(index: Int, frames: Int64)] = []
     private var heardFrames: Int64 = 0
-    /// Counts the changes of audio device, so a part read before one is not queued after it.
+    /// Counts the changes of audio device and the seeks, so a part read before one is not queued after it.
     private var run = 0
+    /// Where a seek lands in the part it lands in, in frames of that part, until that part is queued.
+    private var landing: (index: Int, frames: Int64)?
+    /// The same, while that part is queued: it is what a change of audio device goes back to.
+    private var landed: (index: Int, frames: Int64)?
+    /// A place asked for before the first part was read: nothing tells frames from seconds until then.
+    private var pendingSeek: TimeInterval?
+    /// Where the finished file is to play from: the latest place asked for while it opens.
+    private(set) var handoverPlace: TimeInterval?
 
     var onEnd: ((End) -> Void)?
     var onHandoff: ((TimeInterval) -> Void)?
@@ -130,6 +142,7 @@ public final class PartQueuePlayback {
     }
 
     public var currentTime: TimeInterval {
+        if let handoverPlace { return handoverPlace }
         guard let rate else { return 0 }
         return Double(base + min(output.playedFrames, queuedFrames)) / rate
     }
@@ -157,6 +170,7 @@ public final class PartQueuePlayback {
             case .stopped?: return end(.stopped)
             case .finished?: return end(.finished)
             case nil:
+                Self.log.notice("All \(total) parts heard; waiting for the reading to be finished")
                 onChange?()
                 return
             }
@@ -168,6 +182,7 @@ public final class PartQueuePlayback {
             end(.stopped)
         case .finished?, nil:
             // Waiting for the next part (invariant 2).
+            Self.log.notice("Waiting for part \(self.next + 1) of \(total); made in order: \(self.feed.madeInOrder), missing: \(self.missing)")
             onChange?()
         }
     }
@@ -196,8 +211,13 @@ public final class PartQueuePlayback {
                     let reason = error.localizedDescription
                     return self.end(.failed("Part \(part.index + 1) could not be played: \(reason)"))
                 }
+                if let place = self.pendingSeek {
+                    self.pendingSeek = nil
+                    return self.seek(to: place)
+                }
             case .failure(let failure):
                 // Gone from the cache: the reading was published meanwhile (or making failed); its end says which.
+                Self.log.notice("Part \(part.index + 1) could not be read (gone: \(failure.gone)): \(failure.reason, privacy: .public)")
                 guard failure.gone else {
                     return self.end(.failed("Part \(part.index + 1) could not be read: \(failure.reason)"))
                 }
@@ -207,10 +227,15 @@ public final class PartQueuePlayback {
         }
     }
 
-    private func queue(_ buffer: AVAudioPCMBuffer, silence seconds: Double, index: Int) throws {
-        let rate = self.rate ?? buffer.format.sampleRate
+    private func queue(_ whole: AVAudioPCMBuffer, silence seconds: Double, index: Int) throws {
+        let rate = self.rate ?? whole.format.sampleRate
         self.rate = rate
-        let silence = ReadingAudioFormat.silenceFrames(seconds, rate: rate)
+        // A seek lands inside this part: no silence, and the audio from there.
+        let lands = landing?.index == index ? landing?.frames : nil
+        if let lands { landed = (index, lands) }
+        landing = nil
+        let silence = lands == nil ? ReadingAudioFormat.silenceFrames(seconds, rate: rate) : 0
+        let buffer = try lands.map { try Self.tail(of: whole, from: $0) } ?? whole
         if silence > 0 {
             guard let gap = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: AVAudioFrameCount(silence)) else {
                 throw HolosError.io("The silence before a part could not be made.")
@@ -224,16 +249,37 @@ public final class PartQueuePlayback {
         try output.schedule(buffer) { [weak self] in self?.played() }
         queuedFrames += silence + Int64(buffer.frameLength)
         unheard.append((index, silence + Int64(buffer.frameLength)))
+        Self.log.notice("Queued part \(index + 1) of \(self.feed.total ?? -1); made in order: \(self.feed.madeInOrder)")
         next += 1
         queued += 1
         if engaged { try output.play() }
         if queued == 1 { onChange?() }
     }
 
+    /// `buffer` from frame `frames` on, at least its last frame.
+    private static func tail(of buffer: AVAudioPCMBuffer, from frames: Int64) throws -> AVAudioPCMBuffer {
+        guard frames > 0 else { return buffer }
+        let skip = min(AVAudioFrameCount(clamping: frames), buffer.frameLength - min(1, buffer.frameLength))
+        let length = buffer.frameLength - skip
+        guard let tail = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: max(1, length)),
+              let from = buffer.floatChannelData, let to = tail.floatChannelData else {
+            throw HolosError.io("The place in a part could not be found.")
+        }
+        tail.frameLength = length
+        for channel in 0..<Int(buffer.format.channelCount) {
+            to[channel].update(from: from[channel] + Int(skip), count: Int(length))
+        }
+        return tail
+    }
+
     private func played() {
         guard !done, !handingOver else { return }
         queued -= 1
-        if !unheard.isEmpty { heardFrames += unheard.removeFirst().frames }
+        if !unheard.isEmpty {
+            let part = unheard.removeFirst()
+            heardFrames += part.frames
+            if landed?.index == part.index { landed = nil }
+        }
         if queued == 0 {
             // Run dry (invariant 2): the count of played frames starts again where the parts queued end.
             output.stop()
@@ -245,8 +291,13 @@ public final class PartQueuePlayback {
     }
 
     private func handOff() {
-        let place = Double(base + queuedFrames) / (rate ?? ReadingAudioFormat.sampleRate)
+        // A place asked for before any part could be read still counts.
+        handOff(at: pendingSeek ?? Double(base + queuedFrames) / (rate ?? ReadingAudioFormat.sampleRate))
+    }
+
+    private func handOff(at place: TimeInterval) {
         handingOver = true
+        handoverPlace = place
         feed.onChange = nil
         output.onInterrupted = nil
         output.stop()
@@ -268,11 +319,60 @@ public final class PartQueuePlayback {
         heardFrames = 0
         queuedFrames = 0
         next = unheard.first?.index ?? next
+        // The part a seek landed in goes back to that place, which `base` already is.
+        let back = [landed, landing].compactMap { $0 }.first { $0.index == next }
+        dropQueued()
+        landing = back
+        onChange?()
+    }
+
+    private func dropQueued() {
         unheard = []
         queued = 0
         missing = false
         reading = false
+        landing = nil
+        landed = nil
         run += 1
+    }
+
+    /// Invariant 5.
+    public func seek(to time: TimeInterval) {
+        guard !done else { return }
+        if handingOver {
+            handoverPlace = time
+            onChange?()
+            return
+        }
+        guard let rate else {
+            pendingSeek = time
+            return
+        }
+        // Once it is made its parts go: the finished file has every place.
+        if case .finished? = feed.end { return handOff(at: time) }
+        let made = feed.madeInOrder
+        let target = Int64(max(0, time) * rate)
+        var start: Int64 = 0
+        var found: (index: Int, audio: Int64)?
+        for index in 0..<made {
+            guard let part = feed.parts[index] else { break }
+            let audio = start + ReadingAudioFormat.silenceFrames(part.silenceBefore, rate: rate)
+            let end = audio + Int64((part.duration * rate).rounded())
+            found = (index, audio)
+            if target < end { break }
+            start = end
+        }
+        guard let found else { return }
+        output.stop()
+        dropQueued()
+        queuedFrames = 0
+        heardFrames = 0
+        next = found.index
+        // A place in the silence before a part is that part's start.
+        let frames = max(0, target - found.audio)
+        base = found.audio + frames
+        landing = (found.index, frames)
+        fill()
         onChange?()
     }
 }
@@ -280,7 +380,4 @@ public final class PartQueuePlayback {
 extension PartQueuePlayback: @MainActor ReadingPlayback {
     public var isPlaying: Bool { engaged }
 
-    /// Only the parts ahead are in memory: not offered while the reading is being made.
-    public var canSeek: Bool { false }
-    public func seek(to time: TimeInterval) {}
 }

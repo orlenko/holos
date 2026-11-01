@@ -83,6 +83,7 @@ final class ReadingTextWindow: NSWindowController, NSWindowDelegate, NSTextViewD
         body.delegate = self
         body.onSpace = { [weak self] in self?.onPlay?() }
         body.onUserScroll = { [weak self] in self?.stopFollowing() }
+        body.onArrow = { [weak self] forward in self?.seekBar.arrow(forward: forward) }
 
         scroll.documentView = body
         scroll.hasVerticalScroller = true
@@ -127,7 +128,7 @@ final class ReadingTextWindow: NSWindowController, NSWindowDelegate, NSTextViewD
     func show(_ playback: ReadingRowView.Playback?) {
         primary.title = playback?.playing == true ? "❚❚ Pause" : "▶ Play"
         seekBar.show(current: playback?.current ?? 0, duration: playback?.duration ?? length ?? 0,
-                     seekable: playback?.seekable ?? true, growing: playback?.final == false)
+                     growing: playback?.final == false)
         guard playback != nil, let current = playback?.current, let span = timeline?.span(at: current) else {
             setHighlight(nil)
             return
@@ -197,11 +198,17 @@ final class ReadingTextWindow: NSWindowController, NSWindowDelegate, NSTextViewD
 private final class ReadingTextView: NSTextView {
     var onSpace: (() -> Void)?
     var onUserScroll: (() -> Void)?
+    /// ← or →: the text cannot be typed in, so they move the audio.
+    var onArrow: ((_ forward: Bool) -> Void)?
 
     override func keyDown(with event: NSEvent) {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.numericPad, .function])
         if event.charactersIgnoringModifiers == " ", modifiers.isEmpty {
             onSpace?()
+            return
+        }
+        if modifiers.isEmpty, event.specialKey == .leftArrow || event.specialKey == .rightArrow {
+            onArrow?(event.specialKey == .rightArrow)
             return
         }
         if [.pageUp, .pageDown, .upArrow, .downArrow, .home, .end].contains(event.specialKey) { onUserScroll?() }

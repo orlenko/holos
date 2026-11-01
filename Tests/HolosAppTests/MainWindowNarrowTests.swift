@@ -187,20 +187,24 @@ struct MainWindowNarrowTests {
         let row = ReadingRowView(identifier: NSUserInterfaceItemIdentifier("reading"))
         row.frame = NSRect(x: 0, y: 0, width: width, height: 52)
         row.show(entry, activity: .rendering(part: 2, of: 5), fileProblem: nil, size: nil,
-                 playback: .init(playing: true, waiting: true, current: 12, duration: 40, final: false, seekable: false), playable: true)
+                 playback: .init(playing: true, waiting: true, current: 12, duration: 40, final: false), playable: true)
         row.layoutSubtreeIfNeeded()
         row.layoutSubtreeIfNeeded()
         let buttons = Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
-        #expect(buttons.map(\.title) == ["❚❚ Pause", "Stop"])
+        #expect(Set(buttons.map(\.title)) == ["❚❚ Pause", "Stop Converting"])
         for button in buttons {
             let frame = try #require(button.superview).convert(button.frame, to: row)
             #expect(frame.minX >= 0 && frame.maxX <= row.bounds.width, "\(button.title) is cut off")
         }
         let labels = Self.allViews(row).compactMap { $0 as? NSTextField }.filter { !$0.isHiddenOrHasHiddenAncestor }
         #expect(labels.contains { $0.stringValue == "Waiting for part 2 of 5…" })
-        // Its place is shown at any width, on a bar that cannot move while the parts play.
+        // Its place is shown at any width, on a bar that moves through what is made.
         #expect(labels.contains { $0.stringValue == "0:12" } && labels.contains { $0.stringValue == "0:40…" })
-        #expect(Self.allViews(row).compactMap { $0 as? NSSlider }.first?.isEnabled == false)
+        #expect(Self.allViews(row).compactMap { $0 as? NSSlider }.first?.isEnabled == true)
+        // Pause stands with the bar, and Stop Converting apart from it.
+        let bar = try #require(Self.allViews(row).compactMap { $0 as? ReadingSeekBar }.first)
+        let pause = try #require(buttons.first { $0.title == "❚❚ Pause" })
+        #expect(bar.superview === pause.superview)
         #expect(Self.brokenConstraints(in: row).isEmpty)
 
         // Made, its file being checked while it goes on playing: Pause stays.
@@ -208,23 +212,30 @@ struct MainWindowNarrowTests {
         checked.state = .done
         row.show(checked, activity: nil, fileProblem: .checking, size: nil,
                  playback: .init(playing: true, current: 12, duration: 40), playable: true)
-        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHidden }.map(\.title).contains("❚❚ Pause"))
+        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.title).contains("❚❚ Pause"))
 
-        // Not played yet, its first part made: Play beside Stop; none made: Stop alone.
+        // Queued again behind another conversion while it plays: Pause and the bar stay.
+        var queued = entry
+        queued.state = .queued
+        row.show(queued, activity: nil, fileProblem: nil, size: nil, playback: .init(playing: true, current: 12, duration: 40, final: false))
+        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.title).contains("❚❚ Pause"))
+        #expect(Self.allViews(row).compactMap { $0 as? ReadingSeekBar }.first?.isHiddenOrHasHiddenAncestor == false)
+
+        // Not played yet, its first part made: Play beside Stop Converting; none made: that alone.
         row.show(entry, activity: .rendering(part: 2, of: 5), fileProblem: nil, size: nil, playback: nil, playable: true)
-        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHidden }.map(\.title)
-            == ["▶ Play", "Stop"])
+        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.title)
+            == ["▶ Play", "Stop Converting"])
         row.show(entry, activity: .rendering(part: 1, of: 5), fileProblem: nil, size: nil, playback: nil)
-        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHidden }.map(\.title) == ["Stop"])
+        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.title) == ["Stop Converting"])
 
         // Making failed while it plays what was made: Pause until that stops, then Try Again.
         entry.state = .failed
         row.show(entry, activity: nil, fileProblem: nil, size: nil,
                  playback: .init(playing: true, current: 30, duration: 40, final: false))
-        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHidden }.map(\.title).first
-            == "❚❚ Pause")
+        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.title)
+            .contains("❚❚ Pause"))
         row.show(entry, activity: nil, fileProblem: nil, size: nil, playback: nil)
-        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHidden }.map(\.title).first
+        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.title).first
             == "Try Again")
     }
 
