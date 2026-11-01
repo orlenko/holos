@@ -63,6 +63,19 @@ import Testing
         #expect(!window.followsVoice)
     }
 
+    /// The last parts still playing from memory: the bar shows the place and does not offer to move it.
+    @Test func theBarDoesNotOfferToMoveAReadingPlayingFromItsParts() throws {
+        let window = window(timeline: nil)
+        func slider() -> NSSlider? {
+            func all(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(all) }
+            return all(window.seek).compactMap { $0 as? NSSlider }.first
+        }
+        window.show(.init(playing: true, current: 25, duration: 60, seekable: false))
+        #expect(slider()?.isEnabled == false)
+        window.show(.init(playing: true, current: 25, duration: 60))
+        #expect(slider()?.isEnabled == true)
+    }
+
     @Test func withoutATimelineTheTextStillShowsAndFollowingIsOff() {
         let window = window(timeline: nil)
         window.show(.init(playing: true, current: 25, duration: 60))

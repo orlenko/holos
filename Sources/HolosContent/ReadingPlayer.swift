@@ -70,6 +70,9 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
     public var onChange: (() -> Void)?
     /// Playback stopped on an error: what to tell (a sentence).
     public var onError: ((String) -> Void)?
+    /// Reading `id` stopped on an error, said before it leaves the player: for whoever started it, with or without the
+    /// Reading section's window (which has `onError`).
+    public var onFailure: ((UUID, String) -> Void)?
     /// The reading played to its end (never called for a stop, a pause, or another reading played over it).
     public var onEnded: ((UUID) -> Void)?
     /// A reading left the player: its end (before `onEnded`), a stop, a failure, or another reading played over it.
@@ -287,6 +290,7 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
     }
 
     private func fail(_ message: String) {
+        if let entryID { onFailure?(entryID, message) }
         unload()
         onError?(message)
     }

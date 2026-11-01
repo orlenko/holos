@@ -61,6 +61,7 @@ final class ReadAloud {
         self.defaults = defaults
         player.onEnded = { [weak self] id in self?.ended(playing: id) }
         player.onUnloaded = { [weak self] id in self?.unloaded(id) }
+        player.onFailure = { [weak self] id, reason in self?.playbackFailed(id, reason) }
     }
 
     /// The shortcut is on unless turned off in Settings › Reading.
@@ -157,6 +158,13 @@ final class ReadAloud {
         if playing == id { playing = nil }
         advance()
         onChange?()
+    }
+
+    /// A selection could not play, its audio undecodable or the device refusing, so it says so: no window may be open to
+    /// tell it. Making that failed says it in `unloaded`, as it does not depend on what was playing.
+    private func playbackFailed(_ id: UUID, _ reason: String) {
+        guard playing == id, readings.entry(id)?.state != .failed else { return }
+        notify("The selection could not be played", reason)
     }
 
     /// A reading left the player (invariant 2). One whose making failed while it played (what was made has played) says
