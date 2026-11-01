@@ -8,7 +8,7 @@
 625 Sources/HolosApp/MainWindow/LiveMeetingView.swift
 731 Sources/HolosApp/MainWindow/MainWindowController.swift
 1756 Sources/HolosApp/MainWindow/MeetingsPane.swift
-779 Sources/HolosApp/MainWindow/ReadingPane.swift
+788 Sources/HolosApp/MainWindow/ReadingPane.swift
 1350 Sources/HolosApp/MainWindow/SettingsPane.swift
 938 Sources/HolosApp/Reading/ReadingController.swift
 1756 Sources/HolosApp/Review/ReviewWindow.swift
