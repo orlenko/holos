@@ -111,6 +111,13 @@ import Testing
         #expect(PDFReader.pageContent(pages) == words.map { [$0] })
     }
 
+    /// Numbered section titles run with their pages but say something different each time: they are headings.
+    @Test func numberedSectionTitlesStay() {
+        let words = Self.differentWords(4)
+        let pages = [["1 Introduction", words[0]], ["2 Methods", words[1]], ["3 Results", words[2]], ["4 Discussion", words[3]]]
+        #expect(PDFReader.pageContent(pages) == pages)
+    }
+
     /// A chapter opening on the page it numbers is a heading, however well its number runs with the pages.
     @Test func aChapterHeadingOnItsOwnPageNumberStays() {
         let words = Self.differentWords(8)
@@ -298,6 +305,19 @@ import Testing
         ])
     }
 
+    /// A note's last line can be short and unpunctuated, right before the numbers start over.
+    @Test func aNotesShortLastLineIsNotTakenForAChapterName() throws {
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "One.\(try marker(0))"),
+            .init(text: "Two.\(try marker(1))"),
+            .init(text: "Notes\n1 The first note refers to\npages 25–26\n1 Second note."),
+        ]
+        let result = paragraphs(pages, markers: ["1", "1"], outline: [.init(label: "One", page: 0), .init(label: "Two", page: 1),
+                                                                      .init(label: "Notes", page: 2)])
+        #expect(result.contains("Footnote: The first note refers to pages 25–26."))
+        #expect(result.contains("Footnote: Second note."))
+    }
+
     /// A number missing from the notes does not swallow the note after it.
     @Test func aGapInTheNumberingKeepsTheNoteAfterIt() throws {
         let body = try ["1", "2", "3", "5"].enumerated().map { "Sentence \($1).\(try marker($0))" }.joined(separator: " ")
@@ -430,6 +450,16 @@ import Testing
         let result = paragraphs([first, second], markers: ["1"], bodySize: 10)
         #expect(result.contains("Footnote: This note goes over the page."))
         #expect(!result.contains { $0 == "over the page." })
+    }
+
+    /// A note can run over a whole page and on to the next.
+    @Test func aNoteRunningOverThreePagesStaysWhole() throws {
+        let first = PDFBookStructure.Page(text: "One sentence.\(try marker(0))\n1 This note goes",
+                                          lineSizes: ["1 This note goes": 8])
+        let second = PDFBookStructure.Page(text: "Next sentence.\nright over", lineSizes: ["right over": 8])
+        let third = PDFBookStructure.Page(text: "Last sentence.\nthe page and on.", lineSizes: ["the page and on.": 8])
+        let result = paragraphs([first, second, third], markers: ["1"], bodySize: 10)
+        #expect(result.contains("Footnote: This note goes right over the page and on."))
     }
 
     /// Too few small numbers to be a book's notes: an exponent is text.

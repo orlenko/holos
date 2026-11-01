@@ -73,16 +73,22 @@ enum PDFBookStructure {
         let framed = PDFReader.pageContent(pages.map { PDFReader.lines(of: $0.text) })
         var footnotes: [[Note]] = []
         var content: [[String]] = []
+        // The note a page's unmarked small print can run on from: the last one begun, while each page since ran it on.
+        var owner: (page: Int, note: Int)?
         for (page, framedLines) in zip(pages, framed) {
             try Task.checkCancellation()
             let (lines, notes) = pageFootnotes(page, lines: framedLines, markers: markers, bodySize: bodySize,
-                                               previous: footnotes.last?.last)
+                                               previous: owner.map { footnotes[$0.page][$0.note] })
             // A note running over from the page before belongs to that page's last note.
-            if let carried = notes.carried, !footnotes.isEmpty, !footnotes[footnotes.count - 1].isEmpty {
-                let last = footnotes[footnotes.count - 1].count - 1
-                footnotes[footnotes.count - 1][last].text = joined(footnotes[footnotes.count - 1][last].text, carried)
+            if let carried = notes.carried, let owner {
+                footnotes[owner.page][owner.note].text = joined(footnotes[owner.page][owner.note].text, carried)
             }
             footnotes.append(notes.notes)
+            if !notes.notes.isEmpty {
+                owner = (footnotes.count - 1, notes.notes.count - 1)
+            } else if notes.carried == nil {
+                owner = nil
+            }
             content.append(lines)
         }
         var roles = self.roles(content: content, outline: outline, hasTitle: hasTitle)
@@ -342,8 +348,10 @@ enum PDFBookStructure {
             }
             inSymbolic = false
             if start.number == 1 || blocks.isEmpty {
-                // A short line with no end of its own, right before a new block, names that block's chapter.
-                if let line = pending, line.count > 90 || PDFReader.endsSentence(line) { flush() }
+                // A short capitalized line with no end of its own, right before a new block, names that block's chapter.
+                // Anything else is the note's last line.
+                if let line = pending, line.count > 90 || PDFReader.endsSentence(line)
+                    || line.first?.isUppercase != true { flush() }
                 pending = nil
                 blocks.append([:])
             } else {

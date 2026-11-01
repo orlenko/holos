@@ -204,11 +204,9 @@ Voice › Manage Voices).
 6. **Play and keys**: ▶ Play plays in the app, the button turns ❚❚ Pause and the position
    counts up; Space on the selected row pauses and continues; ↑↓ move between rows; playing
    another row stops the first. Closing the window stops playback.
-<<<<<<< HEAD
    **A book**: run `voiceislocal read BOOK.pdf --print-text` on a book with an outline and on one without: it opens with
    the title and "By <author>", has no contents, index, or running heads, no stray numbers in sentences, and each note
    reads "Footnote: …" after its sentence, the right note for the sentence.
-=======
    **Seek**: the playing reading's row grows a bar with elapsed time and length. Drag the knob:
    the time follows it, the audio moves only on release, and the knob does not jump meanwhile. Click
    the bar to jump. On a selected (blue) row the filled part stays visible. With the bar focused
@@ -219,7 +217,6 @@ Voice › Manage Voices).
    Voice turns off and the view stays, the highlight goes on; turn it on: back to the voice. Check dark
    mode, a reading not loaded (the bar starts it from that place), and a book-length reading (opening
    and jumping stay quick). Close the main window: the text window closes too.
->>>>>>> origin/main
 7. **Share and Finder**: Share… (and ⇧⌘S on the selected row) shows AirDrop, Messages,
    Mail…; send one to an iPhone and play it there (Files or Books), with its chapters.
    Show in Finder selects the file.

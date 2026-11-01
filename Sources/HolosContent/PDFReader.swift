@@ -277,8 +277,12 @@ public enum PDFReader {
             var footers: [String: Int] = [:]
             var numberOffsets: [Int: Int] = [:]
             var headOffsets: [Int: Int] = [:]
+            var headTexts: [String: Int] = [:]
             for (index, page) in pages.enumerated() {
                 guard let first = page.first, let last = page.last else { continue }
+                for text in Set([first, last].filter { runningHeadKey($0, page: index) != nil }.map(runningHeadText)) {
+                    headTexts[text, default: 0] += 1
+                }
                 // Counted once a page: a page's two edges numbered alike are not two pages agreeing.
                 for key in Set([first, last].compactMap({ runningHeadKey($0, page: index) })) {
                     headOffsets[key, default: 0] += 1
@@ -299,7 +303,10 @@ public enum PDFReader {
                     if !furniture, !numbered.contains(index), let number = bareNumber(line) {
                         furniture = numberOffsets[number - index, default: 0] >= 2 || (bottom && number == index + 1)
                     }
-                    if !furniture, let key = runningHeadKey(line, page: index), headOffsets[key, default: 0] >= 4 {
+                    // Its words repeat on another page too: "1 Introduction", "2 Methods" number along with their pages
+                    // and are headings.
+                    if !furniture, let key = runningHeadKey(line, page: index), headOffsets[key, default: 0] >= 4,
+                       headTexts[runningHeadText(line), default: 0] >= 2 {
                         furniture = true
                     }
                     if furniture && isNumber { numbered.insert(index) }
@@ -327,6 +334,12 @@ public enum PDFReader {
     static func bareNumber(_ line: String) -> Int? {
         guard (1...4).contains(line.count), line.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
         return Int(line)
+    }
+
+    /// A running head's words, without its page number, whichever side that is on.
+    static func runningHeadText(_ line: String) -> String {
+        ReadableDocument.titleKey(line).split(separator: " ")
+            .filter { word in !word.allSatisfy(\.isNumber) && romanNumeral(String(word)) == nil }.joined(separator: " ")
     }
 
     /// How a running head's page number ("8 Chapter Name", "Chapter Name 9", "Foreword xi") stands to its page's index,
