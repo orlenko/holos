@@ -74,14 +74,26 @@ import Testing
 
     @Test func copyTextCopiesTheWholeText() {
         let window = window(timeline: nil)
-        let pasteboard = NSPasteboard.general
-        let saved = pasteboard.string(forType: .string)
-        defer {
-            pasteboard.clearContents()
-            if let saved { pasteboard.setString(saved, forType: .string) }
-        }
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("reading-text-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        window.pasteboard = pasteboard
         window.copyText()
         #expect(pasteboard.string(forType: .string) == Self.text)
+    }
+
+    /// A conventional mouse wheel posts no live-scroll notification, and following must stop for it too.
+    @Test func aMouseWheelStopsFollowingButATrackpadsMomentumDoesNot() throws {
+        func wheel(momentum: Bool) throws -> NSEvent {
+            let event = try #require(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: -40,
+                                             wheel2: 0, wheel3: 0))
+            if momentum { event.setIntegerValueField(.scrollWheelEventMomentumPhase, value: 2) }
+            return try #require(NSEvent(cgEvent: event))
+        }
+        let window = window(timeline: try timeline())
+        window.textView.scrollWheel(with: try wheel(momentum: true))
+        #expect(window.followsVoice)
+        window.textView.scrollWheel(with: try wheel(momentum: false))
+        #expect(!window.followsVoice)
     }
 
     /// Following scrolls to a sentence far into a long text and keeps it in view; a sentence near it does not move the page.

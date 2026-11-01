@@ -89,6 +89,8 @@ public final class ReadingPlayer: NSObject, AVAudioPlayerDelegate {
     @discardableResult
     public func seek(_ id: UUID, to time: Double) -> Bool {
         guard entryID == id, let player, time.isFinite else { return false }
+        // A reading asked for before and not open yet is not played over this.
+        request += 1
         player.currentTime = Self.clamped(time, duration: player.duration)
         onChange?()
         return true

@@ -32,6 +32,8 @@ final class ReadingTextWindow: NSWindowController, NSWindowDelegate, NSTextViewD
     var onSeek: ((Double) -> Void)?
     /// The window closed.
     var onClose: (() -> Void)?
+    /// Where Copy Text copies to (tests pass their own).
+    var pasteboard = NSPasteboard.general
 
     /// `length`: the reading's duration, shown until it is loaded in the player.
     init(entryID: UUID, title: String, text: String, timeline: ReadingTimeline?, length: Double?) {
@@ -80,11 +82,12 @@ final class ReadingTextWindow: NSWindowController, NSWindowDelegate, NSTextViewD
         body.setAccessibilityLabel("Text of \(title)")
         body.delegate = self
         body.onSpace = { [weak self] in self?.onPlay?() }
-        body.onKeyboardScroll = { [weak self] in self?.stopFollowing() }
+        body.onUserScroll = { [weak self] in self?.stopFollowing() }
 
         scroll.documentView = body
         scroll.hasVerticalScroller = true
         scroll.borderType = .noBorder
+        // Dragging the scroller; the wheel and the keys are the text view's (`onUserScroll`).
         scrollObserver = NotificationCenter.default.addObserver(
             forName: NSScrollView.willStartLiveScrollNotification, object: scroll, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.stopFollowing() }
@@ -160,8 +163,8 @@ final class ReadingTextWindow: NSWindowController, NSWindowDelegate, NSTextViewD
 
     /// Copy Text: the user's choice, so the clipboard gets the text.
     @objc func copyText() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
     }
 
     func textViewDidChangeSelection(_ notification: Notification) {
@@ -188,11 +191,11 @@ final class ReadingTextWindow: NSWindowController, NSWindowDelegate, NSTextViewD
     }
 }
 
-/// The reading window's text: Space plays or pauses, and the keys that scroll say so.
+/// The reading window's text: Space plays or pauses, and the wheel and keys that scroll say so.
 @MainActor
 private final class ReadingTextView: NSTextView {
     var onSpace: (() -> Void)?
-    var onKeyboardScroll: (() -> Void)?
+    var onUserScroll: (() -> Void)?
 
     override func keyDown(with event: NSEvent) {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.numericPad, .function])
@@ -200,8 +203,15 @@ private final class ReadingTextView: NSTextView {
             onSpace?()
             return
         }
-        if [.pageUp, .pageDown, .upArrow, .downArrow, .home, .end].contains(event.specialKey) { onKeyboardScroll?() }
+        if [.pageUp, .pageDown, .upArrow, .downArrow, .home, .end].contains(event.specialKey) { onUserScroll?() }
         super.keyDown(with: event)
+    }
+
+    /// A conventional mouse wheel's scroll has no live-scroll notification. A trackpad's momentum goes on after the
+    /// fingers have left, so it may run on after Follow Voice is turned on again: only a scroll being made counts.
+    override func scrollWheel(with event: NSEvent) {
+        if event.momentumPhase.isEmpty, event.scrollingDeltaY != 0 || event.scrollingDeltaX != 0 { onUserScroll?() }
+        super.scrollWheel(with: event)
     }
 
     func textRange(_ range: NSRange) -> NSTextRange? {

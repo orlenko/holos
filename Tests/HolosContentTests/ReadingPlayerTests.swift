@@ -62,6 +62,20 @@ private final class FakePlayback: ReadingPlayback, @unchecked Sendable {
         #expect(playback.currentTime == 20)
     }
 
+    /// Moving the loaded reading is a later request than a reading still opening: that one does not start over it.
+    @Test func aSeekWinsOverAReadingStillOpening() async throws {
+        let player = ReadingPlayer(open: { _ in OpenedPlayback(FakePlayback()) })
+        let (loaded, opening) = (UUID(), UUID())
+        try await player.play(loaded, file: { try? self.file() })
+        let gate = SlowFile()
+        let pending = Task { @MainActor in try await player.play(opening) { await gate.open() } }
+        await gate.waitUntilAsked()
+        #expect(player.seek(loaded, to: 10))
+        gate.release()
+        #expect(try await pending.value)
+        #expect(player.entryID == loaded)
+    }
+
     /// A reading not loaded yet starts from the place asked for; a loaded one moves there rather than pausing.
     @Test func playFromAPlace() async throws {
         let playback = FakePlayback()
