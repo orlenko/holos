@@ -204,6 +204,9 @@ Voice › Manage Voices).
 6. **Play and keys**: ▶ Play plays in the app, the button turns ❚❚ Pause and the position
    counts up; Space on the selected row pauses and continues; ↑↓ move between rows; playing
    another row stops the first. Closing the window stops playback.
+   **A book**: run `voiceislocal read BOOK.pdf --print-text` on a book with an outline and on one without: it opens with
+   the title and "By <author>", has no contents, index, or running heads, no stray numbers in sentences, and each note
+   reads "Footnote: …" after its sentence, the right note for the sentence.
    **Seek**: the playing reading's row grows a bar with elapsed time and length. Drag the knob:
    the time follows it, the audio moves only on release, and the knob does not jump meanwhile. Click
    the bar to jump. On a selected (blue) row the filled part stays visible. With the bar focused

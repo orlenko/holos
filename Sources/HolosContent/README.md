@@ -5,7 +5,8 @@ list (docs/design.md "Reading section", "Text-to-speech").
 
 **Owns**
 - Extraction into `ReadableDocument`: `DocumentLoader` (callable off the main actor) picks a reader by extension:
-  `PlainTextReader`, `MarkdownReader`, `HTMLReader`, `PDFReader`, `RichTextReader`, each in its own file, with
+  `PlainTextReader`, `MarkdownReader`, `HTMLReader`, `PDFReader` (reading a book like a person: `PDFBookStructure`),
+  `RichTextReader`, each in its own file, with
   `DocumentText` (`DocumentText.swift`) decoding text bytes. `HTMLReader`'s parts are extensions in
   `HTMLReader+Encoding.swift`, `HTMLReader+Preparation.swift`, `HTMLReader+Walker.swift` and
   `HTMLReader+InlineStyle.swift`. `WebArticleExtractor` is a non-persistent `WKWebView` running Mozilla

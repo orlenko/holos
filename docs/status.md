@@ -383,8 +383,8 @@ timeline and a larger local-model benchmark are follow-ups.
   Secure fields and Secure Keyboard Entry are refused.
   Rex uses physical key codes from the active keyboard layout because it interprets those instead of the event's
   Unicode text. Only direct and Shift-modified characters are typed; an unrepresentable chunk requires Copy Result
-  before any of that chunk is sent. Layout planning and unposted event fields are unit-tested; the Rex input path
-  needs an interactive check against the installed beta.
+  before any of that chunk is sent. Layout planning and unposted event fields are unit-tested; dictating into Rex Beta was
+  checked by hand on a signed build on 2026-11-01.
   It never synthesizes Return and never pastes. Text it could not write (target
   changed, safety check failed, unverified write, forced stop) is kept for Copy Result
   or Discard in the menu; it is never put on the clipboard automatically, since
@@ -569,6 +569,9 @@ timeline and a larger local-model benchmark are follow-ups.
   logic, the voice order, the speed mapping, and the pipeline's new progress reports are
   unit-tested; the section itself is built and compiled only and has not been seen on screen
   yet (docs/dictation-validation.md "Reading section").
+  A PDF reads like a book: title and author, no contents, index, or page numbers, and each note as "Footnote: …" after
+  its sentence (`PDFBookStructure`). Unit-tested with made-up pages and a generated PDF, and its extracted text checked
+  on one real published book with end-of-book notes. Books with notes at the page's foot have been seen only in tests.
   A loaded reading's row has a seek bar, and Show Text is a window that highlights and follows the sentence being
   spoken, its times from the render cache's manifest (`ReadingTimeline`). The timeline, the player's seek on a real
   `.m4a`, the bar's drag rules and the window's highlight are unit-tested, and the views were checked rendered offscreen;
