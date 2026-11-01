@@ -41,6 +41,7 @@ import Testing
         #expect(played.count == expected.count)
         let worst = zip(played, expected).map { abs($0 - $1) }.max() ?? .infinity
         #expect(worst < 1e-6)
+        feed.finish(.finished)
         #expect(await eventually { ends == [.finished] })
     }
 
