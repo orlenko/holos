@@ -157,14 +157,7 @@ enum PDFBookStructure {
                 }
             }
         }
-        // Each chapter opens a paragraph, marked, whatever the sentence before it did.
-        for (index, start) in chapterPlaces(parts, in: content).enumerated().reversed()
-        where roles[start.page] == .body && !content[start.page].isEmpty {
-            guard let scalar = Unicode.Scalar(chapterBase + UInt32(index)) else { continue }
-            let line = content[start.page].indices.first { $0 >= start.line && !content[start.page][$0].isEmpty } ?? start.line
-            content[start.page][line].insert(Character(scalar), at: content[start.page][line].startIndex)
-            content[start.page].insert("", at: line)
-        }
+        markChapters(parts, in: &content, roles: roles)
         let bodyPages = content.indices.filter { roles[$0] == .body }.map { content[$0] }
         let literal = textMarkers(markers, notes: resolved.notes)
         try Task.checkCancellation()
@@ -174,8 +167,36 @@ enum PDFBookStructure {
                           literal: literal)
         }
         let unsaid = (resolved.endnotesPaired ? symbolic + resolved.uncited : []) + resolved.uncitedFootnotes
+        return unmarkingChapters(body + unsaid.map(Self.spoken), parts: parts)
+    }
+
+    /// Each chapter opens a paragraph, marked, whatever the sentence before it did, and the lines saying its name stand
+    /// apart from the text after them, however long they run.
+    private static func markChapters(_ parts: [OutlineEntry], in content: inout [[String]], roles: [Role]) {
+        for (index, start) in chapterPlaces(parts, in: content).enumerated().reversed()
+        where roles[start.page] == .body && !content[start.page].isEmpty {
+            guard let scalar = Unicode.Scalar(chapterBase + UInt32(index)) else { continue }
+            let page = content[start.page]
+            let line = page.indices.first { $0 >= start.line && !page[$0].isEmpty } ?? start.line
+            var said = ""
+            var after = line
+            for position in line..<page.count {
+                let key = ReadableDocument.titleKey(withoutTrailingMarkers(page[position]))
+                let next = said.isEmpty ? key : said + " " + key
+                guard !key.isEmpty, start.name == next || start.name.hasPrefix(next + " ") else { break }
+                said = next
+                after = position + 1
+            }
+            if after > line { content[start.page].insert("", at: after) }
+            content[start.page][line].insert(Character(scalar), at: content[start.page][line].startIndex)
+            content[start.page].insert("", at: line)
+        }
+    }
+
+    /// The paragraphs without the chapter marks, and where those stood.
+    private static func unmarkingChapters(_ paragraphs: [String], parts: [OutlineEntry]) -> Book {
         var opens: [(paragraph: Int, label: String)] = []
-        let text = (body + unsaid.map(Self.spoken)).enumerated().map { index, paragraph -> String in
+        let text = paragraphs.enumerated().map { index, paragraph -> String in
             let scalars = paragraph.unicodeScalars
             for scalar in scalars where scalar.value >= chapterBase && Int(scalar.value - chapterBase) < parts.count {
                 opens.append((index, parts[Int(scalar.value - chapterBase)].label))

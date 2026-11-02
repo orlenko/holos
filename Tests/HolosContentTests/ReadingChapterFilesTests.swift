@@ -60,7 +60,7 @@ import Testing
                                                         duration: 20, in: parent)
         #expect(folder.lastPathComponent == "A Book")
         let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
-        #expect(names == ["01 Beginning.m4a", "02 Chapter 1- The Start.m4a", "03 Chapter 2.m4a", "A Book.m3u8"])
+        #expect(names == ["01 Beginning.m4a", "02 Chapter 1- The Start.m4a", "03 Chapter 2.m4a", "Playlist.m3u8"])
         #expect(try FileManager.default.contentsOfDirectory(atPath: parent.path) == ["A Book"])
         for (name, length) in [("01 Beginning.m4a", 5.0), ("02 Chapter 1- The Start.m4a", 7), ("03 Chapter 2.m4a", 8)] {
             let asset = AVURLAsset(url: folder.appendingPathComponent(name))
@@ -75,7 +75,31 @@ import Testing
         let second = try await ReadingChapterFiles.make(from: source, title: "A Book", author: nil, chapters: chapters,
                                                         duration: 20, in: parent)
         #expect(second.lastPathComponent == "A Book 2")
-        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("A Book.m3u8").path))
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("Playlist.m3u8").path))
+    }
+
+    /// A title that only just fits a file name still makes a folder.
+    @Test func aLongTitleInManyBytesFits() async throws {
+        let temporary = try TemporaryDirectory("chapters")
+        defer { temporary.remove() }
+        let source = try await finishedFile(in: temporary.url, seconds: 20)
+        let parent = temporary.url.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        let title = String(repeating: "読", count: 80)
+        for _ in 0..<2 {
+            let folder = try await ReadingChapterFiles.make(from: source, title: title, author: nil, chapters: chapters, duration: 20, in: parent)
+            #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("Playlist.m3u8").path))
+        }
+    }
+
+    /// A copy that does not finish fails, and leaves nothing.
+    @Test func aStalledCopyIsReported() async throws {
+        await #expect(throws: (any Error).self) {
+            try await ReadingChapterFiles.bounded(by: .milliseconds(10)) {
+                try await Task.sleep(for: .seconds(60))
+            }
+        }
+        try await ReadingChapterFiles.bounded(by: .seconds(60)) {}
     }
 
     /// A failure leaves nothing behind in the folder chosen.

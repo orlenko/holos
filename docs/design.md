@@ -639,7 +639,7 @@ or a saved one that cannot be read back, fails the reading rather than loading t
 
 **Chapter Files…**, on a made reading with chapters, asks for a folder (the last one chosen is offered again, such as one
 that syncs to a phone) and makes a folder there named after the reading: one `.m4a` per chapter, `01 Chapter Name.m4a`,
-tagged with the chapter and the reading's title, and an extended M3U playlist (`ReadingChapterFiles`; `voiceislocal read
+tagged with the chapter and the reading's title, and `Playlist.m3u8` (`ReadingChapterFiles`; `voiceislocal read
 --chapter-files`, beside the finished file). The audio is copied from the finished file without encoding it again. It is
 made under a hidden name and named last, a name already taken gets a number, and it is the person's from then on:
 deleting the reading leaves it. The one file remains the reading, which the app plays and follows.

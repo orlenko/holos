@@ -42,6 +42,9 @@ public enum PDFReader {
         }
         let opening = document(paragraphs: Array(book.paragraphs[..<first.paragraph]), declaredTitle: declaredTitle, author: author)
         var sections = first.paragraph > 0 ? opening.sections : []
+        // With nothing else before the first chapter, the book's title is told from it, as for any book.
+        let title = declaredTitle ?? opening.title ?? (first.paragraph == 1 && PlainTextReader.looksLikeTitle(book.paragraphs[0])
+            ? book.paragraphs[0] : nil)
         for (index, chapter) in book.chapters.enumerated() {
             let end = index + 1 < book.chapters.count ? book.chapters[index + 1].paragraph : book.paragraphs.count
             var body = Array(book.paragraphs[chapter.paragraph..<end])
@@ -56,7 +59,7 @@ public enum PDFReader {
             }
             sections.append(.init(heading: chapter.label, level: 2, paragraphs: body))
         }
-        return ReadableDocument(title: opening.title ?? declaredTitle, author: author, sections: sections)
+        return ReadableDocument(title: title, author: author, sections: sections)
     }
 
     /// Each page's text, as it stands, with each line's main size and the small runs of digits or symbols in it, which

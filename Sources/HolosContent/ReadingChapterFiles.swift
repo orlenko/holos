@@ -32,6 +32,10 @@ public enum ReadingChapterFiles {
         }
     }
 
+    static let playlistName = "Playlist.m3u8"
+    /// How long one chapter's copy may take, on a drive or a share that may have stopped answering.
+    public static let trackTimeout: Duration = .seconds(600)
+
     /// An extended M3U playlist of `tracks`, by the names beside it.
     public static func playlist(title: String, tracks: [Track]) -> String {
         var lines = ["#EXTM3U", "#PLAYLIST:\(title)"]
@@ -44,24 +48,27 @@ public enum ReadingChapterFiles {
 
     /// Makes the folder for the finished file `source` inside `parent`, and returns it. `done`: tracks finished so far.
     public static func make(from source: URL, title: String, author: String?, chapters: [AudioBookChapter],
-                            duration: Double, in parent: URL,
+                            duration: Double, in parent: URL, timeout: Duration = trackTimeout,
                             done: (@Sendable (Int, Int) -> Void)? = nil) async throws -> URL {
         guard let tracks = tracks(chapters: chapters, duration: duration) else {
             throw HolosError.invalidInput("This reading has no chapters to make files of.")
         }
         let folderName = String(ReadingOutput.fileName(title: title, fallback: "Reading").dropLast(ReadingOutput.fileExtension.count))
-        let temporary = parent.appendingPathComponent(".\(folderName)-\(UUID().uuidString)", isDirectory: true)
+        // Not named after the title: a name that just fits with its extension would not fit with this.
+        let temporary = parent.appendingPathComponent(".holos-chapters-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
         do {
             let asset = AVURLAsset(url: source)
             for (index, track) in tracks.enumerated() {
                 try Task.checkCancellation()
-                try await export(asset, track, album: title, author: author,
-                                 to: temporary.appendingPathComponent(track.fileName))
+                try await bounded(by: timeout) {
+                    try await export(asset, track, album: title, author: author,
+                                     to: temporary.appendingPathComponent(track.fileName))
+                }
                 done?(index + 1, tracks.count)
             }
             try Data(playlist(title: title, tracks: tracks).utf8)
-                .write(to: temporary.appendingPathComponent(folderName + ".m3u8"), options: .withoutOverwriting)
+                .write(to: temporary.appendingPathComponent(playlistName), options: .withoutOverwriting)
             return try publish(temporary, named: folderName, in: parent)
         } catch {
             do {
@@ -71,6 +78,23 @@ public enum ReadingChapterFiles {
                     + removal.localizedDescription)
             }
             throw error
+        }
+    }
+
+    /// `work`, cancelled and reported as a failure if it is not done within `limit`.
+    static func bounded(by limit: Duration, _ work: @escaping @Sendable () async throws -> Void) async throws {
+        try await withThrowingTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                try await work()
+                return true
+            }
+            group.addTask {
+                try await Task.sleep(for: limit)
+                return false
+            }
+            let finished = try await group.next() ?? false
+            group.cancelAll()
+            guard finished else { throw HolosError.io("Copying a chapter did not finish in time.") }
         }
     }
 

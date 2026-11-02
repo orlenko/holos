@@ -154,6 +154,28 @@ extension PDFBookPages {
         #expect(document.plainText == ReadingScript(document: document).text)
     }
 
+    /// A chapter's name as long as the lines of text does not run on into them.
+    @Test func aLongChapterNameStaysApartFromTheText() throws {
+        let name = "Chapter 1 A Name Running To Nearly The Whole Width Of The Page Here Today"
+        let body = Self.filler
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "Foreword\n\(body) Done."), .init(text: "\(name)\n\(body)\n\(body) Done."),
+        ]
+        let book = try PDFBookStructure.book(pages: pages, outline: [.init(label: "Foreword", page: 0), .init(label: name, page: 1)],
+                                             bodySize: 10, hasTitle: true)
+        let document = PDFReader.document(book, declaredTitle: "A Book", author: nil)
+        #expect(document.sections[1].heading == name)
+        #expect(!ReadingScript(document: document).text.replacingOccurrences(of: name, with: "", options: [.anchored]).contains("\(name) This"))
+        #expect(document.sections[1].paragraphs.first?.hasPrefix(body) == true)
+    }
+
+    /// With no title in the file, the book's title is told from the one line before its first chapter.
+    @Test func aTitleBeforeTheFirstChapterIsStillTheTitle() {
+        let book = PDFBookStructure.Book(paragraphs: ["A Book", "Chapter One", "Prose of the chapter."],
+                                         chapters: [(1, "Chapter One"), (2, "Chapter Two")])
+        #expect(PDFReader.document(book, declaredTitle: nil, author: nil).title == "A Book")
+    }
+
     /// Without chapters named, headings are told by their look, as before.
     @Test func withoutChaptersHeadingsAreToldByTheirLook() throws {
         let filler = Self.filler
