@@ -169,6 +169,22 @@ extension PDFBookPages {
         #expect(document.sections[1].paragraphs.first?.hasPrefix(body) == true)
     }
 
+    /// A chapter's number and its long name, with a blank line between, are its name, said once.
+    @Test func aChapterNameAcrossABlankLineIsSaidOnce() throws {
+        let title = "A Name Running To Nearly The Whole Width Of The Page Here Today For Sure"
+        let body = Self.filler
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "Foreword\n\(body) Done."), .init(text: "Chapter 1\n\n\(title)\n\(body)\n\(body) Done."),
+        ]
+        let name = "Chapter 1 \(title)"
+        let book = try PDFBookStructure.book(pages: pages, outline: [.init(label: "Foreword", page: 0), .init(label: name, page: 1)],
+                                             bodySize: 10, hasTitle: true)
+        let document = PDFReader.document(book, declaredTitle: "A Book", author: nil)
+        #expect(document.sections[1].heading == name)
+        #expect(document.sections[1].paragraphs.first?.hasPrefix(body) == true)
+        #expect(!document.sections[1].paragraphs.joined().contains(title))
+    }
+
     /// With no title in the file, the book's title is told from the one line before its first chapter.
     @Test func aTitleBeforeTheFirstChapterIsStillTheTitle() {
         let book = PDFBookStructure.Book(paragraphs: ["A Book", "Chapter One", "Prose of the chapter."],

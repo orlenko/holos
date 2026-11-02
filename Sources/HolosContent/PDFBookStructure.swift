@@ -222,11 +222,13 @@ enum PDFBookStructure {
         return places
     }
 
-    /// Where the lines from `start` that say `name`, in order, end, and whether they say all of it.
+    /// Where the lines from `start` that say `name`, in order and perhaps with blank lines between, end, and whether
+    /// they say all of it.
     private static func linesSaying(_ name: String, from start: Int, in lines: [String]) -> (end: Int, whole: Bool) {
         var said = ""
         var end = start
         for position in lines.indices where position >= start {
+            if !said.isEmpty, lines[position].allSatisfy(\.isWhitespace) { continue }
             let key = ReadableDocument.titleKey(withoutTrailingMarkers(lines[position]))
             let next = said.isEmpty ? key : said + " " + key
             guard !key.isEmpty, name == next || name.hasPrefix(next + " ") else { break }

@@ -15,7 +15,7 @@
 737 Sources/HolosAudio/MeetingScreenCapture.swift
 692 Sources/HolosAudio/TrackRenderer.swift
 649 Sources/HolosCLI/Speakers.swift
-903 Sources/HolosContent/PDFBookStructure.swift
+905 Sources/HolosContent/PDFBookStructure.swift
 611 Sources/HolosContent/ReadingOutput.swift
 1180 Sources/HolosContent/WebArticleExtractor.swift
 615 Sources/HolosCore/DictationTextPipeline.swift
