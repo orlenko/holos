@@ -10,6 +10,14 @@ import os
 /// `WebArticleExtractor` and rendered with `ReadingPipeline` into the output folder: Apple's voices in this process,
 /// natural voices part by part in the bundled `voiceislocal` helper (`HelperNaturalRenderer`). Created at launch, so
 /// readings the user kept rendering over a quit continue.
+///
+/// Invariants:
+/// 1. A reading being deleted stays in `all`, saved marked, and is never in `entries`.
+/// 2. The index is saved only while `writable`, and a reading in `readOnly` is shown and never changed.
+/// 3. One reading's files are removed by one task at a time (`deleting`).
+/// 4. The rows and playback know a made reading's file only from `files`: no file is looked up on the main actor.
+/// 5. What leaves a reading (Share…, Chapter Files…) comes from a copy of the file opened and checked, and changes
+///    neither the reading's file nor its entry.
 @MainActor
 final class ReadingController {
     /// The list as shown, newest first: without the readings being deleted.
@@ -266,7 +274,7 @@ final class ReadingController {
     }
 
     /// One audio file per chapter, with a playlist, in a new folder inside `parent` (`ReadingChapterFiles`), from a copy
-    /// of the file opened and checked, as Share… sends: its chapters are those its manifest recorded.
+    /// of the file opened and checked (invariant 5): its chapters are those its manifest recorded.
     func makeChapterFiles(_ entry: ReadingEntry, in parent: URL) async throws -> URL {
         let cache = entry.cache.map { ReadingOutput.fileURL(keepingSpelling: $0, isDirectory: true) }
         let manifest = try await offMain { cache.flatMap(ReadingResumeVoice.manifest(in:)) }

@@ -217,7 +217,8 @@ struct Read: AsyncParsableCommand {
         return result.output
     }
 
-    /// The reading is made by now: anything short of an interrupt here is a warning, with its path still printed.
+    /// The reading is made by now: anything short of an interrupt here is a warning, with its path still printed
+    /// (`ReadProgress` invariant 2).
     @MainActor private static func makeChapterFiles(of output: URL, manifest: ReadingManifest, title: String, author: String?,
                                                     progress: ReadProgress) async throws {
         do {
@@ -259,6 +260,10 @@ private struct ReadRequest: Sendable {
 
 /// How far a `read` got: set once rendering starts, so an interruption or failure before that
 /// suggests no `--resume`.
+///
+/// Invariants:
+/// 1. `resumeHint` is set once the reading's place is known, before its render starts.
+/// 2. `warned` is set only after the finished file is published, so exit 3 always follows its printed path.
 @MainActor private final class ReadProgress {
     var resumeHint: String?
     var warned = false
