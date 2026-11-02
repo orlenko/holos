@@ -69,7 +69,7 @@ How each item gets covered:
 
 - [ ] **Targets other than your usual apps** — the matrix in
   [dictation-validation.md](dictation-validation.md) "Manual acceptance matrix": a browser rich editor,
-  iTerm2 with tabs and split panes, one of Ghostty/WezTerm/kitty/Alacritty/Warp/Rex, switching tab or pane
+  iTerm2 with tabs and split panes, one of Ghostty/WezTerm/kitty/Alacritty/Warp/Rex, a terminal on another Mac through Screen Sharing, switching tab or pane
   while speaking (typing must stop), a password field (refused), Esc during finalizing, holding past
   three minutes.
 - [ ] **History** — [dictation-validation.md](dictation-validation.md) "Main window and history" steps

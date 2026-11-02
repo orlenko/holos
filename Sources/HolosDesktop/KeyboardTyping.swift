@@ -7,7 +7,9 @@ struct KeyboardStroke: Equatable {
     let keyCode: CGKeyCode
     let flags: CGEventFlags
 
-    func events(for character: Character, source: CGEventSource?, marker: Int64) -> [CGEvent]? {
+    /// `pressingShift`: a Shift stroke also presses and releases Shift itself around the key, as a keyboard does, for
+    /// an app that follows Shift's own events rather than each key's flags.
+    func events(for character: Character, source: CGEventSource?, marker: Int64, pressingShift: Bool = false) -> [CGEvent]? {
         let units = Array(String(character).utf16)
         var events: [CGEvent] = []
         for keyDown in [true, false] {
@@ -21,7 +23,18 @@ struct KeyboardStroke: Equatable {
             event.setIntegerValueField(.eventSourceUserData, value: marker)
             events.append(event)
         }
-        return events
+        guard pressingShift, flags.contains(.maskShift) else { return events }
+        guard let down = Self.shift(pressed: true, source: source, marker: marker),
+              let up = Self.shift(pressed: false, source: source, marker: marker) else { return nil }
+        return [down] + events + [up]
+    }
+
+    private static func shift(pressed: Bool, source: CGEventSource?, marker: Int64) -> CGEvent? {
+        guard let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Shift), keyDown: pressed) else { return nil }
+        event.type = .flagsChanged
+        event.flags = pressed ? .maskShift : []
+        event.setIntegerValueField(.eventSourceUserData, value: marker)
+        return event
     }
 }
 
@@ -41,6 +54,21 @@ enum KeyboardTyping {
             }
         }
         return result
+    }
+
+    /// Whether a key held now also counts on the other computer. A remote screen sees every key that reaches it. With
+    /// the hold-to-talk shortcut Right Option does not (`HotkeyReducer` consumes it), which the flags cannot tell from
+    /// Left Option, so that one is asked for by its key. With Control-Option-Space every Option does, and Control too,
+    /// before Space starts the dictation.
+    static func heldKeysReachRemote(_ flags: CGEventFlags, leftOption: Bool, shortcut: HotkeyChoice) -> Bool {
+        let option = shortcut == .rightOption ? leftOption : flags.contains(.maskAlternate) || leftOption
+        return option || !flags.intersection([.maskControl, .maskCommand, .maskShift]).isEmpty
+    }
+
+    /// The same, for the keys held now.
+    static func heldKeysReachRemote(shortcut: HotkeyChoice) -> Bool {
+        heldKeysReachRemote(CGEventSource.flagsState(.hidSystemState),
+                            leftOption: CGEventSource.keyState(.hidSystemState, key: CGKeyCode(kVK_Option)), shortcut: shortcut)
     }
 
     /// Preflight the entire chunk so an untypable character never leaves a partially typed chunk.
