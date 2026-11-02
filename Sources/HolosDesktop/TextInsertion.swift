@@ -518,7 +518,7 @@ struct AXHandle: Equatable {
             return .targetChanged("Focus moved to \(moved); copy the transcript explicitly.")
         }
         // Invariant 4.
-        if isRemoteScreen, KeyboardTyping.heldKeysReachRemote(CGEventSource.flagsState(.hidSystemState)) {
+        if isRemoteScreen, KeyboardTyping.heldKeysReachRemote() {
             return .needsCopy("\(appName) passes held keys on to the other computer, so typing now could run a shortcut there. Dictate with Right Option.")
         }
         let strokes: [KeyboardStroke]?

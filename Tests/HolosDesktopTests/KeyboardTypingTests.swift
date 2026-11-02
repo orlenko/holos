@@ -102,12 +102,14 @@ private func exampleLayout() -> [Character: KeyboardStroke] {
 
 @Test func keysHeldForTheOtherComputerAreTold() {
     // Right Option alone never reaches the remote screen: the hotkey tap consumes it.
-    #expect(!KeyboardTyping.heldKeysReachRemote([]))
-    #expect(!KeyboardTyping.heldKeysReachRemote(.maskAlternate))
+    #expect(!KeyboardTyping.heldKeysReachRemote([], leftOption: false))
+    #expect(!KeyboardTyping.heldKeysReachRemote(.maskAlternate, leftOption: false))
+    // Left Option does, also beside Right Option, and after Control-Option-Space's Control is released.
+    #expect(KeyboardTyping.heldKeysReachRemote(.maskAlternate, leftOption: true))
     // Control with Option and Space leaves Control and Option held on the other computer.
-    #expect(KeyboardTyping.heldKeysReachRemote([.maskControl, .maskAlternate]))
-    #expect(KeyboardTyping.heldKeysReachRemote(.maskCommand))
-    #expect(KeyboardTyping.heldKeysReachRemote(.maskShift))
+    #expect(KeyboardTyping.heldKeysReachRemote([.maskControl, .maskAlternate], leftOption: false))
+    #expect(KeyboardTyping.heldKeysReachRemote(.maskCommand, leftOption: false))
+    #expect(KeyboardTyping.heldKeysReachRemote(.maskShift, leftOption: false))
 }
 
 @Test @MainActor func screenSharingIsTypedIntoAsARemoteScreen() {
