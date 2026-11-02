@@ -81,10 +81,21 @@ enum PDFBookStructure {
 
     // MARK: - The whole book
 
+    /// The book's text, and where in it the outline's chapters begin.
+    struct Book {
+        let paragraphs: [String]
+        let chapters: [(paragraph: Int, label: String)]
+    }
+
+    static func paragraphs(pages: [Page], markers: [String] = [], outline: [OutlineEntry], bodySize: Double,
+                           hasTitle: Bool) throws -> [String] {
+        try book(pages: pages, markers: markers, outline: outline, bodySize: bodySize, hasTitle: hasTitle).paragraphs
+    }
+
     /// The book's paragraphs: `pages` without their furniture, without the parts nobody reads aloud, and with each note
     /// after the sentence that cites it. `markers`: the text of any marker scalar already in `pages`.
-    static func paragraphs(pages: [Page], markers given: [String] = [], outline: [OutlineEntry], bodySize: Double,
-                           hasTitle: Bool) throws -> [String] {
+    static func book(pages: [Page], markers given: [String] = [], outline: [OutlineEntry], bodySize: Double,
+                     hasTitle: Bool) throws -> Book {
         // The furniture goes first, so a small running footer is not taken for the end of a footnote, and a page number
         // for a marker; then the parts, read from the text as it stands.
         var framed = PDFReader.pageContent(pages.map { PDFReader.lines(of: $0.text) })
@@ -128,8 +139,10 @@ enum PDFBookStructure {
         try Task.checkCancellation()
         let (endnotes, names, symbolic) = try endnoteBlocks(content: content, roles: roles, pages: pages, outline: outline,
                                                          notesBelow: notesBelow)
+        let parts = chapters(outline, hasTitle: hasTitle)
+        // Notes are numbered by chapter only where the chapters have pages of their own to tell them apart.
         let resolved = try resolve(content: content, roles: roles, markers: markers, markerPages: markerPages, footnotes: footnotes,
-                               endnotes: endnotes, names: names, chapters: chapters(outline, hasTitle: hasTitle))
+                               endnotes: endnotes, names: names, chapters: Set(parts.map(\.page)).count >= 2 ? parts : [])
         // Invariant 3.
         if !resolved.endnotesPaired {
             roles = roles.map { $0 == .notes ? .body : $0 }
@@ -145,6 +158,7 @@ enum PDFBookStructure {
                 }
             }
         }
+        markChapters(parts, in: &content, roles: roles)
         let bodyPages = content.indices.filter { roles[$0] == .body }.map { content[$0] }
         let literal = textMarkers(markers, notes: resolved.notes)
         try Task.checkCancellation()
@@ -154,7 +168,74 @@ enum PDFBookStructure {
                           literal: literal)
         }
         let unsaid = (resolved.endnotesPaired ? symbolic + resolved.uncited : []) + resolved.uncitedFootnotes
-        return body + unsaid.map(Self.spoken)
+        return unmarkingChapters(body + unsaid.map(Self.spoken), parts: parts)
+    }
+
+    /// Each chapter opens a paragraph, marked, whatever the sentence before it did, and the lines saying its name stand
+    /// apart from the text after them, however long they run.
+    private static func markChapters(_ parts: [OutlineEntry], in content: inout [[String]], roles: [Role]) {
+        // From the last place in the book back, so a line added stays below those still to come.
+        let places = chapterPlaces(parts, in: content).enumerated().sorted {
+            ($0.element.page, $0.element.line, $0.offset) > ($1.element.page, $1.element.line, $1.offset)
+        }
+        for (index, start) in places where roles[start.page] == .body && !content[start.page].isEmpty {
+            guard let scalar = Unicode.Scalar(chapterBase + UInt32(index)) else { continue }
+            let page = content[start.page]
+            let line = page.indices.first { $0 >= start.line && !page[$0].isEmpty } ?? start.line
+            let after = linesSaying(start.name, from: line, in: page).end
+            if after > line { content[start.page].insert("", at: after) }
+            content[start.page][line].insert(Character(scalar), at: content[start.page][line].startIndex)
+            content[start.page].insert("", at: line)
+        }
+    }
+
+    /// The paragraphs without the chapter marks, and where those stood.
+    private static func unmarkingChapters(_ paragraphs: [String], parts: [OutlineEntry]) -> Book {
+        var opens: [(paragraph: Int, label: String)] = []
+        let text = paragraphs.enumerated().map { index, paragraph -> String in
+            let scalars = paragraph.unicodeScalars
+            for scalar in scalars where scalar.value >= chapterBase && Int(scalar.value - chapterBase) < parts.count {
+                opens.append((index, parts[Int(scalar.value - chapterBase)].label))
+            }
+            return String(String.UnicodeScalarView(scalars.filter { $0.value < chapterBase }))
+        }
+        return Book(paragraphs: text, chapters: opens)
+    }
+
+    /// A chapter's opening stands in the text as one scalar of the last private-use plane until the paragraphs are done.
+    private static let chapterBase: UInt32 = 0x100000
+
+    /// Where each chapter starts, by its heading on the page where that can be found, else at the page's top. A chapter
+    /// sharing a page starts below the one before it, and lines saying its whole name count before those beginning it:
+    /// "Chapter" then "1" is not "Chapter 2".
+    private static func chapterPlaces(_ chapters: [OutlineEntry], in content: [[String]]) -> [(page: Int, line: Int, name: String)] {
+        var places: [(page: Int, line: Int, name: String)] = []
+        for chapter in chapters {
+            let name = ReadableDocument.titleKey(chapter.label)
+            let lines = content.indices.contains(chapter.page) ? content[chapter.page] : []
+            let before = places.last.flatMap { $0.page == chapter.page ? $0.line : nil }
+            let candidates = lines.indices.filter { $0 > before ?? -1 }
+            let line = candidates.first { linesSaying(name, from: $0, in: lines).whole }
+                ?? candidates.first { linesSaying(name, from: $0, in: lines).end > $0 }
+            places.append((chapter.page, line ?? before ?? 0, name))
+        }
+        return places
+    }
+
+    /// Where the lines from `start` that say `name`, in order and perhaps with blank lines between, end, and whether
+    /// they say all of it.
+    private static func linesSaying(_ name: String, from start: Int, in lines: [String]) -> (end: Int, whole: Bool) {
+        var said = ""
+        var end = start
+        for position in lines.indices where position >= start {
+            if !said.isEmpty, lines[position].allSatisfy(\.isWhitespace) { continue }
+            let key = ReadableDocument.titleKey(withoutTrailingMarkers(lines[position]))
+            let next = said.isEmpty ? key : said + " " + key
+            guard !key.isEmpty, name == next || name.hasPrefix(next + " ") else { break }
+            said = next
+            end = position + 1
+        }
+        return (end, !said.isEmpty && said == name)
     }
 
     /// Splits each page where the outline's parts change partway down, in reading order and before anything is removed,
@@ -668,7 +749,8 @@ enum PDFBookStructure {
         for entry in outline {
             if let level = inside, entry.level > level { continue }
             inside = role(named: entry.label, hasTitle: hasTitle) == nil ? nil : entry.level
-            if inside == nil { parts.append(entry) }
+            // A title page kept for its title is the book's opening, not a chapter.
+            if inside == nil, !["title", "title page"].contains(outlineName(entry.label)) { parts.append(entry) }
         }
         let named = parts.filter { $0.label.lowercased().hasPrefix("chapter") }
         let levels = Set(parts.map(\.level)).sorted()
@@ -676,7 +758,7 @@ enum PDFBookStructure {
         // Text before the chapters (a foreword, an introduction) has notes of its own, at the chapters' depth.
         let level = named.first?.level ?? shallowest
         let chapters = parts.filter { $0.level == level }
-        return Set(chapters.map(\.page)).count >= 2 ? chapters : []
+        return chapters.count >= 2 ? chapters : []
     }
 
     /// Each marker's note, going through the text in reading order. Past the start of a part where the outline names
@@ -693,16 +775,7 @@ enum PDFBookStructure {
         var block = 0, last = 0, lastPage = -1, wanted = 0, found = 0
         var cited = endnotes.map { _ in Set<Int>() }
         var citedFootnotes = Set<String>()
-        // Where each chapter starts, by its heading on the page where that can be found, else at the page's top.
-        let starts = chapters.map { chapter -> (page: Int, line: Int, name: String) in
-            let name = ReadableDocument.titleKey(chapter.label)
-            let lines = content.indices.contains(chapter.page) ? content[chapter.page] : []
-            let line = lines.firstIndex { line in
-                let key = ReadableDocument.titleKey(withoutTrailingMarkers(line))
-                return !key.isEmpty && (key == name || name.hasPrefix(key + " "))
-            }
-            return (chapter.page, line ?? 0, name)
-        }
+        let starts = chapterPlaces(chapters, in: content)
         var lastLine = -1
         let markersInOrder = content.indices.filter { roles[$0] == .body }.flatMap { page in
             content[page].enumerated().flatMap { line, text in

@@ -23,14 +23,44 @@ public enum PDFReader {
             styled.append(page?.attributedString ?? page?.string.map { NSAttributedString(string: $0) })
         }
         let (pages, bodySize) = try bookPages(styled)
-        let paragraphs = try PDFBookStructure.paragraphs(pages: pages, outline: outline(of: pdf), bodySize: bodySize,
-                                                         hasTitle: declared?.isEmpty == false)
-        guard !paragraphs.isEmpty else {
+        let book = try PDFBookStructure.book(pages: pages, outline: outline(of: pdf), bodySize: bodySize,
+                                             hasTitle: declared?.isEmpty == false)
+        guard !book.paragraphs.isEmpty else {
             throw HolosError.invalidInput("\(url.lastPathComponent) has no text to read. Scanned PDFs need OCR, which is not supported.")
         }
-        var result = document(paragraphs: paragraphs, declaredTitle: declared, author: author)
+        var result = document(book, declaredTitle: declared, author: author)
         result.insertByline(PDFBookStructure.byline(author: author, pages: styled.map { $0?.string ?? "" }))
         return result
+    }
+
+    /// A book's sections are the chapters its outline names, when it names them: a heading-like line in the text is not
+    /// a chapter then, nor a file of its own. The outline's name stands for the lines that say it ("Chapter 1", then the
+    /// chapter's title), so it is said once. Without chapters, headings are told by their look (`document(paragraphs:)`).
+    static func document(_ book: PDFBookStructure.Book, declaredTitle: String?, author: String?) -> ReadableDocument {
+        guard let first = book.chapters.first else {
+            return document(paragraphs: book.paragraphs, declaredTitle: declaredTitle, author: author)
+        }
+        let opening = document(paragraphs: Array(book.paragraphs[..<first.paragraph]), declaredTitle: declaredTitle, author: author)
+        var sections = first.paragraph > 0 ? opening.sections : []
+        // With nothing else before the first chapter, the book's title is told from it, as for any book.
+        let declared = declaredTitle.flatMap { $0.allSatisfy(\.isWhitespace) ? nil : $0 }
+        let title = declared ?? opening.title ?? (first.paragraph == 1 && PlainTextReader.looksLikeTitle(book.paragraphs[0])
+            ? book.paragraphs[0] : nil)
+        for (index, chapter) in book.chapters.enumerated() {
+            let end = index + 1 < book.chapters.count ? book.chapters[index + 1].paragraph : book.paragraphs.count
+            var body = Array(book.paragraphs[chapter.paragraph..<end])
+            let name = ReadableDocument.titleKey(chapter.label)
+            var said = ""
+            while let line = body.first {
+                let key = ReadableDocument.titleKey(line)
+                let next = said.isEmpty ? key : said + " " + key
+                guard !key.isEmpty, name == next || name.hasPrefix(next + " ") else { break }
+                said = next
+                body.removeFirst()
+            }
+            sections.append(.init(heading: chapter.label, level: 2, paragraphs: body))
+        }
+        return ReadableDocument(title: title, author: author, sections: sections)
     }
 
     /// Each page's text, as it stands, with each line's main size and the small runs of digits or symbols in it, which

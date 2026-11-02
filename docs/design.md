@@ -637,6 +637,13 @@ rendered, and kept until the reading is deleted, so Resume and Try Again read th
 without fetching the page again, and **Show Text** shows it; a document that cannot be saved,
 or a saved one that cannot be read back, fails the reading rather than loading the source again.
 
+**Chapter Files…**, on a made reading with chapters, asks for a folder (the last one chosen is offered again, such as one
+that syncs to a phone) and makes a folder there named after the reading: one `.m4a` per chapter, `01 Chapter Name.m4a`,
+tagged with the chapter and the reading's title, and `Playlist.m3u8` (`ReadingChapterFiles`; `voiceislocal read
+--chapter-files`, beside the finished file). The audio is copied from the finished file without encoding it again. It is
+made under a hidden name and named last, a name already taken gets a number, and it is the person's from then on:
+deleting the reading leaves it. The one file remains the reading, which the app plays and follows.
+
 **Show Text** opens `ReadingTextWindow`, one window at a time, to read along with the voice: the
 saved text (`ReadableDocument.plainText`, the same string the script speaks), selectable and copyable
 but never editable, over ▶ Play, a seek bar, **Follow Voice**, and **Copy Text** (the whole text). Space
@@ -1937,7 +1944,9 @@ without deliberate selection.
 
 
 A PDF is read as a person would read a book (`PDFBookStructure`), from what the file shows of its structure; no model
-is involved, so the same file always reads the same. The title is said first, then "By <author>" when the file names an
+is involved, so the same file always reads the same. A PDF's chapters are the entries its outline names at chapter depth, when it has at least two: a heading-like line in the
+text is not a chapter then. The outline's name stands in for the lines that say it. Without them, headings are told by their
+look. The title is said first, then "By <author>" when the file names an
 author that its first pages also print (a file's author field often holds an account or a tool). Parts the outline
 names as cover, half title, title page (when the title is known), endorsements, copyright, contents, lists of figures,
 bibliography, references, or index are left out; without an outline, a contents page, a copyright page and an index

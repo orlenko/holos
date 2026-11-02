@@ -127,6 +127,127 @@ extension PDFBookPages {
         #expect(PDFBookStructure.roles(content: content, outline: [], hasTitle: true)[1] == .body)
     }
 
+    // MARK: Chapters
+
+    /// A book's chapters are those its outline names, not every line that looks like a heading, and its name stands
+    /// for the lines that say it.
+    @Test func chaptersComeFromTheOutline() throws {
+        let filler = Self.filler
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "Foreword\n\(filler) It ends here.\n\nA Subheading\n\n\(filler) It ends too."),
+            .init(text: "Chapter 1\nThe Long Name\n\(filler) It goes"),
+            .init(text: "on into the next page.\nChapter 2\nThe Other Name\n\(filler) Done."),
+        ]
+        let outline: [PDFBookStructure.OutlineEntry] = [
+            .init(label: "Foreword", page: 0), .init(label: "Chapter 1 The Long Name", page: 1),
+            .init(label: "Chapter 2 The Other Name", page: 2),
+        ]
+        let book = try PDFBookStructure.book(pages: pages, outline: outline, bodySize: 10, hasTitle: true)
+        #expect(book.chapters.map(\.label) == outline.map(\.label))
+        #expect(!book.paragraphs.joined().unicodeScalars.contains { $0.value >= 0x100000 })
+        let document = PDFReader.document(book, declaredTitle: "A Book", author: nil)
+        #expect(document.sections.map(\.heading) == outline.map(\.label))
+        #expect(document.sections[1].paragraphs.first?.hasPrefix(filler) == true)
+        #expect(document.sections[1].paragraphs.joined().contains("It goes on into the next page."))
+        #expect(document.sections[0].paragraphs.contains("A Subheading"))
+        #expect(!ReadingScript(document: document).text.contains("Chapter 1\n"))
+        #expect(document.plainText == ReadingScript(document: document).text)
+    }
+
+    /// A chapter's name as long as the lines of text does not run on into them.
+    @Test func aLongChapterNameStaysApartFromTheText() throws {
+        let name = "Chapter 1 A Name Running To Nearly The Whole Width Of The Page Here Today"
+        let body = Self.filler
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "Foreword\n\(body) Done."), .init(text: "\(name)\n\(body)\n\(body) Done."),
+        ]
+        let book = try PDFBookStructure.book(pages: pages, outline: [.init(label: "Foreword", page: 0), .init(label: name, page: 1)],
+                                             bodySize: 10, hasTitle: true)
+        let document = PDFReader.document(book, declaredTitle: "A Book", author: nil)
+        #expect(document.sections[1].heading == name)
+        #expect(!ReadingScript(document: document).text.replacingOccurrences(of: name, with: "", options: [.anchored]).contains("\(name) This"))
+        #expect(document.sections[1].paragraphs.first?.hasPrefix(body) == true)
+    }
+
+    /// A chapter's number and its long name, with a blank line between, are its name, said once.
+    @Test func aChapterNameAcrossABlankLineIsSaidOnce() throws {
+        let title = "A Name Running To Nearly The Whole Width Of The Page Here Today For Sure"
+        let body = Self.filler
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "Foreword\n\(body) Done."), .init(text: "Chapter 1\n\n\(title)\n\(body)\n\(body) Done."),
+        ]
+        let name = "Chapter 1 \(title)"
+        let book = try PDFBookStructure.book(pages: pages, outline: [.init(label: "Foreword", page: 0), .init(label: name, page: 1)],
+                                             bodySize: 10, hasTitle: true)
+        let document = PDFReader.document(book, declaredTitle: "A Book", author: nil)
+        #expect(document.sections[1].heading == name)
+        #expect(document.sections[1].paragraphs.first?.hasPrefix(body) == true)
+        #expect(!document.sections[1].paragraphs.joined().contains(title))
+    }
+
+    /// With no title in the file, the book's title is told from the one line before its first chapter.
+    @Test func aTitleBeforeTheFirstChapterIsStillTheTitle() {
+        let book = PDFBookStructure.Book(paragraphs: ["A Book", "Chapter One", "Prose of the chapter."],
+                                         chapters: [(1, "Chapter One"), (2, "Chapter Two")])
+        #expect(PDFReader.document(book, declaredTitle: nil, author: nil).title == "A Book")
+    }
+
+    /// An empty title in the file is no title.
+    @Test func anEmptyDeclaredTitleIsNoTitle() {
+        let book = PDFBookStructure.Book(paragraphs: ["A Book", "Prose of the first chapter.", "Prose of the second."],
+                                         chapters: [(1, "Chapter One"), (2, "Chapter Two")])
+        #expect(PDFReader.document(book, declaredTitle: "", author: nil).title == "A Book")
+        #expect(PDFReader.document(book, declaredTitle: "  ", author: nil).title == "A Book")
+    }
+
+    /// Chapters sharing one page are still chapters, in their order on it.
+    @Test func chaptersCanShareAPage() throws {
+        let filler = Self.filler
+        let page = PDFBookStructure.Page(text: "Chapter 1\n\(filler) Done.\n\nA Subheading\n\n\(filler) Done.\n\nChapter 2\n\(filler) Done.")
+        let book = try PDFBookStructure.book(pages: [page], outline: [.init(label: "Chapter 1", page: 0), .init(label: "Chapter 2", page: 0)],
+                                             bodySize: 10, hasTitle: true)
+        let document = PDFReader.document(book, declaredTitle: "A Book", author: nil)
+        #expect(document.sections.map(\.heading) == ["Chapter 1", "Chapter 2"])
+        #expect(document.sections[0].paragraphs.contains("A Subheading"))
+    }
+
+    /// Headings wrapped over lines are told apart by all of their lines, on one page.
+    @Test func wrappedChapterNamesOnOnePageAreToldApart() throws {
+        let filler = Self.filler
+        let page = PDFBookStructure.Page(text: "Chapter\n1\n\(filler) First.\n\nChapter\n2\n\(filler) Second.")
+        let book = try PDFBookStructure.book(pages: [page], outline: [.init(label: "Chapter 1", page: 0), .init(label: "Chapter 2", page: 0)],
+                                             bodySize: 10, hasTitle: true)
+        let document = PDFReader.document(book, declaredTitle: "A Book", author: nil)
+        #expect(document.sections.map(\.heading) == ["Chapter 1", "Chapter 2"])
+        #expect(document.sections[0].paragraphs.joined().hasSuffix("First."))
+        #expect(document.sections[1].paragraphs.joined().hasSuffix("Second."))
+    }
+
+    /// A title page in the outline gives the book its title, and is not a chapter.
+    @Test func aTitlePageInTheOutlineIsNoChapter() throws {
+        let filler = Self.filler
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A Book\n\nBy Jane Writer"), .init(text: "Chapter 1\n\(filler) Done."), .init(text: "Chapter 2\n\(filler) Done."),
+        ]
+        let outline: [PDFBookStructure.OutlineEntry] = [
+            .init(label: "Title Page", page: 0), .init(label: "Chapter 1", page: 1), .init(label: "Chapter 2", page: 2),
+        ]
+        let book = try PDFBookStructure.book(pages: pages, outline: outline, bodySize: 10, hasTitle: false)
+        let document = PDFReader.document(book, declaredTitle: nil, author: nil)
+        #expect(document.title == "A Book")
+        #expect(!document.sections.contains { $0.heading == "Title Page" })
+        #expect(document.sections.suffix(2).map(\.heading) == ["Chapter 1", "Chapter 2"])
+    }
+
+    /// Without chapters named, headings are told by their look, as before.
+    @Test func withoutChaptersHeadingsAreToldByTheirLook() throws {
+        let filler = Self.filler
+        let book = try PDFBookStructure.book(pages: [.init(text: "\(filler) Ends here.\n\nA Heading\n\n\(filler) Done.")], outline: [],
+                                             bodySize: 10, hasTitle: true)
+        #expect(book.chapters.isEmpty)
+        #expect(PDFReader.document(book, declaredTitle: "A Book", author: nil).sections.contains { $0.heading == "A Heading" })
+    }
+
     // MARK: Page numbers
 
     @Test func aChaptersOwnRunningHeadWithItsPageNumberIsDropped() {

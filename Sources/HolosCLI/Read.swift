@@ -53,6 +53,8 @@ struct Read: AsyncParsableCommand {
     var title: String?
     @Flag(help: "Continue an interrupted reading after verifying its source, settings, and rendered parts.")
     var resume = false
+    @Flag(help: "Also make one audio file per chapter, with a playlist, in a folder beside the finished file.")
+    var chapterFiles = false
     @Flag(help: "Play the finished file.")
     var play = false
     @Flag(help: "Print the title, voice, output file, chapters, and text that would be read, without rendering.")
@@ -87,7 +89,7 @@ struct Read: AsyncParsableCommand {
                                              fallbackName: input.deletingPathExtension().lastPathComponent))
         }
         let request = ReadRequest(output: output, voice: voice, rate: rate, title: title, resume: resume,
-                                  printText: printText)
+                                  printText: printText, chapterFiles: chapterFiles)
         // Ctrl-C (or SIGTERM) cancels the page load or the render, so its cleanup runs (the partly
         // joined file is removed; rendered parts are kept for --resume), then the command exits
         // 130 (143). A second one ends the process at once; the next run removes what that leaves
@@ -129,6 +131,8 @@ struct Read: AsyncParsableCommand {
                 throw HolosError.incomplete("Playback skipped: another Voice is Local playback kept it waiting. The reading is saved at \(finished.path).")
             }
         }
+        // The command did its main job, with a warning (Sources/HolosCLI/README.md).
+        if progress.warned { throw ExitCode(3) }
     }
 
     /// Loads the page at `address` and reduces it to its article, as a document to read.
@@ -206,7 +210,27 @@ struct Read: AsyncParsableCommand {
             location: location, resume: request.resume)
         // The file is published: bookkeeping that failed after that is a warning, not a failure.
         for warning in result.warnings { Console.error("Warning: \(warning)") }
+        if request.chapterFiles {
+            try await makeChapterFiles(of: result.output, manifest: result.manifest, title: metadata.title ?? name,
+                                       author: metadata.author, progress: progress)
+        }
         return result.output
+    }
+
+    /// The reading is made by now: anything short of an interrupt here is a warning, with its path still printed
+    /// (`ReadProgress` invariant 2).
+    @MainActor private static func makeChapterFiles(of output: URL, manifest: ReadingManifest, title: String, author: String?,
+                                                    progress: ReadProgress) async throws {
+        do {
+            guard let duration = manifest.duration else { throw HolosError.unavailable("Its length is not known.") }
+            let folder = try await ReadingChapterFiles.make(from: output, title: title, author: author, chapters: manifest.chapters,
+                                                            duration: duration, in: output.deletingLastPathComponent())
+            Console.error("Chapter files: \(folder.path)")
+        } catch {
+            try Task.checkCancellation()
+            Console.error("Warning: no chapter files: \(error.localizedDescription)")
+            progress.warned = true
+        }
     }
 }
 
@@ -231,12 +255,18 @@ private struct ReadRequest: Sendable {
     let title: String?
     let resume: Bool
     let printText: Bool
+    let chapterFiles: Bool
 }
 
 /// How far a `read` got: set once rendering starts, so an interruption or failure before that
 /// suggests no `--resume`.
+///
+/// Invariants:
+/// 1. `resumeHint` is set once the reading's place is known, before its render starts.
+/// 2. `warned` is set only after the finished file is published, so exit 3 always follows its printed path.
 @MainActor private final class ReadProgress {
     var resumeHint: String?
+    var warned = false
 }
 
 /// The web address in a `read` source, or nil for a file path. Only https is read; http is refused with a hint.

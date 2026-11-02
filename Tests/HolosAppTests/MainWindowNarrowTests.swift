@@ -239,6 +239,33 @@ struct MainWindowNarrowTests {
             == "Try Again")
     }
 
+    /// A reading with chapters also offers Chapter Files…, and everything still fits at the window's narrowest.
+    @Test(arguments: [CGFloat(316), 700])
+    func aReadingWithChaptersOffersChapterFiles(width: CGFloat) throws {
+        var entry = ReadingEntry(source: .web(try #require(URL(string: "https://example.com/story"))),
+                                 requestedVoice: nil, speed: 1)
+        entry.title = "A long book about planning the next quarter"
+        entry.state = .done
+        entry.duration = 192
+        entry.chapters = 12
+        let row = ReadingRowView(identifier: NSUserInterfaceItemIdentifier("reading"))
+        row.frame = NSRect(x: 0, y: 0, width: width, height: ReadingRowView.height)
+        row.show(entry, activity: nil, fileProblem: nil, size: 1_200_000, playback: nil)
+        row.layoutSubtreeIfNeeded()
+        row.layoutSubtreeIfNeeded()
+        let buttons = Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
+        #expect(buttons.contains { $0.accessibilityLabel() == "Chapter Files… — \(entry.title)" })
+        for button in buttons {
+            let frame = try #require(button.superview).convert(button.frame, to: row)
+            #expect(frame.minX >= 0 && frame.maxX <= row.bounds.width, "\(button.title) is cut off")
+        }
+        #expect(Self.brokenConstraints(in: row).isEmpty)
+        entry.chapters = 1
+        row.show(entry, activity: nil, fileProblem: nil, size: 1_200_000, playback: nil)
+        #expect(!Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
+            .contains { $0.accessibilityLabel()?.hasPrefix("Chapter Files") == true })
+    }
+
     /// People with a person selected whose (made-up) name is long: the name goes into the suggestion checkbox,
     /// which wraps, and into Forget…, which truncates and keeps the whole title in its tooltip.
     @Test(.timeLimit(.minutes(1)), arguments: [true, false])
