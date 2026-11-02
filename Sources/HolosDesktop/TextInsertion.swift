@@ -416,7 +416,10 @@ struct AXHandle: Equatable {
 /// Invariants:
 /// 1. Every chunk checks secure input and the captured app, window and element before posting events.
 /// 2. Typing rechecks the captured focus every 16 characters and stops when it changes.
-/// 3. Rex receives only characters whose physical key and Shift state match the active keyboard layout.
+/// 3. Rex and a remote screen receive only characters whose physical key and Shift state match the active keyboard
+///    layout.
+/// 4. A remote screen is typed into only while no key that would count on the other computer is held
+///    (`KeyboardTyping.heldKeysReachRemote`), and its Shift is pressed and released as a key.
 @MainActor public final class KeystrokeTarget {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "insertion")
 
@@ -426,7 +429,12 @@ struct AXHandle: Equatable {
     static let terminalBundleIDs: Set<String> = [
         "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "com.github.wez.wezterm",
         "net.kovidgoyal.kitty", "org.alacritty", "dev.warp.Warp-Stable", "com.superlogical.rex",
+        "com.apple.ScreenSharing",
     ]
+
+    /// Windows onto another computer: what runs there is unknown, so they are treated as a terminal (no backticks), the
+    /// one app whose text can run as a command. They pass on keys, not text.
+    static let remoteScreenBundleIDs: Set<String> = ["com.apple.ScreenSharing"]
 
     public let pid: pid_t
     public let appName: String
@@ -435,17 +443,20 @@ struct AXHandle: Equatable {
     /// For a terminal, the window and session focused at key-down, which must still have focus before each chunk.
     private let terminalFocus: TerminalFocus<AXHandle>?
     private let requiresPhysicalKeys: Bool
+    private let isRemoteScreen: Bool
 
     /// A known terminal (`captureTerminal`), not a web editor or another app's field.
     public var isTerminal: Bool { terminalFocus != nil }
 
     private init(pid: pid_t, appName: String, element: AXUIElement? = nil,
-                 terminalFocus: TerminalFocus<AXHandle>? = nil, requiresPhysicalKeys: Bool = false) {
+                 terminalFocus: TerminalFocus<AXHandle>? = nil, requiresPhysicalKeys: Bool = false,
+                 isRemoteScreen: Bool = false) {
         self.pid = pid
         self.appName = appName
         self.element = element
         self.terminalFocus = terminalFocus
         self.requiresPhysicalKeys = requiresPhysicalKeys
+        self.isRemoteScreen = isRemoteScreen
     }
 
     /// A target when the frontmost app is a known terminal; nil otherwise. Typing stops when the terminal's
@@ -462,7 +473,8 @@ struct AXHandle: Equatable {
         }
         log.notice("Terminal \(bundleID, privacy: .public) focus tracked by \(String(describing: focus.tracking), privacy: .public)")
         return KeystrokeTarget(pid: pid, appName: app.localizedName ?? bundleID, terminalFocus: focus,
-                               requiresPhysicalKeys: bundleID == "com.superlogical.rex")
+                               requiresPhysicalKeys: bundleID == "com.superlogical.rex" || remoteScreenBundleIDs.contains(bundleID),
+                               isRemoteScreen: remoteScreenBundleIDs.contains(bundleID))
     }
 
     /// A target for a focused editable field that cannot take a direct Accessibility write, such as a
@@ -505,6 +517,10 @@ struct AXHandle: Equatable {
             let moved = terminalFocus == nil ? "a different field" : "a different terminal tab, pane or window"
             return .targetChanged("Focus moved to \(moved); copy the transcript explicitly.")
         }
+        // Invariant 4.
+        if isRemoteScreen, KeyboardTyping.heldKeysReachRemote(CGEventSource.flagsState(.hidSystemState)) {
+            return .needsCopy("\(appName) passes held keys on to the other computer, so typing now could run a shortcut there. Dictate with Right Option.")
+        }
         let strokes: [KeyboardStroke]?
         if requiresPhysicalKeys {
             guard let map = KeyboardTyping.currentKeyMap(),
@@ -533,7 +549,8 @@ struct AXHandle: Equatable {
                 return .unverified("Focus moved while typing; check \(appName) before pasting the rest.")
             }
             let stroke = strokes?[index] ?? KeyboardStroke(keyCode: 0, flags: [])
-            guard let events = stroke.events(for: character, source: source, marker: Self.syntheticEventMarker) else {
+            guard let events = stroke.events(for: character, source: source, marker: Self.syntheticEventMarker,
+                                             pressingShift: isRemoteScreen) else {
                 return .unverified("Could not create a keystroke; inspect \(appName) before copying.")
             }
             for event in events {

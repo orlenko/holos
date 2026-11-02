@@ -85,6 +85,36 @@ private func exampleLayout() -> [Character: KeyboardStroke] {
     }
 }
 
+@Test func aRemoteScreenSeesShiftPressedAndReleasedAroundTheKey() throws {
+    let source = CGEventSource(stateID: .privateState)
+    let shifted = KeyboardStroke(keyCode: CGKeyCode(kVK_ANSI_A), flags: .maskShift)
+    let events = try #require(shifted.events(for: "A", source: source, marker: 42, pressingShift: true))
+    #expect(events.map(\.type) == [.flagsChanged, .keyDown, .keyUp, .flagsChanged])
+    #expect(events.map { $0.getIntegerValueField(.keyboardEventKeycode) } == [kVK_Shift, kVK_ANSI_A, kVK_ANSI_A, kVK_Shift].map(Int64.init))
+    #expect(events.map { $0.flags.contains(.maskShift) } == [true, true, true, false])
+    #expect(events.allSatisfy { $0.getIntegerValueField(.eventSourceUserData) == 42 })
+
+    // An unshifted key presses nothing else, and Shift is only pressed when asked for.
+    let plain = KeyboardStroke(keyCode: CGKeyCode(kVK_ANSI_A), flags: [])
+    #expect(try #require(plain.events(for: "a", source: source, marker: 42, pressingShift: true)).map(\.type) == [.keyDown, .keyUp])
+    #expect(try #require(shifted.events(for: "A", source: source, marker: 42)).map(\.type) == [.keyDown, .keyUp])
+}
+
+@Test func keysHeldForTheOtherComputerAreTold() {
+    // Right Option alone never reaches the remote screen: the hotkey tap consumes it.
+    #expect(!KeyboardTyping.heldKeysReachRemote([]))
+    #expect(!KeyboardTyping.heldKeysReachRemote(.maskAlternate))
+    // Control with Option and Space leaves Control and Option held on the other computer.
+    #expect(KeyboardTyping.heldKeysReachRemote([.maskControl, .maskAlternate]))
+    #expect(KeyboardTyping.heldKeysReachRemote(.maskCommand))
+    #expect(KeyboardTyping.heldKeysReachRemote(.maskShift))
+}
+
+@Test @MainActor func screenSharingIsTypedIntoAsARemoteScreen() {
+    #expect(KeystrokeTarget.terminalBundleIDs.contains("com.apple.ScreenSharing"))
+    #expect(KeystrokeTarget.remoteScreenBundleIDs.isSubset(of: KeystrokeTarget.terminalBundleIDs))
+}
+
 @Test @MainActor func macOSUSLayoutProducesRealLetterAndPunctuationKeysWithoutChangingTheInputSource() throws {
     let filter = [kTISPropertyInputSourceID as String: "com.apple.keylayout.US"] as CFDictionary
     let sources = try #require(TISCreateInputSourceList(filter, true)?.takeRetainedValue())

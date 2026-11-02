@@ -520,6 +520,8 @@ private func codeModel(_ spans: [String: String], asked: Asked? = nil) -> Spoken
     }
     #expect(SpokenCode.isTerminal(appName: "com.apple.Terminal"))
     #expect(SpokenCode.isTerminal(appName: "com.superlogical.rex"))
+    #expect(SpokenCode.isTerminal(appName: "Screen Sharing"))
+    #expect(SpokenCode.isTerminal(appName: "com.apple.ScreenSharing"))
     #expect(!SpokenCode.isTerminal(appName: "Notes"))
     #expect(!SpokenCode.isTerminal(appName: nil))
 }

@@ -292,7 +292,7 @@ replacement, attempted only when the focused field is a supported writable,
 non-secure plain text field and the app, field, selection, text length, and nearby
 text still match the snapshot taken at key-down or after the previous chunk. Each
 write is read back. For a known terminal app (Terminal, iTerm2, Ghostty, WezTerm,
-kitty, Alacritty, Warp, Rex), which has no writable text field, chunks are typed as
+kitty, Alacritty, Warp, Rex, or Screen Sharing), which has no writable text field, chunks are typed as
 keystrokes posted only to the terminal that was frontmost at key-down, and only
 while the terminal session focused at key-down still has focus: before each chunk
 (and every 16 characters within one) Voice is Local checks that the terminal is
@@ -314,6 +314,13 @@ and uppercase letters, spaces and punctuation at an empty prompt without pressin
 cannot type directly (including emoji and dead-key combinations) keep the entire unwritten chunk for Copy Result.
 Check another keyboard layout too: letters must follow that layout, and text requiring another layout must be
 kept for copying. No Option or Control combinations are synthesized.
+
+Screen Sharing gets the same physical keys, and Shift pressed and released as its own key. What runs on the other
+computer is unknown, so it is treated as a terminal: code tokens get no backticks. Dictate into a terminal and a text
+editor on the other Mac, and check uppercase letters and punctuation. Both Macs need the same keyboard layout, which
+Voice is Local cannot check. Right Option types as you speak. With Control-Option-Space, Control and Option reach the
+other computer before the dictation starts, so typing is refused and the text waits for Copy Result. Moving to another
+Screen Sharing window stops typing.
 
 Hesitation sounds ("um", "uh", "ah", "erm", "hmm") and the commas around them are
 removed before corrections are applied, unless **Remove filler words** is turned
