@@ -443,27 +443,28 @@ struct AXHandle: Equatable {
     /// For a terminal, the window and session focused at key-down, which must still have focus before each chunk.
     private let terminalFocus: TerminalFocus<AXHandle>?
     private let requiresPhysicalKeys: Bool
-    private let isRemoteScreen: Bool
+    /// For a remote screen, the shortcut that started this dictation, which says what reached it; nil for anything else.
+    private let remoteShortcut: HotkeyChoice?
 
     /// A known terminal (`captureTerminal`), not a web editor or another app's field.
     public var isTerminal: Bool { terminalFocus != nil }
 
     private init(pid: pid_t, appName: String, element: AXUIElement? = nil,
                  terminalFocus: TerminalFocus<AXHandle>? = nil, requiresPhysicalKeys: Bool = false,
-                 isRemoteScreen: Bool = false) {
+                 remoteShortcut: HotkeyChoice? = nil) {
         self.pid = pid
         self.appName = appName
         self.element = element
         self.terminalFocus = terminalFocus
         self.requiresPhysicalKeys = requiresPhysicalKeys
-        self.isRemoteScreen = isRemoteScreen
+        self.remoteShortcut = remoteShortcut
     }
 
     /// A target when the frontmost app is a known terminal; nil otherwise. Typing stops when the terminal's
     /// focused window or session (tab or pane) changes, as far as the terminal reports them to Accessibility.
     /// Throws when the terminal's focus kept changing while it was captured: the session focused at key-down is
     /// unknown, so this dictation must not be typed anywhere.
-    public static func captureTerminal() throws -> KeystrokeTarget? {
+    public static func captureTerminal(shortcut: HotkeyChoice) throws -> KeystrokeTarget? {
         guard let app = NSWorkspace.shared.frontmostApplication,
               let bundleID = app.bundleIdentifier, terminalBundleIDs.contains(bundleID) else { return nil }
         let pid = app.processIdentifier
@@ -474,7 +475,7 @@ struct AXHandle: Equatable {
         log.notice("Terminal \(bundleID, privacy: .public) focus tracked by \(String(describing: focus.tracking), privacy: .public)")
         return KeystrokeTarget(pid: pid, appName: app.localizedName ?? bundleID, terminalFocus: focus,
                                requiresPhysicalKeys: bundleID == "com.superlogical.rex" || remoteScreenBundleIDs.contains(bundleID),
-                               isRemoteScreen: remoteScreenBundleIDs.contains(bundleID))
+                               remoteShortcut: remoteScreenBundleIDs.contains(bundleID) ? shortcut : nil)
     }
 
     /// A target for a focused editable field that cannot take a direct Accessibility write, such as a
@@ -518,7 +519,7 @@ struct AXHandle: Equatable {
             return .targetChanged("Focus moved to \(moved); copy the transcript explicitly.")
         }
         // Invariant 4.
-        if isRemoteScreen, KeyboardTyping.heldKeysReachRemote() {
+        if let remoteShortcut, KeyboardTyping.heldKeysReachRemote(shortcut: remoteShortcut) {
             return .needsCopy("\(appName) passes held keys on to the other computer, so typing now could run a shortcut there. Dictate with Right Option.")
         }
         let strokes: [KeyboardStroke]?
@@ -550,7 +551,7 @@ struct AXHandle: Equatable {
             }
             let stroke = strokes?[index] ?? KeyboardStroke(keyCode: 0, flags: [])
             guard let events = stroke.events(for: character, source: source, marker: Self.syntheticEventMarker,
-                                             pressingShift: isRemoteScreen) else {
+                                             pressingShift: remoteShortcut != nil) else {
                 return .unverified("Could not create a keystroke; inspect \(appName) before copying.")
             }
             for event in events {

@@ -524,7 +524,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             let terminal: KeystrokeTarget?
             var terminalRefusal: String?
             do {
-                terminal = try KeystrokeTarget.captureTerminal()
+                terminal = try KeystrokeTarget.captureTerminal(shortcut: shortcut)
             } catch {
                 terminal = nil
                 terminalRefusal = error.localizedDescription

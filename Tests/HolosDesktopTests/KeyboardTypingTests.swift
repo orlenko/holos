@@ -101,15 +101,19 @@ private func exampleLayout() -> [Character: KeyboardStroke] {
 }
 
 @Test func keysHeldForTheOtherComputerAreTold() {
-    // Right Option alone never reaches the remote screen: the hotkey tap consumes it.
-    #expect(!KeyboardTyping.heldKeysReachRemote([], leftOption: false))
-    #expect(!KeyboardTyping.heldKeysReachRemote(.maskAlternate, leftOption: false))
-    // Left Option does, also beside Right Option, and after Control-Option-Space's Control is released.
-    #expect(KeyboardTyping.heldKeysReachRemote(.maskAlternate, leftOption: true))
-    // Control with Option and Space leaves Control and Option held on the other computer.
-    #expect(KeyboardTyping.heldKeysReachRemote([.maskControl, .maskAlternate], leftOption: false))
-    #expect(KeyboardTyping.heldKeysReachRemote(.maskCommand, leftOption: false))
-    #expect(KeyboardTyping.heldKeysReachRemote(.maskShift, leftOption: false))
+    // Right Option alone never reaches the remote screen when it is the hold-to-talk key: the hotkey tap consumes it.
+    #expect(!KeyboardTyping.heldKeysReachRemote([], leftOption: false, shortcut: .rightOption))
+    #expect(!KeyboardTyping.heldKeysReachRemote(.maskAlternate, leftOption: false, shortcut: .rightOption))
+    // Left Option does, also beside Right Option.
+    #expect(KeyboardTyping.heldKeysReachRemote(.maskAlternate, leftOption: true, shortcut: .rightOption))
+    // With Control-Option-Space every Option counts, also Right Option left held after Control is released.
+    #expect(KeyboardTyping.heldKeysReachRemote(.maskAlternate, leftOption: false, shortcut: .controlOptionSpace))
+    #expect(KeyboardTyping.heldKeysReachRemote([.maskControl, .maskAlternate], leftOption: false, shortcut: .controlOptionSpace))
+    #expect(!KeyboardTyping.heldKeysReachRemote([], leftOption: false, shortcut: .controlOptionSpace))
+    for shortcut in HotkeyChoice.allCases {
+        #expect(KeyboardTyping.heldKeysReachRemote(.maskCommand, leftOption: false, shortcut: shortcut))
+        #expect(KeyboardTyping.heldKeysReachRemote(.maskShift, leftOption: false, shortcut: shortcut))
+    }
 }
 
 @Test @MainActor func screenSharingIsTypedIntoAsARemoteScreen() {

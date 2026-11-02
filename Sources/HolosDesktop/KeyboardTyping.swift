@@ -56,18 +56,19 @@ enum KeyboardTyping {
         return result
     }
 
-    /// Whether a key held now also counts on the other computer. A remote screen sees every key that reaches it. The
-    /// hold-to-talk Right Option does not (`HotkeyReducer` consumes it), which the flags cannot tell from Left Option, so
-    /// that one is asked for by its key. Control with Option and Space does reach it, before Space starts the dictation.
-    /// Not told apart: Right Option left held from that shortcut after Control is released.
-    static func heldKeysReachRemote(_ flags: CGEventFlags, leftOption: Bool) -> Bool {
-        leftOption || !flags.intersection([.maskControl, .maskCommand, .maskShift]).isEmpty
+    /// Whether a key held now also counts on the other computer. A remote screen sees every key that reaches it. With
+    /// the hold-to-talk shortcut Right Option does not (`HotkeyReducer` consumes it), which the flags cannot tell from
+    /// Left Option, so that one is asked for by its key. With Control-Option-Space every Option does, and Control too,
+    /// before Space starts the dictation.
+    static func heldKeysReachRemote(_ flags: CGEventFlags, leftOption: Bool, shortcut: HotkeyChoice) -> Bool {
+        let option = shortcut == .rightOption ? leftOption : flags.contains(.maskAlternate) || leftOption
+        return option || !flags.intersection([.maskControl, .maskCommand, .maskShift]).isEmpty
     }
 
     /// The same, for the keys held now.
-    static func heldKeysReachRemote() -> Bool {
+    static func heldKeysReachRemote(shortcut: HotkeyChoice) -> Bool {
         heldKeysReachRemote(CGEventSource.flagsState(.hidSystemState),
-                            leftOption: CGEventSource.keyState(.hidSystemState, key: CGKeyCode(kVK_Option)))
+                            leftOption: CGEventSource.keyState(.hidSystemState, key: CGKeyCode(kVK_Option)), shortcut: shortcut)
     }
 
     /// Preflight the entire chunk so an untypable character never leaves a partially typed chunk.
