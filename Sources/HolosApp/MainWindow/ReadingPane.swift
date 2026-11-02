@@ -610,6 +610,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         case .showText: showText(id)
         case .share: share(id, from: cell.shareAnchor)
         case .reveal: reveal(id)
+        case .chapterFiles: chooseChapterFolder(id)
         case .delete: confirmDelete(id)
         case .seek(let time): seek(id, to: time)
         }
@@ -719,6 +720,42 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         textWindow = window
         window.show(playback(of: id))
         window.showWindow(nil)
+    }
+
+    /// Chapter Files…: asks where, remembering the last folder (a drive that syncs to a phone, say), then makes them.
+    private func chooseChapterFolder(_ id: UUID) {
+        guard let entry = controller.entry(id), entry.state == .done, controller.fileProblem(entry) == nil,
+              let window = view.window else {
+            NSSound.beep()
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Make Chapter Files"
+        panel.message = "Choose where to put a folder of “\(entry.title)”, with one audio file per chapter and a playlist."
+        panel.directoryURL = ReadingPreferences.chapterFolder
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let parent = panel.url else { return }
+            ReadingPreferences.chapterFolder = parent
+            self?.makeChapterFiles(entry, in: parent)
+        }
+    }
+
+    private func makeChapterFiles(_ entry: ReadingEntry, in parent: URL) {
+        showMessage("Making chapter files of “\(entry.title)”…", problem: false)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let folder = try await self.controller.makeChapterFiles(entry, in: parent)
+                self.showMessage("Chapter files of “\(entry.title)” are in \(folder.path).", problem: false)
+                NSWorkspace.shared.activateFileViewerSelecting([folder])
+            } catch {
+                self.showMessage("Chapter files of “\(entry.title)” could not be made: \(error.localizedDescription)",
+                                 problem: true)
+            }
+        }
     }
 
     private func reveal(_ id: UUID) {

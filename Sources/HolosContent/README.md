@@ -26,7 +26,7 @@ list (docs/design.md "Reading section", "Text-to-speech").
 - `ReadingLibraryStore` / `ReadingLibrary`: the Reading list's index under `<supportRoot>/ReadingLibrary`, and the
   decisions about it and its readings' files, in `ReadingLibrary+<Part>.swift` extensions (LaunchPolicy, Location,
   Ownership, FileStatus, Sharing, Deletion, Saved). The list's duration and position texts are the app's
-  (`ReadingLibrary+Formatting.swift` in HolosApp). `ReadingWorkQueue` runs readings one at a time; `ReadingPlayer`
+  (`ReadingLibrary+Formatting.swift` in HolosApp). `ReadingWorkQueue` runs readings one at a time; `ReadingChapterFiles` makes a finished reading's folder of chapter files and playlist; `ReadingPlayer`
   plays a finished one from its file, and one being made from its parts (`PartQueuePlayback` on a
   `ReadingSegmentOutput`, an `AVAudioEngine` in the app), handed over to its file once it is made, and `ReadingTimeline` says which sentence is spoken
   when, from its manifest.

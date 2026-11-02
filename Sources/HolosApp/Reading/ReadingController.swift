@@ -265,6 +265,30 @@ final class ReadingController {
         return try await offMain { try ReadingLibrary.copyForSharing(file, name: name, into: folder) }
     }
 
+    /// One audio file per chapter, with a playlist, in a new folder inside `parent` (`ReadingChapterFiles`), from a copy
+    /// of the file opened and checked, as Share… sends: its chapters are those its manifest recorded.
+    func makeChapterFiles(_ entry: ReadingEntry, in parent: URL) async throws -> URL {
+        let cache = entry.cache.map { ReadingOutput.fileURL(keepingSpelling: $0, isDirectory: true) }
+        let manifest = try await offMain { cache.flatMap(ReadingResumeVoice.manifest(in:)) }
+        guard let manifest, let duration = manifest.duration else {
+            throw HolosError.unavailable("Its chapters were not kept: make the reading again.")
+        }
+        let copy = try await shareableCopy(entry)
+        defer {
+            let holder = copy.deletingLastPathComponent()
+            Task.detached(priority: .utility) {
+                do {
+                    try FileManager.default.removeItem(at: holder)
+                } catch {
+                    Logger(subsystem: "ca.orlenko.holos.app", category: "reading")
+                        .error("Could not remove a chapter files copy: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+        return try await ReadingChapterFiles.make(from: copy, title: entry.title, author: manifest.author,
+                                                  chapters: manifest.chapters, duration: duration, in: parent)
+    }
+
     /// Where this session's Share… copies go (in the temporary folder); removed at a later launch, once this process
     /// has ended.
     static var shareFolder: URL { ReadingLibrary.sharingFolder(in: sharesFolder) }

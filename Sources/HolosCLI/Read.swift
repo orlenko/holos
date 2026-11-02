@@ -53,6 +53,8 @@ struct Read: AsyncParsableCommand {
     var title: String?
     @Flag(help: "Continue an interrupted reading after verifying its source, settings, and rendered parts.")
     var resume = false
+    @Flag(help: "Also make one audio file per chapter, with a playlist, in a folder beside the finished file.")
+    var chapterFiles = false
     @Flag(help: "Play the finished file.")
     var play = false
     @Flag(help: "Print the title, voice, output file, chapters, and text that would be read, without rendering.")
@@ -87,7 +89,7 @@ struct Read: AsyncParsableCommand {
                                              fallbackName: input.deletingPathExtension().lastPathComponent))
         }
         let request = ReadRequest(output: output, voice: voice, rate: rate, title: title, resume: resume,
-                                  printText: printText)
+                                  printText: printText, chapterFiles: chapterFiles)
         // Ctrl-C (or SIGTERM) cancels the page load or the render, so its cleanup runs (the partly
         // joined file is removed; rendered parts are kept for --resume), then the command exits
         // 130 (143). A second one ends the process at once; the next run removes what that leaves
@@ -206,6 +208,16 @@ struct Read: AsyncParsableCommand {
             location: location, resume: request.resume)
         // The file is published: bookkeeping that failed after that is a warning, not a failure.
         for warning in result.warnings { Console.error("Warning: \(warning)") }
+        if request.chapterFiles {
+            if let duration = result.manifest.duration, ReadingChapterFiles.tracks(chapters: result.manifest.chapters, duration: duration) != nil {
+                let folder = try await ReadingChapterFiles.make(
+                    from: result.output, title: metadata.title ?? name, author: metadata.author,
+                    chapters: result.manifest.chapters, duration: duration, in: result.output.deletingLastPathComponent())
+                Console.error("Chapter files: \(folder.path)")
+            } else {
+                Console.error("Warning: this reading has no chapters to make files of.")
+            }
+        }
         return result.output
     }
 }
@@ -231,6 +243,7 @@ private struct ReadRequest: Sendable {
     let title: String?
     let resume: Bool
     let printText: Bool
+    let chapterFiles: Bool
 }
 
 /// How far a `read` got: set once rendering starts, so an interruption or failure before that

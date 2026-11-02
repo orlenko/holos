@@ -127,6 +127,42 @@ extension PDFBookPages {
         #expect(PDFBookStructure.roles(content: content, outline: [], hasTitle: true)[1] == .body)
     }
 
+    // MARK: Chapters
+
+    /// A book's chapters are those its outline names, not every line that looks like a heading, and its name stands
+    /// for the lines that say it.
+    @Test func chaptersComeFromTheOutline() throws {
+        let filler = Self.filler
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "Foreword\n\(filler) It ends here.\n\nA Subheading\n\n\(filler) It ends too."),
+            .init(text: "Chapter 1\nThe Long Name\n\(filler) It goes"),
+            .init(text: "on into the next page.\nChapter 2\nThe Other Name\n\(filler) Done."),
+        ]
+        let outline: [PDFBookStructure.OutlineEntry] = [
+            .init(label: "Foreword", page: 0), .init(label: "Chapter 1 The Long Name", page: 1),
+            .init(label: "Chapter 2 The Other Name", page: 2),
+        ]
+        let book = try PDFBookStructure.book(pages: pages, outline: outline, bodySize: 10, hasTitle: true)
+        #expect(book.chapters.map(\.label) == outline.map(\.label))
+        #expect(!book.paragraphs.joined().unicodeScalars.contains { $0.value >= 0x100000 })
+        let document = PDFReader.document(book, declaredTitle: "A Book", author: nil)
+        #expect(document.sections.map(\.heading) == outline.map(\.label))
+        #expect(document.sections[1].paragraphs.first?.hasPrefix(filler) == true)
+        #expect(document.sections[1].paragraphs.joined().contains("It goes on into the next page."))
+        #expect(document.sections[0].paragraphs.contains("A Subheading"))
+        #expect(!ReadingScript(document: document).text.contains("Chapter 1\n"))
+        #expect(document.plainText == ReadingScript(document: document).text)
+    }
+
+    /// Without chapters named, headings are told by their look, as before.
+    @Test func withoutChaptersHeadingsAreToldByTheirLook() throws {
+        let filler = Self.filler
+        let book = try PDFBookStructure.book(pages: [.init(text: "\(filler) Ends here.\n\nA Heading\n\n\(filler) Done.")], outline: [],
+                                             bodySize: 10, hasTitle: true)
+        #expect(book.chapters.isEmpty)
+        #expect(PDFReader.document(book, declaredTitle: "A Book", author: nil).sections.contains { $0.heading == "A Heading" })
+    }
+
     // MARK: Page numbers
 
     @Test func aChaptersOwnRunningHeadWithItsPageNumberIsDropped() {

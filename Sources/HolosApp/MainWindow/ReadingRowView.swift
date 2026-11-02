@@ -14,7 +14,7 @@ import HolosSynthesis
 /// 3. An action always names the reading shown when it was pressed.
 @MainActor
 final class ReadingRowView: NSTableCellView {
-    enum Action: Equatable { case play, stop, retry, showText, share, reveal, delete, seek(Double) }
+    enum Action: Equatable { case play, stop, retry, showText, share, reveal, chapterFiles, delete, seek(Double) }
 
     /// The player's state for the reading it has loaded.
     struct Playback {
@@ -43,9 +43,10 @@ final class ReadingRowView: NSTableCellView {
     private let textButton = NSButton(title: "Show Text", target: nil, action: nil)
     private let shareButton = NSButton(title: "Share…", target: nil, action: nil)
     private let revealButton = NSButton(title: "Show in Finder", target: nil, action: nil)
+    private let chapterButton = NSButton(title: "Chapter Files…", target: nil, action: nil)
     private let deleteButton = NSButton(title: "Delete…", target: nil, action: nil)
     private var primaryAction: Action = .play
-    /// Show Text, Share…, Show in Finder and Delete… show only their symbols, in a row narrower than `compactWidth`.
+    /// Show Text, Share…, Show in Finder, Chapter Files… and Delete… show only their symbols, in a row narrower than `compactWidth`.
     private var compact = false
     /// The reading shown is loaded in the player.
     private var showsSeekBar = false
@@ -60,7 +61,7 @@ final class ReadingRowView: NSTableCellView {
     static let compactWidth: CGFloat = 600
     private static let compactSymbols: [String: String] = ["Show Text": "doc.plaintext",
                                                            "Share…": "square.and.arrow.up",
-                                                           "Show in Finder": "folder", "Delete…": "trash"]
+                                                           "Show in Finder": "folder", "Chapter Files…": "list.number", "Delete…": "trash"]
 
     var shareAnchor: NSView { shareButton }
 
@@ -84,6 +85,7 @@ final class ReadingRowView: NSTableCellView {
         for (button, selector) in [(primary, #selector(primaryPressed)), (stopButton, #selector(stopPressed)),
                                    (transport, #selector(transportPressed)), (textButton, #selector(textPressed)),
                                    (shareButton, #selector(sharePressed)), (revealButton, #selector(revealPressed)),
+                                   (chapterButton, #selector(chapterFilesPressed)),
                                    (deleteButton, #selector(deletePressed))] {
             button.target = self
             button.action = selector
@@ -94,6 +96,7 @@ final class ReadingRowView: NSTableCellView {
         textButton.toolTip = "Read or copy the text this reading reads"
         shareButton.toolTip = "Send the audio file with AirDrop, Messages, Mail… (⇧⌘S)"
         revealButton.toolTip = "Show the audio file in Finder"
+        chapterButton.toolTip = "Make one audio file per chapter, with a playlist, in a folder you choose"
         deleteButton.toolTip = "Delete this reading and its audio file (⌫)"
         textField = title
 
@@ -104,7 +107,7 @@ final class ReadingRowView: NSTableCellView {
         text.orientation = .vertical
         text.alignment = .leading
         text.spacing = 2
-        let buttons = NSStackView(views: [primary, stopButton, textButton, shareButton, revealButton, deleteButton])
+        let buttons = NSStackView(views: [primary, stopButton, textButton, shareButton, revealButton, chapterButton, deleteButton])
         buttons.spacing = 6
         buttons.alignment = .centerY
         buttons.setHuggingPriority(.required, for: .horizontal)
@@ -149,7 +152,7 @@ final class ReadingRowView: NSTableCellView {
     private func setCompact(_ compact: Bool) {
         guard compact != self.compact else { return }
         self.compact = compact
-        for button in [textButton, shareButton, revealButton, deleteButton] {
+        for button in [textButton, shareButton, revealButton, chapterButton, deleteButton] {
             let name = fullTitle(button)
             button.title = compact ? "" : name
             button.image = compact
@@ -164,6 +167,7 @@ final class ReadingRowView: NSTableCellView {
         if button === textButton { return "Show Text" }
         if button === shareButton { return "Share…" }
         if button === revealButton { return "Show in Finder" }
+        if button === chapterButton { return "Chapter Files…" }
         if button === deleteButton { return "Delete…" }
         return button.title
     }
@@ -248,6 +252,8 @@ final class ReadingRowView: NSTableCellView {
             }
             setPlay(playback)
             buttons = [primary, textButton, shareButton, revealButton, deleteButton]
+            // Only with chapters to split it by.
+            if (entry.chapters ?? 0) >= 2 { buttons.insert(chapterButton, at: 4) }
         case .failed:
             status.stringValue = entry.message ?? "The reading failed."
             status.textColor = .systemOrange
@@ -275,7 +281,7 @@ final class ReadingRowView: NSTableCellView {
         }
         // Playback's button stands on the bar's line, when there is one (invariant 2).
         if showsSeekBar, primaryAction == .play { buttons.removeAll { $0 === primary } }
-        for button in [primary, stopButton, textButton, shareButton, revealButton, deleteButton] {
+        for button in [primary, stopButton, textButton, shareButton, revealButton, chapterButton, deleteButton] {
             button.isHidden = !buttons.contains(button)
         }
         playbackLine?.isHidden = !showsSeekBar
@@ -329,6 +335,7 @@ final class ReadingRowView: NSTableCellView {
     @objc private func textPressed() { send(.showText) }
     @objc private func sharePressed() { send(.share) }
     @objc private func revealPressed() { send(.reveal) }
+    @objc private func chapterFilesPressed() { send(.chapterFiles) }
     @objc private func deletePressed() { send(.delete) }
 
     private func send(_ action: Action) {

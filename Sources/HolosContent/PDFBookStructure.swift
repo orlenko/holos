@@ -81,10 +81,21 @@ enum PDFBookStructure {
 
     // MARK: - The whole book
 
+    /// The book's text, and where in it the outline's chapters begin.
+    struct Book {
+        let paragraphs: [String]
+        let chapters: [(paragraph: Int, label: String)]
+    }
+
+    static func paragraphs(pages: [Page], markers: [String] = [], outline: [OutlineEntry], bodySize: Double,
+                           hasTitle: Bool) throws -> [String] {
+        try book(pages: pages, markers: markers, outline: outline, bodySize: bodySize, hasTitle: hasTitle).paragraphs
+    }
+
     /// The book's paragraphs: `pages` without their furniture, without the parts nobody reads aloud, and with each note
     /// after the sentence that cites it. `markers`: the text of any marker scalar already in `pages`.
-    static func paragraphs(pages: [Page], markers given: [String] = [], outline: [OutlineEntry], bodySize: Double,
-                           hasTitle: Bool) throws -> [String] {
+    static func book(pages: [Page], markers given: [String] = [], outline: [OutlineEntry], bodySize: Double,
+                     hasTitle: Bool) throws -> Book {
         // The furniture goes first, so a small running footer is not taken for the end of a footnote, and a page number
         // for a marker; then the parts, read from the text as it stands.
         var framed = PDFReader.pageContent(pages.map { PDFReader.lines(of: $0.text) })
@@ -128,8 +139,9 @@ enum PDFBookStructure {
         try Task.checkCancellation()
         let (endnotes, names, symbolic) = try endnoteBlocks(content: content, roles: roles, pages: pages, outline: outline,
                                                          notesBelow: notesBelow)
+        let parts = chapters(outline, hasTitle: hasTitle)
         let resolved = try resolve(content: content, roles: roles, markers: markers, markerPages: markerPages, footnotes: footnotes,
-                               endnotes: endnotes, names: names, chapters: chapters(outline, hasTitle: hasTitle))
+                               endnotes: endnotes, names: names, chapters: parts)
         // Invariant 3.
         if !resolved.endnotesPaired {
             roles = roles.map { $0 == .notes ? .body : $0 }
@@ -145,6 +157,14 @@ enum PDFBookStructure {
                 }
             }
         }
+        // Each chapter opens a paragraph, marked, whatever the sentence before it did.
+        for (index, start) in chapterPlaces(parts, in: content).enumerated().reversed()
+        where roles[start.page] == .body && !content[start.page].isEmpty {
+            guard let scalar = Unicode.Scalar(chapterBase + UInt32(index)) else { continue }
+            let line = content[start.page].indices.first { $0 >= start.line && !content[start.page][$0].isEmpty } ?? start.line
+            content[start.page][line].insert(Character(scalar), at: content[start.page][line].startIndex)
+            content[start.page].insert("", at: line)
+        }
         let bodyPages = content.indices.filter { roles[$0] == .body }.map { content[$0] }
         let literal = textMarkers(markers, notes: resolved.notes)
         try Task.checkCancellation()
@@ -154,7 +174,31 @@ enum PDFBookStructure {
                           literal: literal)
         }
         let unsaid = (resolved.endnotesPaired ? symbolic + resolved.uncited : []) + resolved.uncitedFootnotes
-        return body + unsaid.map(Self.spoken)
+        var opens: [(paragraph: Int, label: String)] = []
+        let text = (body + unsaid.map(Self.spoken)).enumerated().map { index, paragraph -> String in
+            let scalars = paragraph.unicodeScalars
+            for scalar in scalars where scalar.value >= chapterBase && Int(scalar.value - chapterBase) < parts.count {
+                opens.append((index, parts[Int(scalar.value - chapterBase)].label))
+            }
+            return String(String.UnicodeScalarView(scalars.filter { $0.value < chapterBase }))
+        }
+        return Book(paragraphs: text, chapters: opens)
+    }
+
+    /// A chapter's opening stands in the text as one scalar of the last private-use plane until the paragraphs are done.
+    private static let chapterBase: UInt32 = 0x100000
+
+    /// Where each chapter starts, by its heading on the page where that can be found, else at the page's top.
+    private static func chapterPlaces(_ chapters: [OutlineEntry], in content: [[String]]) -> [(page: Int, line: Int, name: String)] {
+        chapters.map { chapter in
+            let name = ReadableDocument.titleKey(chapter.label)
+            let lines = content.indices.contains(chapter.page) ? content[chapter.page] : []
+            let line = lines.firstIndex { line in
+                let key = ReadableDocument.titleKey(withoutTrailingMarkers(line))
+                return !key.isEmpty && (key == name || name.hasPrefix(key + " "))
+            }
+            return (chapter.page, line ?? 0, name)
+        }
     }
 
     /// Splits each page where the outline's parts change partway down, in reading order and before anything is removed,
@@ -693,16 +737,7 @@ enum PDFBookStructure {
         var block = 0, last = 0, lastPage = -1, wanted = 0, found = 0
         var cited = endnotes.map { _ in Set<Int>() }
         var citedFootnotes = Set<String>()
-        // Where each chapter starts, by its heading on the page where that can be found, else at the page's top.
-        let starts = chapters.map { chapter -> (page: Int, line: Int, name: String) in
-            let name = ReadableDocument.titleKey(chapter.label)
-            let lines = content.indices.contains(chapter.page) ? content[chapter.page] : []
-            let line = lines.firstIndex { line in
-                let key = ReadableDocument.titleKey(withoutTrailingMarkers(line))
-                return !key.isEmpty && (key == name || name.hasPrefix(key + " "))
-            }
-            return (chapter.page, line ?? 0, name)
-        }
+        let starts = chapterPlaces(chapters, in: content)
         var lastLine = -1
         let markersInOrder = content.indices.filter { roles[$0] == .body }.flatMap { page in
             content[page].enumerated().flatMap { line, text in

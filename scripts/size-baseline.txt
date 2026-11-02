@@ -8,14 +8,14 @@
 625 Sources/HolosApp/MainWindow/LiveMeetingView.swift
 731 Sources/HolosApp/MainWindow/MainWindowController.swift
 1756 Sources/HolosApp/MainWindow/MeetingsPane.swift
-796 Sources/HolosApp/MainWindow/ReadingPane.swift
+833 Sources/HolosApp/MainWindow/ReadingPane.swift
 1350 Sources/HolosApp/MainWindow/SettingsPane.swift
-928 Sources/HolosApp/Reading/ReadingController.swift
+952 Sources/HolosApp/Reading/ReadingController.swift
 1756 Sources/HolosApp/Review/ReviewWindow.swift
 737 Sources/HolosAudio/MeetingScreenCapture.swift
 692 Sources/HolosAudio/TrackRenderer.swift
 649 Sources/HolosCLI/Speakers.swift
-832 Sources/HolosContent/PDFBookStructure.swift
+867 Sources/HolosContent/PDFBookStructure.swift
 611 Sources/HolosContent/ReadingOutput.swift
 1180 Sources/HolosContent/WebArticleExtractor.swift
 615 Sources/HolosCore/DictationTextPipeline.swift
