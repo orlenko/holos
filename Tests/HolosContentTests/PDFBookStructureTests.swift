@@ -176,6 +176,25 @@ extension PDFBookPages {
         #expect(PDFReader.document(book, declaredTitle: nil, author: nil).title == "A Book")
     }
 
+    /// An empty title in the file is no title.
+    @Test func anEmptyDeclaredTitleIsNoTitle() {
+        let book = PDFBookStructure.Book(paragraphs: ["A Book", "Prose of the first chapter.", "Prose of the second."],
+                                         chapters: [(1, "Chapter One"), (2, "Chapter Two")])
+        #expect(PDFReader.document(book, declaredTitle: "", author: nil).title == "A Book")
+        #expect(PDFReader.document(book, declaredTitle: "  ", author: nil).title == "A Book")
+    }
+
+    /// Chapters sharing one page are still chapters, in their order on it.
+    @Test func chaptersCanShareAPage() throws {
+        let filler = Self.filler
+        let page = PDFBookStructure.Page(text: "Chapter 1\n\(filler) Done.\n\nA Subheading\n\n\(filler) Done.\n\nChapter 2\n\(filler) Done.")
+        let book = try PDFBookStructure.book(pages: [page], outline: [.init(label: "Chapter 1", page: 0), .init(label: "Chapter 2", page: 0)],
+                                             bodySize: 10, hasTitle: true)
+        let document = PDFReader.document(book, declaredTitle: "A Book", author: nil)
+        #expect(document.sections.map(\.heading) == ["Chapter 1", "Chapter 2"])
+        #expect(document.sections[0].paragraphs.contains("A Subheading"))
+    }
+
     /// Without chapters named, headings are told by their look, as before.
     @Test func withoutChaptersHeadingsAreToldByTheirLook() throws {
         let filler = Self.filler

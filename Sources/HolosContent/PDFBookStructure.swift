@@ -140,8 +140,9 @@ enum PDFBookStructure {
         let (endnotes, names, symbolic) = try endnoteBlocks(content: content, roles: roles, pages: pages, outline: outline,
                                                          notesBelow: notesBelow)
         let parts = chapters(outline, hasTitle: hasTitle)
+        // Notes are numbered by chapter only where the chapters have pages of their own to tell them apart.
         let resolved = try resolve(content: content, roles: roles, markers: markers, markerPages: markerPages, footnotes: footnotes,
-                               endnotes: endnotes, names: names, chapters: parts)
+                               endnotes: endnotes, names: names, chapters: Set(parts.map(\.page)).count >= 2 ? parts : [])
         // Invariant 3.
         if !resolved.endnotesPaired {
             roles = roles.map { $0 == .notes ? .body : $0 }
@@ -173,8 +174,11 @@ enum PDFBookStructure {
     /// Each chapter opens a paragraph, marked, whatever the sentence before it did, and the lines saying its name stand
     /// apart from the text after them, however long they run.
     private static func markChapters(_ parts: [OutlineEntry], in content: inout [[String]], roles: [Role]) {
-        for (index, start) in chapterPlaces(parts, in: content).enumerated().reversed()
-        where roles[start.page] == .body && !content[start.page].isEmpty {
+        // From the last place in the book back, so a line added stays below those still to come.
+        let places = chapterPlaces(parts, in: content).enumerated().sorted {
+            ($0.element.page, $0.element.line, $0.offset) > ($1.element.page, $1.element.line, $1.offset)
+        }
+        for (index, start) in places where roles[start.page] == .body && !content[start.page].isEmpty {
             guard let scalar = Unicode.Scalar(chapterBase + UInt32(index)) else { continue }
             let page = content[start.page]
             let line = page.indices.first { $0 >= start.line && !page[$0].isEmpty } ?? start.line
@@ -741,7 +745,7 @@ enum PDFBookStructure {
         // Text before the chapters (a foreword, an introduction) has notes of its own, at the chapters' depth.
         let level = named.first?.level ?? shallowest
         let chapters = parts.filter { $0.level == level }
-        return Set(chapters.map(\.page)).count >= 2 ? chapters : []
+        return chapters.count >= 2 ? chapters : []
     }
 
     /// Each marker's note, going through the text in reading order. Past the start of a part where the outline names

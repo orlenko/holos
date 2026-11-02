@@ -131,6 +131,8 @@ struct Read: AsyncParsableCommand {
                 throw HolosError.incomplete("Playback skipped: another Voice is Local playback kept it waiting. The reading is saved at \(finished.path).")
             }
         }
+        // The command did its main job, with a warning (Sources/HolosCLI/README.md).
+        if progress.warned { throw ExitCode(3) }
     }
 
     /// Loads the page at `address` and reduces it to its article, as a document to read.
@@ -209,13 +211,17 @@ struct Read: AsyncParsableCommand {
         // The file is published: bookkeeping that failed after that is a warning, not a failure.
         for warning in result.warnings { Console.error("Warning: \(warning)") }
         if request.chapterFiles {
-            if let duration = result.manifest.duration, ReadingChapterFiles.tracks(chapters: result.manifest.chapters, duration: duration) != nil {
+            // The reading is made by now: anything short of an interrupt here is a warning, with its path still printed.
+            do {
+                guard let duration = result.manifest.duration else { throw HolosError.unavailable("Its length is not known.") }
                 let folder = try await ReadingChapterFiles.make(
                     from: result.output, title: metadata.title ?? name, author: metadata.author,
                     chapters: result.manifest.chapters, duration: duration, in: result.output.deletingLastPathComponent())
                 Console.error("Chapter files: \(folder.path)")
-            } else {
-                Console.error("Warning: this reading has no chapters to make files of.")
+            } catch {
+                try Task.checkCancellation()
+                Console.error("Warning: no chapter files: \(error.localizedDescription)")
+                progress.warned = true
             }
         }
         return result.output
@@ -250,6 +256,7 @@ private struct ReadRequest: Sendable {
 /// suggests no `--resume`.
 @MainActor private final class ReadProgress {
     var resumeHint: String?
+    var warned = false
 }
 
 /// The web address in a `read` source, or nil for a file path. Only https is read; http is refused with a hint.

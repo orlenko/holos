@@ -21,7 +21,10 @@ public enum ReadingChapterFiles {
 
     /// The tracks for `chapters` of a reading `duration` long; nil with fewer than two: one file says it all.
     public static func tracks(chapters: [AudioBookChapter], duration: Double) -> [Track]? {
-        let ordered = chapters.filter { $0.start < duration }
+        // Each after the one before: an empty stretch is no track.
+        let ordered = chapters.reduce(into: [AudioBookChapter]()) { kept, chapter in
+            if chapter.start < duration, chapter.start > kept.last?.start ?? -1 { kept.append(chapter) }
+        }
         guard ordered.count >= 2 else { return nil }
         let width = max(2, String(ordered.count).count)
         return ordered.indices.map { index in
@@ -38,9 +41,13 @@ public enum ReadingChapterFiles {
 
     /// An extended M3U playlist of `tracks`, by the names beside it.
     public static func playlist(title: String, tracks: [Track]) -> String {
-        var lines = ["#EXTM3U", "#PLAYLIST:\(title)"]
+        // One line each: a title's line break would read as another track.
+        func oneLine(_ text: String) -> String {
+            text.components(separatedBy: .newlines).filter { !$0.isEmpty }.joined(separator: " ")
+        }
+        var lines = ["#EXTM3U", "#PLAYLIST:\(oneLine(title))"]
         for track in tracks {
-            lines.append("#EXTINF:\(Int((track.end - track.start).rounded())),\(track.title)")
+            lines.append("#EXTINF:\(Int((track.end - track.start).rounded())),\(oneLine(track.title))")
             lines.append(track.fileName)
         }
         return lines.joined(separator: "\n") + "\n"

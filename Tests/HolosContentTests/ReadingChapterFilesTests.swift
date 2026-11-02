@@ -36,6 +36,22 @@ import Testing
         #expect(lines.prefix(4) == ["#EXTM3U", "#PLAYLIST:A Book", "#EXTINF:5,Beginning", "01 Beginning.m4a"])
     }
 
+    @Test func aLineBreakInATitleStaysOnItsLine() throws {
+        let tracks = try #require(ReadingChapterFiles.tracks(
+            chapters: [AudioBookChapter(title: "One\nPart", start: 0), AudioBookChapter(title: "Two", start: 5)], duration: 9))
+        let lines = ReadingChapterFiles.playlist(title: "A Book\nVolume One", tracks: tracks).components(separatedBy: "\n")
+        #expect(lines.prefix(4) == ["#EXTM3U", "#PLAYLIST:A Book Volume One", "#EXTINF:5,One Part", tracks[0].fileName])
+    }
+
+    /// Two chapters at one moment make one track, not an empty one.
+    @Test func chaptersAtTheSameMomentMakeOneTrack() throws {
+        let same = [AudioBookChapter(title: "One", start: 0), AudioBookChapter(title: "Two", start: 5),
+                    AudioBookChapter(title: "Three", start: 5), AudioBookChapter(title: "Four", start: 8)]
+        let tracks = try #require(ReadingChapterFiles.tracks(chapters: same, duration: 10))
+        #expect(tracks.map(\.title) == ["One", "Two", "Four"])
+        #expect(tracks.map(\.end) == [5, 8, 10])
+    }
+
     private func finishedFile(in folder: URL, seconds: Double) async throws -> URL {
         let rate = ReadingAudioFormat.sampleRate
         let format = try #require(AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: rate, channels: 1, interleaved: true))
