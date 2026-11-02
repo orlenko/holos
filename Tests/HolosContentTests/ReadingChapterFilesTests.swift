@@ -124,6 +124,24 @@ import Testing
         #expect(listed.first.map { Array($0.utf8) } == Array("01 Caf\u{E9}.m4a".utf8))
     }
 
+    /// Cancelled once its tracks are copied, nothing appears: a reading stopped is not reported as made.
+    @Test func aCancelledRunPublishesNothing() async throws {
+        let temporary = try TemporaryDirectory("chapters")
+        defer { temporary.remove() }
+        let source = try await finishedFile(in: temporary.url, seconds: 20)
+        let parent = temporary.url.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        let chapters = chapters
+        let run = Task { () throws -> URL in
+            try await ReadingChapterFiles.make(from: source, title: "A Book", author: nil, chapters: chapters, duration: 20, in: parent,
+                                               done: { finished, total in
+                                                   if finished == total { withUnsafeCurrentTask { $0?.cancel() } }
+                                               })
+        }
+        await #expect(throws: CancellationError.self) { _ = try await run.value }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty)
+    }
+
     /// A copy that does not finish fails, and leaves nothing.
     @Test(.timeLimit(.minutes(1))) func aStalledCopyIsReported() async throws {
         await #expect(throws: (any Error).self) {

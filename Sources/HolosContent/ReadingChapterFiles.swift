@@ -75,8 +75,15 @@ public enum ReadingChapterFiles {
                 }
                 done?(index + 1, tracks.count)
             }
-            try Data(playlist(title: title, tracks: tracks).utf8)
+            // Invariant 4: named as stored, which a volume may spell its own way. `==` finds a name however it is spelled.
+            let stored = RawFilePath.names(in: temporary) ?? []
+            let listed = tracks.map { track in
+                Track(title: track.title, start: track.start, end: track.end,
+                      fileName: stored.first { $0 == track.fileName } ?? track.fileName)
+            }
+            try Data(playlist(title: title, tracks: listed).utf8)
                 .write(to: RawFilePath.appending(playlistName, to: temporary), options: .withoutOverwriting)
+            try Task.checkCancellation()
             return try publish(temporary, named: folderName, in: parent)
         } catch {
             do {
@@ -128,6 +135,7 @@ public enum ReadingChapterFiles {
     /// Invariants 2 and 3: a move refuses a name already taken.
     private static func publish(_ temporary: URL, named name: String, in parent: URL) throws -> URL {
         for attempt in 1...999 {
+            try Task.checkCancellation()
             let target = RawFilePath.appending(attempt == 1 ? name : "\(name) \(attempt)", to: parent)
             do {
                 try FileManager.default.moveItem(at: temporary, to: target)
