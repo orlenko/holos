@@ -195,6 +195,18 @@ extension PDFBookPages {
         #expect(document.sections[0].paragraphs.contains("A Subheading"))
     }
 
+    /// Headings wrapped over lines are told apart by all of their lines, on one page.
+    @Test func wrappedChapterNamesOnOnePageAreToldApart() throws {
+        let filler = Self.filler
+        let page = PDFBookStructure.Page(text: "Chapter\n1\n\(filler) First.\n\nChapter\n2\n\(filler) Second.")
+        let book = try PDFBookStructure.book(pages: [page], outline: [.init(label: "Chapter 1", page: 0), .init(label: "Chapter 2", page: 0)],
+                                             bodySize: 10, hasTitle: true)
+        let document = PDFReader.document(book, declaredTitle: "A Book", author: nil)
+        #expect(document.sections.map(\.heading) == ["Chapter 1", "Chapter 2"])
+        #expect(document.sections[0].paragraphs.joined().hasSuffix("First."))
+        #expect(document.sections[1].paragraphs.joined().hasSuffix("Second."))
+    }
+
     /// Without chapters named, headings are told by their look, as before.
     @Test func withoutChaptersHeadingsAreToldByTheirLook() throws {
         let filler = Self.filler

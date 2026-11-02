@@ -11,6 +11,7 @@ import HolosSynthesis
 /// 1. The tracks cover the whole reading, in order, with no gap and no overlap.
 /// 2. The folder appears whole or not at all: it is made under a hidden name, and named last.
 /// 3. Nothing already there is replaced: a folder of that name gets a number after it.
+/// 4. The playlist names each track by the very bytes of its file's name, as another system compares them.
 public enum ReadingChapterFiles {
     public struct Track: Sendable, Equatable {
         public let title: String
@@ -70,7 +71,7 @@ public enum ReadingChapterFiles {
                 try Task.checkCancellation()
                 try await bounded(by: timeout) {
                     try await export(asset, track, album: title, author: author,
-                                     to: temporary.appendingPathComponent(track.fileName))
+                                     to: RawFilePath.appending(track.fileName, to: temporary))
                 }
                 done?(index + 1, tracks.count)
             }

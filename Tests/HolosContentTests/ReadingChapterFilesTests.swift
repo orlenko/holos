@@ -108,6 +108,22 @@ import Testing
         }
     }
 
+    /// The playlist's names are the files' names byte for byte, for systems that do not treat é and e + ´ as one.
+    @Test func thePlaylistNamesFilesByTheirExactBytes() async throws {
+        let temporary = try TemporaryDirectory("chapters")
+        defer { temporary.remove() }
+        let source = try await finishedFile(in: temporary.url, seconds: 20)
+        let parent = temporary.url.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        let accented = [AudioBookChapter(title: "Caf\u{E9}", start: 0), AudioBookChapter(title: "Na\u{EF}ve", start: 5)]
+        let folder = try await ReadingChapterFiles.make(from: source, title: "A Book", author: nil, chapters: accented, duration: 20, in: parent)
+        let names = try #require(RawFilePath.names(in: folder))
+        let playlist = try String(contentsOf: folder.appendingPathComponent(ReadingChapterFiles.playlistName), encoding: .utf8)
+        let listed = playlist.unicodeScalars.split(separator: "\n").map { String(String.UnicodeScalarView($0)) }.filter { !$0.hasPrefix("#") }
+        #expect(Set(listed.map { Array($0.utf8) }) == Set(names.filter { $0.hasSuffix(".m4a") }.map { Array($0.utf8) }))
+        #expect(listed.first.map { Array($0.utf8) } == Array("01 Caf\u{E9}.m4a".utf8))
+    }
+
     /// A copy that does not finish fails, and leaves nothing.
     @Test func aStalledCopyIsReported() async throws {
         await #expect(throws: (any Error).self) {

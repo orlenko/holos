@@ -182,15 +182,7 @@ enum PDFBookStructure {
             guard let scalar = Unicode.Scalar(chapterBase + UInt32(index)) else { continue }
             let page = content[start.page]
             let line = page.indices.first { $0 >= start.line && !page[$0].isEmpty } ?? start.line
-            var said = ""
-            var after = line
-            for position in line..<page.count {
-                let key = ReadableDocument.titleKey(withoutTrailingMarkers(page[position]))
-                let next = said.isEmpty ? key : said + " " + key
-                guard !key.isEmpty, start.name == next || start.name.hasPrefix(next + " ") else { break }
-                said = next
-                after = position + 1
-            }
+            let after = linesSaying(start.name, from: line, in: page).end
             if after > line { content[start.page].insert("", at: after) }
             content[start.page][line].insert(Character(scalar), at: content[start.page][line].startIndex)
             content[start.page].insert("", at: line)
@@ -213,17 +205,35 @@ enum PDFBookStructure {
     /// A chapter's opening stands in the text as one scalar of the last private-use plane until the paragraphs are done.
     private static let chapterBase: UInt32 = 0x100000
 
-    /// Where each chapter starts, by its heading on the page where that can be found, else at the page's top.
+    /// Where each chapter starts, by its heading on the page where that can be found, else at the page's top. A chapter
+    /// sharing a page starts below the one before it, and lines saying its whole name count before those beginning it:
+    /// "Chapter" then "1" is not "Chapter 2".
     private static func chapterPlaces(_ chapters: [OutlineEntry], in content: [[String]]) -> [(page: Int, line: Int, name: String)] {
-        chapters.map { chapter in
+        var places: [(page: Int, line: Int, name: String)] = []
+        for chapter in chapters {
             let name = ReadableDocument.titleKey(chapter.label)
             let lines = content.indices.contains(chapter.page) ? content[chapter.page] : []
-            let line = lines.firstIndex { line in
-                let key = ReadableDocument.titleKey(withoutTrailingMarkers(line))
-                return !key.isEmpty && (key == name || name.hasPrefix(key + " "))
-            }
-            return (chapter.page, line ?? 0, name)
+            let before = places.last.flatMap { $0.page == chapter.page ? $0.line : nil }
+            let candidates = lines.indices.filter { $0 > before ?? -1 }
+            let line = candidates.first { linesSaying(name, from: $0, in: lines).whole }
+                ?? candidates.first { linesSaying(name, from: $0, in: lines).end > $0 }
+            places.append((chapter.page, line ?? before ?? 0, name))
         }
+        return places
+    }
+
+    /// Where the lines from `start` that say `name`, in order, end, and whether they say all of it.
+    private static func linesSaying(_ name: String, from start: Int, in lines: [String]) -> (end: Int, whole: Bool) {
+        var said = ""
+        var end = start
+        for position in lines.indices where position >= start {
+            let key = ReadableDocument.titleKey(withoutTrailingMarkers(lines[position]))
+            let next = said.isEmpty ? key : said + " " + key
+            guard !key.isEmpty, name == next || name.hasPrefix(next + " ") else { break }
+            said = next
+            end = position + 1
+        }
+        return (end, !said.isEmpty && said == name)
     }
 
     /// Splits each page where the outline's parts change partway down, in reading order and before anything is removed,
