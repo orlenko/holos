@@ -63,7 +63,7 @@ public enum ReadingChapterFiles {
         }
         let folderName = String(ReadingOutput.fileName(title: title, fallback: "Reading").dropLast(ReadingOutput.fileExtension.count))
         // Not named after the title: a name that just fits with its extension would not fit with this.
-        let temporary = parent.appendingPathComponent(".holos-chapters-\(UUID().uuidString)", isDirectory: true)
+        let temporary = RawFilePath.appending(".holos-chapters-\(UUID().uuidString)", to: parent)
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
         do {
             let asset = AVURLAsset(url: source)
@@ -76,7 +76,7 @@ public enum ReadingChapterFiles {
                 done?(index + 1, tracks.count)
             }
             try Data(playlist(title: title, tracks: tracks).utf8)
-                .write(to: temporary.appendingPathComponent(playlistName), options: .withoutOverwriting)
+                .write(to: RawFilePath.appending(playlistName, to: temporary), options: .withoutOverwriting)
             return try publish(temporary, named: folderName, in: parent)
         } catch {
             do {
@@ -128,7 +128,7 @@ public enum ReadingChapterFiles {
     /// Invariants 2 and 3: a move refuses a name already taken.
     private static func publish(_ temporary: URL, named name: String, in parent: URL) throws -> URL {
         for attempt in 1...999 {
-            let target = parent.appendingPathComponent(attempt == 1 ? name : "\(name) \(attempt)", isDirectory: true)
+            let target = RawFilePath.appending(attempt == 1 ? name : "\(name) \(attempt)", to: parent)
             do {
                 try FileManager.default.moveItem(at: temporary, to: target)
                 return target

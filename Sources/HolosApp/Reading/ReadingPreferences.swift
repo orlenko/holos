@@ -13,7 +13,7 @@ enum ReadingPreferences {
 
     /// The folder Chapter Files… last made its folder in.
     static var chapterFolder: URL? {
-        get { UserDefaults.standard.string(forKey: chapterFolderKey).map { URL(fileURLWithPath: $0, isDirectory: true) } }
+        get { UserDefaults.standard.string(forKey: chapterFolderKey).map { ReadingOutput.fileURL(keepingSpelling: $0, isDirectory: true) } }
         set { UserDefaults.standard.set(newValue?.path, forKey: chapterFolderKey) }
     }
     static let changed = Notification.Name("VoiceIsLocalReadingPreferencesChanged")

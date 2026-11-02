@@ -207,6 +207,22 @@ extension PDFBookPages {
         #expect(document.sections[1].paragraphs.joined().hasSuffix("Second."))
     }
 
+    /// A title page in the outline gives the book its title, and is not a chapter.
+    @Test func aTitlePageInTheOutlineIsNoChapter() throws {
+        let filler = Self.filler
+        let pages: [PDFBookStructure.Page] = [
+            .init(text: "A Book\n\nBy Jane Writer"), .init(text: "Chapter 1\n\(filler) Done."), .init(text: "Chapter 2\n\(filler) Done."),
+        ]
+        let outline: [PDFBookStructure.OutlineEntry] = [
+            .init(label: "Title Page", page: 0), .init(label: "Chapter 1", page: 1), .init(label: "Chapter 2", page: 2),
+        ]
+        let book = try PDFBookStructure.book(pages: pages, outline: outline, bodySize: 10, hasTitle: false)
+        let document = PDFReader.document(book, declaredTitle: nil, author: nil)
+        #expect(document.title == "A Book")
+        #expect(!document.sections.contains { $0.heading == "Title Page" })
+        #expect(document.sections.suffix(2).map(\.heading) == ["Chapter 1", "Chapter 2"])
+    }
+
     /// Without chapters named, headings are told by their look, as before.
     @Test func withoutChaptersHeadingsAreToldByTheirLook() throws {
         let filler = Self.filler

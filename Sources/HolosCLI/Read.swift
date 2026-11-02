@@ -211,20 +211,25 @@ struct Read: AsyncParsableCommand {
         // The file is published: bookkeeping that failed after that is a warning, not a failure.
         for warning in result.warnings { Console.error("Warning: \(warning)") }
         if request.chapterFiles {
-            // The reading is made by now: anything short of an interrupt here is a warning, with its path still printed.
-            do {
-                guard let duration = result.manifest.duration else { throw HolosError.unavailable("Its length is not known.") }
-                let folder = try await ReadingChapterFiles.make(
-                    from: result.output, title: metadata.title ?? name, author: metadata.author,
-                    chapters: result.manifest.chapters, duration: duration, in: result.output.deletingLastPathComponent())
-                Console.error("Chapter files: \(folder.path)")
-            } catch {
-                try Task.checkCancellation()
-                Console.error("Warning: no chapter files: \(error.localizedDescription)")
-                progress.warned = true
-            }
+            try await makeChapterFiles(of: result.output, manifest: result.manifest, title: metadata.title ?? name,
+                                       author: metadata.author, progress: progress)
         }
         return result.output
+    }
+
+    /// The reading is made by now: anything short of an interrupt here is a warning, with its path still printed.
+    @MainActor private static func makeChapterFiles(of output: URL, manifest: ReadingManifest, title: String, author: String?,
+                                                    progress: ReadProgress) async throws {
+        do {
+            guard let duration = manifest.duration else { throw HolosError.unavailable("Its length is not known.") }
+            let folder = try await ReadingChapterFiles.make(from: output, title: title, author: author, chapters: manifest.chapters,
+                                                            duration: duration, in: output.deletingLastPathComponent())
+            Console.error("Chapter files: \(folder.path)")
+        } catch {
+            try Task.checkCancellation()
+            Console.error("Warning: no chapter files: \(error.localizedDescription)")
+            progress.warned = true
+        }
     }
 }
 

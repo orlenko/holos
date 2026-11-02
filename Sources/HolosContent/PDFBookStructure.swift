@@ -747,7 +747,8 @@ enum PDFBookStructure {
         for entry in outline {
             if let level = inside, entry.level > level { continue }
             inside = role(named: entry.label, hasTitle: hasTitle) == nil ? nil : entry.level
-            if inside == nil { parts.append(entry) }
+            // A title page kept for its title is the book's opening, not a chapter.
+            if inside == nil, !["title", "title page"].contains(outlineName(entry.label)) { parts.append(entry) }
         }
         let named = parts.filter { $0.label.lowercased().hasPrefix("chapter") }
         let levels = Set(parts.map(\.level)).sorted()

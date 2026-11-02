@@ -125,10 +125,10 @@ import Testing
     }
 
     /// A copy that does not finish fails, and leaves nothing.
-    @Test func aStalledCopyIsReported() async throws {
+    @Test(.timeLimit(.minutes(1))) func aStalledCopyIsReported() async throws {
         await #expect(throws: (any Error).self) {
             try await ReadingChapterFiles.bounded(by: .milliseconds(10)) {
-                try await Task.sleep(for: .seconds(60))
+                while true { try await Task.sleep(for: .milliseconds(20)) }
             }
         }
         try await ReadingChapterFiles.bounded(by: .seconds(60)) {}
