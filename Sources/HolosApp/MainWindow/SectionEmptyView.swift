@@ -2,6 +2,10 @@ import AppKit
 
 /// What a section shows with nothing in it: a symbol, a headline, a sentence, and at most the section's one action.
 /// A message with no symbol is only the sentence (a search with no matches), so it reads as a note rather than a welcome.
+///
+/// Invariants:
+/// 1. `show` replaces everything shown, so nothing of the previous content stays.
+/// 2. The button shows only with an action, and a press runs `onAction` only while it shows and is enabled.
 @MainActor
 final class SectionEmptyView: NSView {
     struct Content: Equatable {
@@ -66,7 +70,7 @@ final class SectionEmptyView: NSView {
         super.layout()
     }
 
-    /// Replaces what shows; `enabled` is the action's state.
+    /// Replaces what shows (invariants 1 and 2); `enabled` is the action's state.
     func show(_ content: Content, enabled: Bool = true) {
         image.image = content.symbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }
         image.isHidden = image.image == nil

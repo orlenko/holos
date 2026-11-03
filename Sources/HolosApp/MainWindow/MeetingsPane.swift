@@ -16,6 +16,7 @@ import UniformTypeIdentifiers
 /// 2. Leaving an embedded review passes through its save gate before detaching the screen.
 /// 3. Catalog refreshes preserve selection by meeting ID and publish progress with the rows.
 /// 4. Catalog and processing-record reads run off the main actor.
+/// 5. The empty view shows exactly when no meeting row is shown.
 @MainActor
 final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
     @preconcurrency QLPreviewPanelDataSource, QLPreviewPanelDelegate, MainSectionContent {
@@ -593,7 +594,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         } else if shown.isEmpty {
             emptyView.show(.init(text: "No meetings match “\(query)”."))
         }
-        emptyView.isHidden = !shown.isEmpty
+        emptyView.isHidden = !shown.isEmpty  // invariant 5
     }
 
     /// Reloads the rows' contents (badges, the live phase) with the selection kept.

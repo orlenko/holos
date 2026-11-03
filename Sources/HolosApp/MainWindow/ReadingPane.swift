@@ -11,6 +11,7 @@ import HolosSynthesis
 /// Invariants:
 /// 1. Inventory refreshes retain the card's requested voice and speed, including during a natural pack reinstall.
 /// 2. Only an explicit voice choice or a preferences change replaces the requested voice.
+/// 3. The empty view shows exactly when the list has no readings.
 @MainActor
 final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSource, NSTableViewDelegate,
     NSTextFieldDelegate, NSMenuItemValidation {
@@ -498,7 +499,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         if let selected, let index = rows.firstIndex(where: { $0.id == selected }) {
             table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         }
-        emptyView.isHidden = !rows.isEmpty
+        emptyView.isHidden = !rows.isEmpty  // invariant 3
         footer.stringValue = footerText
         footer.textColor = controller.notice == nil ? .secondaryLabelColor : .systemOrange
         stopPlaybackOfGoneFile()

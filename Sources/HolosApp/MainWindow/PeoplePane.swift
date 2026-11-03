@@ -9,6 +9,10 @@ import HolosStorage
 /// listed whatever the setting. Every store read and write runs off the main actor through `VoiceProfileService`;
 /// the section shows names and counts, never a voiceprint. The main window's People section; it rereads the store
 /// whenever it comes on screen or the window becomes key.
+///
+/// Invariants:
+/// 1. The tables and the empty view never show together: the empty view shows exactly when the store has no people.
+/// 2. Every store read and write runs off the main actor.
 @MainActor
 final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDelegate, MainSectionContent {
     private enum Column: String {
@@ -234,7 +238,7 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
             self.database = database
             self.people = people
             self.peopleTable.reloadData()
-            self.splitView?.isHidden = people.isEmpty
+            self.splitView?.isHidden = people.isEmpty  // invariant 1
             self.emptyView.isHidden = !people.isEmpty
             if let selected, let row = people.firstIndex(where: { $0.id == selected }) {
                 self.peopleTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)

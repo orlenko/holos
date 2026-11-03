@@ -4,6 +4,11 @@ import HolosCore
 /// The main window's History section (docs/design.md "Dictation history"): the dictations kept on this Mac, grouped
 /// by day, with a search field; the selected one's text, the text as heard (changed words highlighted), what
 /// happened to it, and its actions. Copy and Copy As Heard are the only ways its text reaches the clipboard.
+///
+/// Invariants:
+/// 1. The empty view shows exactly when the filtered list has no rows.
+/// 2. With no dictations, an unreadable file, a newer build's dictations or history being off is said before dictation's
+///    own state, and only dictation being off offers an action.
 @MainActor
 final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSource, NSTableViewDelegate,
     NSMenuItemValidation, NSSplitViewDelegate {
@@ -317,11 +322,11 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         } else if filtered.isEmpty {
             emptyView.show(.init(text: "No dictations match “\(search.stringValue)”."))
         }
-        emptyView.isHidden = !filtered.isEmpty
+        emptyView.isHidden = !filtered.isEmpty  // invariant 1
         showSelection()
     }
 
-    /// What the list says with no dictations at all.
+    /// What the list says with no dictations at all (invariant 2).
     static func emptyContent(unreadable: Bool, hidden: Int, recording: Bool, dictationOff: Bool,
                              shortcut: String) -> SectionEmptyView.Content {
         if unreadable {
