@@ -92,12 +92,16 @@ private func exampleLayout() -> [Character: KeyboardStroke] {
     #expect(events.map(\.type) == [.flagsChanged, .keyDown, .keyUp, .flagsChanged])
     #expect(events.map { $0.getIntegerValueField(.keyboardEventKeycode) } == [kVK_Shift, kVK_ANSI_A, kVK_ANSI_A, kVK_Shift].map(Int64.init))
     #expect(events.map { $0.flags.contains(.maskShift) } == [true, true, true, false])
+    // What a real Left Shift reports, device bit included: Screen Sharing ignores Shift without it.
+    #expect(events.map(\.flags.rawValue) == [0x20102, 0x20102, 0x20102, 0x100])
     #expect(events.allSatisfy { $0.getIntegerValueField(.eventSourceUserData) == 42 })
 
     // An unshifted key presses nothing else, and Shift is only pressed when asked for.
     let plain = KeyboardStroke(keyCode: CGKeyCode(kVK_ANSI_A), flags: [])
     #expect(try #require(plain.events(for: "a", source: source, marker: 42, pressingShift: true)).map(\.type) == [.keyDown, .keyUp])
     #expect(try #require(shifted.events(for: "A", source: source, marker: 42)).map(\.type) == [.keyDown, .keyUp])
+    // Everywhere else a shifted key keeps its plain flag.
+    #expect(try #require(shifted.events(for: "A", source: source, marker: 42)).allSatisfy { $0.flags == .maskShift })
 }
 
 @Test func leftOptionIsToldFromRightOptionByItsDeviceBit() {
