@@ -119,16 +119,27 @@ final class MeetingTextCell: NSTableCellView, IdentifiedCell {
     }
 }
 
-/// A meeting's row: its Open and ··· show only while it is selected or under the pointer, so a list at rest is names.
-/// The table gets a new one each time it rebuilds the rows.
+/// A meeting's row: its Open and ··· show only while it is the one selected or under the pointer, so a list at rest is
+/// names, and several selected rows do not each offer an action for one. The table gets a new one each time it rebuilds
+/// the rows.
 ///
 /// Invariants:
-/// 1. The row's `MeetingRowActionsView` is revealed exactly when the row is selected or under the pointer, also when
-///    the cell arrives after the row or the list scrolls under a pointer that does not move.
+/// 1. The row's `MeetingRowActionsView` is revealed exactly when the row is the only one selected or under the pointer,
+///    also when the cell arrives after the row or the list scrolls under a pointer that does not move. The selection's
+///    size changes without this row's `isSelected` changing: the pane calls `revealActions` then.
 @MainActor
 final class MeetingTableRowView: NSTableRowView {
     private var pointerInside = false { didSet { revealActions() } }
     private var tracking: NSTrackingArea?
+    private weak var table: NSTableView?
+
+    init(table: NSTableView) {
+        self.table = table
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     override var isSelected: Bool { didSet { revealActions() } }
 
@@ -162,17 +173,18 @@ final class MeetingTableRowView: NSTableRowView {
 
     override func mouseExited(with event: NSEvent) { pointerInside = false }
 
-    private func revealActions() {
+    func revealActions() {
+        let onlySelected = isSelected && table?.numberOfSelectedRows == 1
         for case let actions as MeetingRowActionsView in subviews {
-            actions.revealed = isSelected || pointerInside
+            actions.revealed = onlySelected || pointerInside
         }
     }
 }
 
 /// The row's actions: Open (the meeting screen, where speakers are named), and a ··· with View Transcript (the Markdown
-/// transcript in the app that opens Markdown), Delete Audio… and Copy Path (the meeting's folder, for an agent or
-/// Terminal). Each acts on its own row, whatever is selected. Return, a double-click and the row's right-click menu
-/// reach the meeting while they are not revealed (`MeetingTableRowView`).
+/// transcript in the app that opens Markdown), Copy Path (the meeting's folder, for an agent or Terminal), Delete Audio…
+/// and Delete Meeting…. Each acts on its own row, whatever is selected. Return, a double-click, the row's right-click
+/// menu and VoiceOver's actions on the row reach the meeting while they are not revealed (`MeetingTableRowView`).
 ///
 /// Invariants:
 /// 1. A click calls the `onAction` of the meeting the cell was last shown for; a reused cell calls none until shown
@@ -183,14 +195,15 @@ final class MeetingTableRowView: NSTableRowView {
 @MainActor
 final class MeetingRowActionsView: NSTableCellView, IdentifiedCell {
     enum Kind: CaseIterable {
-        case open, view, deleteAudio, copyPath
+        case open, view, copyPath, deleteAudio, deleteMeeting
 
         var title: String {
             switch self {
             case .open: "Open"
             case .view: "View Transcript"
-            case .deleteAudio: "Delete Audio…"
             case .copyPath: "Copy Path"
+            case .deleteAudio: "Delete Audio…"
+            case .deleteMeeting: "Delete Meeting…"
             }
         }
 
@@ -198,8 +211,9 @@ final class MeetingRowActionsView: NSTableCellView, IdentifiedCell {
             switch self {
             case .open: "Opens the meeting, where you name its speakers and correct the transcript."
             case .view: "Opens the Markdown transcript in your Markdown app."
-            case .deleteAudio: "Deletes the meeting's audio for good; the transcript and speaker names stay."
             case .copyPath: "Copies the path of the meeting's folder."
+            case .deleteAudio: "Deletes the meeting's audio for good; the transcript and speaker names stay."
+            case .deleteMeeting: "Moves the meeting's folder to the Trash."
             }
         }
     }
@@ -246,9 +260,12 @@ final class MeetingRowActionsView: NSTableCellView, IdentifiedCell {
         openButton.isEnabled = enabled.contains(.open)
     }
 
-    /// The cell for a row: `enabled` actions on, and `action` called with the chosen one; returns the cell.
-    func showing(_ enabled: Set<Kind>, action: @escaping (Kind) -> Void) -> Self {
+    /// The cell for the row of the meeting `title`, which tells its buttons from other rows' for VoiceOver: `enabled`
+    /// actions on, and `action` called with the chosen one; returns the cell.
+    func showing(_ enabled: Set<Kind>, title: String, action: @escaping (Kind) -> Void) -> Self {
         show(enabled: enabled)
+        openButton.setAccessibilityLabel("Open \(title)")
+        moreButton.setAccessibilityLabel("More actions for \(title)")
         onAction = action
         return self
     }
@@ -259,6 +276,7 @@ final class MeetingRowActionsView: NSTableCellView, IdentifiedCell {
         menu.autoenablesItems = false
         let action = onAction
         for kind in Kind.allCases where kind != .open {
+            if kind == .deleteAudio { menu.addItem(.separator()) }
             let choice = MenuChoice { action?(kind) }
             let item = NSMenuItem(title: kind.title, action: #selector(MenuChoice.chosen), keyEquivalent: "")
             item.target = choice

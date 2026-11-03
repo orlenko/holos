@@ -353,7 +353,7 @@ from the sidebar to the section; it stays hidden for the next opening and launch
 the window to the left. The window is 1280 × 800 by default and at least 560 points high;
 its width goes down to 400 points with the sidebar hidden (the section's minimum) and to
 601 with it shown (the sidebar's 200, the divider, and the section's 400). Every section
-fits 400 points: rows of buttons wrap (Meetings, History), labels truncate or wrap,
+fits 400 points: rows of buttons wrap (History), labels truncate or wrap,
 checkbox titles in Settings wrap, People's tables scroll sideways, the live transcript's
 ‹ Meetings and Stop and Save… and a reading's Share… and Show in Finder show only their
 symbols. The window
@@ -1584,13 +1584,15 @@ headers (Today, Yesterday, This Week, then by month), newest first (the meeting 
 saved first). The columns are Name (the meeting's title in bold, with small badges at its right),
 When (the start, as the time alone today and yesterday, the weekday this week, else the date, and
 the length), Description (the first line of the summary, else the people its speaker labels name,
-"Alex, Sam and 2 others"; the whole of both on hover), and, while the row is selected or under the
-pointer, Open and a ··· that act on their own row whatever is selected. Open is the meeting screen,
-where speakers are named. The ··· holds View Transcript (exports/transcript.md in the app that opens
-Markdown; off without a saved transcript, and a beep when the file is missing), Delete Audio… (off
-when `MeetingActionPolicy` refuses it, for example while the meeting records, is worked on, or has
-no audio), and Copy Path (the meeting's folder, for an agent or Terminal). Their states come from
-the catalog read, so drawing a row reads no files. Where
+"Alex, Sam and 2 others"; the whole of both on hover), and, while the row is the only one selected or
+under the pointer, Open and a ··· that act on their own row whatever is selected. Open is the meeting
+screen, where speakers are named. The ··· holds View Transcript (exports/transcript.md in the app that
+opens Markdown; off without a saved transcript, and a beep when the file is missing), Copy Path (the
+meeting's folder, for an agent or Terminal), and Delete Audio… and Delete Meeting… (off when
+`MeetingActionPolicy` refuses them, for example while the meeting records or is worked on, or for
+Delete Audio… with no audio). Their states come from the catalog read, so drawing a row reads no files.
+VoiceOver offers the same actions on every row, as custom actions of its name, and names the meeting
+on each row's Open and ···. Where
 the list is narrower than 470 points (beside a call's window) the When column is
 hidden; the day headers still say when. Badges appear only when there is something to say:
 ● Recording (red), ● Paused, Starting…, Saving…, what a command is doing ("Labelling speakers…",
@@ -1641,7 +1643,7 @@ The Meetings page offers Start Recording… beside the search field, in the acce
 the same start panel as the menu bar (with no meetings, the empty list offers it instead).
 It is available while the recorder is idle or failed; recording, starting, and saving keep it off.
 The ··· beside it holds the selection's Advanced actions and Delete Meeting…, and is off with nothing
-selected; Delete Meeting… is also ⌫ and the right-click menu. A row's Open, Return, and double-click
+selected; Delete Meeting… is also ⌫, a row's ··· and the right-click menu. A row's Open, Return, and double-click
 all enter the same meeting screen inside the main window. The row context menu keeps Open
 and Delete Meeting… at the top; Advanced contains export, transcript-file preview, Finder,
 Copy Path, rename, summaries, final transcription, recovery, speaker labelling, and audio deletion.

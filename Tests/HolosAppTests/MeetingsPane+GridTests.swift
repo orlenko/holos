@@ -133,6 +133,33 @@ struct MeetingsPaneGridTests {
         #expect(try Self.actions(pane, first.id).revealed)
         row.mouseExited(with: enter)
         #expect(try !Self.actions(pane, first.id).revealed)
+
+        // Several selected: not on each of them, only under the pointer.
+        pane.table.selectAll(nil)
+        #expect(try !Self.actions(pane, first.id).revealed)
+        #expect(try !Self.actions(pane, second.id).revealed)
+        row.mouseEntered(with: enter)
+        #expect(try Self.actions(pane, first.id).revealed)
+    }
+
+    @Test func voiceOverReachesARowsActionsAndTellsItsButtonsApart() throws {
+        let temp = try TemporaryDirectory("meeting-grid-voiceover")
+        defer { temp.remove() }
+        var performed: [(MeetingsPane.Action, String)] = []
+        let (_, pane) = try LiveMeetingViewTests.meetings(size: .init(width: 1000, height: 700), root: temp.url,
+                                                          perform: { performed.append(($0, $1.id)) })
+        let first = try Self.meeting("a", in: temp.url)
+        let second = try Self.meeting("b", in: temp.url)
+        pane.show([first, second], people: [:], freeBytes: nil)
+        let index = try #require(pane.rowIndex(of: second.id))
+        let name = try #require(pane.table.view(atColumn: 0, row: index, makeIfNecessary: true))
+        let actions = name.accessibilityCustomActions() ?? []
+        #expect(actions.map(\.name) == ["Open", "View Transcript", "Copy Path", "Delete Audio…", "Delete Meeting…"])
+        _ = actions.last?.handler?()
+        #expect(performed.first?.0 == .deleteMeeting && performed.first?.1 == second.id, "Unselected: its own meeting.")
+        let cell = try Self.actions(pane, second.id)
+        #expect(cell.openButton.accessibilityLabel() == "Open Planning b")
+        #expect(cell.moreButton.accessibilityLabel() == "More actions for Planning b")
     }
 
     /// The list is rebuilt under an open menu: a reused cell must not turn its choice to another meeting.
@@ -148,7 +175,7 @@ struct MeetingsPaneGridTests {
         pane.show([first, second], people: [:], freeBytes: nil)
         let actions = try Self.actions(pane, first.id)
         let menu = actions.menu()
-        _ = actions.showing([.open, .copyPath], action: pane.actionHandler(second.id))
+        _ = actions.showing([.open, .copyPath], title: second.displayTitle, action: pane.actionHandler(second.id))
         menu.performActionForItem(at: try #require(menu.items.firstIndex { $0.title == "Copy Path" }))
         #expect(pasteboard.string(forType: .string) == first.directory.path)
     }
@@ -169,6 +196,7 @@ struct MeetingsPaneGridTests {
         let menu = try #require(pane.selectionMenu())
         #expect(!menu.autoenablesItems, "An action the policy refuses shows off.")
         #expect(menu.items.contains { $0.title == "Rename…" })
+        #expect(menu.items.contains { $0.title == "View Transcript" })
         let delete = try #require(menu.items.last)
         #expect(delete.title == "Delete Meeting…")
         menu.performActionForItem(at: menu.index(of: delete))
