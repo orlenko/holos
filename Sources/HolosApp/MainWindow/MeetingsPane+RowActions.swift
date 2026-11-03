@@ -4,7 +4,7 @@ import HolosStorage
 
 /// The Meetings grid's row buttons, Copy Path, and the rename a click on a selected meeting's name starts.
 extension MeetingsPane {
-    /// The row buttons each meeting offers (`MeetingRowActionsView`): Open and Copy Path always, View with a saved
+    /// The row actions each meeting offers (`MeetingRowActionsView`): Open and Copy Path always, View with a saved
     /// transcript, Delete Audio when `MeetingActionPolicy` allows it. Read from the catalog's snapshot only, since rows
     /// are drawn on the main actor; View checks the file when clicked.
     func rowActions(_ summary: SessionSummary) -> Set<MeetingRowActionsView.Kind> {
@@ -15,13 +15,13 @@ extension MeetingsPane {
         return kinds
     }
 
-    /// What a row's buttons call: `rowAction` on that row's meeting.
+    /// What a row's Open and ··· call: `rowAction` on that row's meeting.
     func actionHandler(_ sessionID: String) -> (MeetingRowActionsView.Kind) -> Void {
         { [weak self] kind in self?.rowAction(kind, sessionID: sessionID) }
     }
 
-    /// A row's button, on that row's meeting whatever is selected. A button's click does not go through the table, so
-    /// it cancels a pending rename here (`MeetingListState` invariant 2).
+    /// A row's action, on that row's meeting whatever is selected. A click on Open or ··· does not go through the table,
+    /// so it cancels a pending rename here (`MeetingListState` invariant 2).
     func rowAction(_ kind: MeetingRowActionsView.Kind, sessionID: String) {
         listState.cancelPendingRename()
         guard let summary = sessions.first(where: { $0.id == sessionID }) else { return }

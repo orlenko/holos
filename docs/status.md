@@ -497,12 +497,11 @@ timeline and a larger local-model benchmark are follow-ups.
   the transcripts, with recognition errors in names and jargon carried over.
 - Meetings list (docs/design.md "Meetings list"): a grid, one line per meeting under Today,
   Yesterday, This Week and month headers: Name (with badges, renamed by a click on the selected
-  meeting's name), When, Description, and Open, View, Delete Audio and Copy Path buttons on each
-  row; a search field filters by title, summary and people. Automatic audio cleanup (docs/design.md
+  meeting's name), When, Description, and, on the selected row or the one under the pointer, Open and
+  a ··· with View Transcript, Delete Audio… and Copy Path; a search field filters by title, summary and people. Automatic audio cleanup (docs/design.md
   "Automatic audio cleanup"): off by default; deletes the audio of finished meetings older than N
-  days (7 preset) as background work, oldest first. Open and Delete are primary;
-  Start Recording… opens the menu bar's start panel; Advanced contains exports and maintenance
-  actions. Open, Return, and double-click enter
+  days (7 preset) as background work, oldest first. Start Recording… beside the search opens the menu
+  bar's start panel; the ··· beside it holds exports, maintenance and Delete Meeting…. Open, Return, and double-click enter
   the same meeting screen inside the main window. Recording, processing, saved transcript,
   and editable review share that screen. Native offscreen layout and navigation tests cover
   wide and narrow windows, including saving a typed correction through Back. Running-app

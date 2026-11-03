@@ -43,4 +43,18 @@ extension MeetingsPane {
         fill(menu, summary: summary)
         return menu.items.first { $0.title == "Advanced" }?.submenu
     }
+
+    /// The ··· beside the search: the selection's Advanced items, then its deletion, which the list's other ways to it
+    /// are ⌫ and the right-click menu.
+    func selectionMenu() -> NSMenu? {
+        let root = NSMenu()
+        fill(root, clickedRow: table.selectedRow)
+        guard let advanced = root.items.first(where: { $0.title == "Advanced" })?.submenu else { return nil }
+        if let delete = root.items.first(where: { $0.title.hasPrefix("Delete") }) {
+            root.removeItem(delete)
+            advanced.addItem(.separator())
+            advanced.addItem(delete)
+        }
+        return advanced
+    }
 }

@@ -1,7 +1,7 @@
 import AppKit
 
 /// The Meetings grid's columns, left to right: the name (with its badges, renamed in place), when the meeting started
-/// and how long it is, a one-line description, and the row's buttons.
+/// and how long it is, a one-line description, and the row's Open and ···.
 @MainActor
 enum MeetingGridColumn: String, CaseIterable {
     case name, when, description, actions
@@ -55,7 +55,7 @@ enum MeetingGridColumn: String, CaseIterable {
         table.makeView(withIdentifier: identifier, owner: nil) as? Cell ?? Cell(identifier: identifier)
     }
 
-    /// Below this width of the list, the When column is hidden so the name, the description and the buttons fit
+    /// Below this width of the list, the When column is hidden so the name, the description and the row's actions fit
     /// (the day headers still say when).
     static let whenHiddenBelow: CGFloat = 470
 
@@ -119,33 +119,77 @@ final class MeetingTextCell: NSTableCellView, IdentifiedCell {
     }
 }
 
-/// The row's buttons: Open (the meeting screen, where speakers are named), View (the Markdown transcript in the app
-/// that opens Markdown), Delete Audio, and Copy Path (the meeting's folder, for an agent or Terminal). Each button
-/// acts on its own row, whatever is selected.
+/// A meeting's row: its Open and ··· show only while it is selected or under the pointer, so a list at rest is names.
+/// The table gets a new one each time it rebuilds the rows.
+///
+/// Invariants:
+/// 1. The row's `MeetingRowActionsView` is revealed exactly when the row is selected or under the pointer, also when
+///    the cell arrives after the row or the list scrolls under a pointer that does not move.
+@MainActor
+final class MeetingTableRowView: NSTableRowView {
+    private var pointerInside = false { didSet { revealActions() } }
+    private var tracking: NSTrackingArea?
+
+    override var isSelected: Bool { didSet { revealActions() } }
+
+    override func didAddSubview(_ subview: NSView) {
+        super.didAddSubview(subview)
+        revealActions()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+        checkPointer()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        checkPointer()
+    }
+
+    /// The list is rebuilt every 2 s, under a pointer that does not move and so enters nothing.
+    private func checkPointer() {
+        guard let window, window.isKeyWindow else { return }
+        pointerInside = bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+    }
+
+    override func mouseEntered(with event: NSEvent) { pointerInside = true }
+
+    override func mouseExited(with event: NSEvent) { pointerInside = false }
+
+    private func revealActions() {
+        for case let actions as MeetingRowActionsView in subviews {
+            actions.revealed = isSelected || pointerInside
+        }
+    }
+}
+
+/// The row's actions: Open (the meeting screen, where speakers are named), and a ··· with View Transcript (the Markdown
+/// transcript in the app that opens Markdown), Delete Audio… and Copy Path (the meeting's folder, for an agent or
+/// Terminal). Each acts on its own row, whatever is selected. Return, a double-click and the row's right-click menu
+/// reach the meeting while they are not revealed (`MeetingTableRowView`).
 ///
 /// Invariants:
 /// 1. A click calls the `onAction` of the meeting the cell was last shown for; a reused cell calls none until shown
 ///    again.
-/// 2. Each button is on exactly when the last `show(enabled:)` named it.
+/// 2. A menu's choice acts on the meeting the cell showed when the menu opened, even if the list was rebuilt and the
+///    cell reused for another meeting meanwhile (the list is rebuilt every 2 s, also under an open menu).
+/// 3. Each action is on exactly when the last `show(enabled:)` named it.
 @MainActor
 final class MeetingRowActionsView: NSTableCellView, IdentifiedCell {
     enum Kind: CaseIterable {
         case open, view, deleteAudio, copyPath
 
-        var symbol: String {
-            switch self {
-            case .open: "pencil"
-            case .view: "magnifyingglass"
-            case .deleteAudio: "speaker.slash"
-            case .copyPath: "doc.on.clipboard"
-            }
-        }
-
         var title: String {
             switch self {
             case .open: "Open"
             case .view: "View Transcript"
-            case .deleteAudio: "Delete Audio"
+            case .deleteAudio: "Delete Audio…"
             case .copyPath: "Copy Path"
             }
         }
@@ -160,32 +204,35 @@ final class MeetingRowActionsView: NSTableCellView, IdentifiedCell {
         }
     }
 
-    static let width: CGFloat = 112
+    static let width: CGFloat = 92
 
-    /// The row's meeting and which button was clicked.
+    /// The row's meeting and which action was chosen.
     var onAction: ((Kind) -> Void)?
-    private var buttons: [Kind: NSButton] = [:]
+    /// Whether Open and ··· show (`MeetingTableRowView`).
+    var revealed = false { didSet { stack.isHidden = !revealed } }
+    let openButton = NSButton(title: Kind.open.title, target: nil, action: nil)
+    let moreButton = MeetingActionsButton()
+    private let stack = NSStackView()
+    private var enabled: Set<Kind> = []
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
-        let stack = NSStackView()
-        stack.spacing = 2
+        openButton.bezelStyle = .push
+        openButton.controlSize = .small
+        openButton.toolTip = Kind.open.help
+        openButton.target = self
+        openButton.action = #selector(openClicked)
+        moreButton.controlSize = .small
+        moreButton.makeMenu = { [weak self] in self?.menu() }
+        stack.spacing = 4
+        stack.isHidden = true
         stack.translatesAutoresizingMaskIntoConstraints = false
-        for kind in Kind.allCases {
-            let image = NSImage(systemSymbolName: kind.symbol, accessibilityDescription: kind.title) ?? NSImage()
-            let button = NSButton(image: image, target: self, action: #selector(clicked(_:)))
-            button.isBordered = false
-            button.bezelStyle = .accessoryBarAction
-            button.toolTip = kind.help
-            button.setAccessibilityLabel(kind.title)
-            button.widthAnchor.constraint(equalToConstant: 24).isActive = true
-            buttons[kind] = button
-            stack.addArrangedSubview(button)
-        }
+        stack.addArrangedSubview(openButton)
+        stack.addArrangedSubview(moreButton)
         addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
@@ -193,30 +240,53 @@ final class MeetingRowActionsView: NSTableCellView, IdentifiedCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    /// The buttons in `enabled` are on; the others are off, with `reasons` (when given) as their tooltip.
-    func show(enabled: Set<Kind>, reasons: [Kind: String] = [:]) {
-        for (kind, button) in buttons {
-            button.isEnabled = enabled.contains(kind)
-            button.toolTip = button.isEnabled ? kind.help : (reasons[kind] ?? kind.help)
-        }
+    /// The actions in `enabled` are on; the others are off.
+    func show(enabled: Set<Kind>) {
+        self.enabled = enabled
+        openButton.isEnabled = enabled.contains(.open)
     }
 
-    /// The cell for a row: `enabled` buttons on, and `action` called with the clicked one; returns the cell.
+    /// The cell for a row: `enabled` actions on, and `action` called with the chosen one; returns the cell.
     func showing(_ enabled: Set<Kind>, action: @escaping (Kind) -> Void) -> Self {
         show(enabled: enabled)
         onAction = action
         return self
     }
 
-    func button(_ kind: Kind) -> NSButton? { buttons[kind] }
-
-    @objc private func clicked(_ sender: NSButton) {
-        guard let kind = buttons.first(where: { $0.value === sender })?.key else { return }
-        onAction?(kind)
+    /// What ··· opens: every action but Open, on this row's meeting now (invariant 2).
+    func menu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let action = onAction
+        for kind in Kind.allCases where kind != .open {
+            let choice = MenuChoice { action?(kind) }
+            let item = NSMenuItem(title: kind.title, action: #selector(MenuChoice.chosen), keyEquivalent: "")
+            item.target = choice
+            item.representedObject = choice  // A menu item's target is weak.
+            item.isEnabled = enabled.contains(kind)
+            item.toolTip = kind.help
+            menu.addItem(item)
+        }
+        return menu
     }
+
+    @objc private func openClicked() { onAction?(.open) }
 
     override func prepareForReuse() {
         super.prepareForReuse()
         onAction = nil
+        revealed = false
     }
+}
+
+/// What a row's menu item does, kept by the item.
+@MainActor
+private final class MenuChoice: NSObject {
+    private let run: () -> Void
+
+    init(run: @escaping () -> Void) {
+        self.run = run
+    }
+
+    @objc func chosen() { run() }
 }
