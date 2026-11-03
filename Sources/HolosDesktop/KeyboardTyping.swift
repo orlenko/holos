@@ -29,17 +29,6 @@ struct KeyboardStroke: Equatable {
         return [down] + events + [up]
     }
 
-    /// How long Shift's own events get on either side, for an app that forwards keys to another computer: sent with no
-    /// gap, the key can arrive there before Shift does, and "?" comes out as "/". Short enough to stay on the main actor.
-    static let shiftPauseMicroseconds: UInt32 = 15_000
-
-    /// Whether a pause follows the event at `index`: after any event of Shift's own, and before Shift's release.
-    static func pauses(after index: Int, of events: [CGEvent]) -> Bool {
-        guard events.indices.contains(index) else { return false }
-        if events[index].type == .flagsChanged { return true }
-        return events.indices.contains(index + 1) && events[index + 1].type == .flagsChanged
-    }
-
     private static func shift(pressed: Bool, source: CGEventSource?, marker: Int64) -> CGEvent? {
         guard let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Shift), keyDown: pressed) else { return nil }
         event.type = .flagsChanged

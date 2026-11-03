@@ -315,7 +315,7 @@ cannot type directly (including emoji and dead-key combinations) keep the entire
 Check another keyboard layout too: letters must follow that layout, and text requiring another layout must be
 kept for copying. No Option or Control combinations are synthesized.
 
-Screen Sharing gets the same physical keys, and Shift pressed and released as its own key, with a 15 ms pause on each side so it arrives before the key does. What runs on the other
+Screen Sharing gets the same physical keys, and Shift pressed and released as its own key. What runs on the other
 computer is unknown, so it is treated as a terminal: code tokens get no backticks. Dictate into a terminal and a text
 editor on the other Mac, and check uppercase letters and punctuation. Both Macs need the same keyboard layout, which
 Voice is Local cannot check. Right Option types as you speak. With Control-Option-Space, Control and Option reach the

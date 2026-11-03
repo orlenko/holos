@@ -93,13 +93,9 @@ private func exampleLayout() -> [Character: KeyboardStroke] {
     #expect(events.map { $0.getIntegerValueField(.keyboardEventKeycode) } == [kVK_Shift, kVK_ANSI_A, kVK_ANSI_A, kVK_Shift].map(Int64.init))
     #expect(events.map { $0.flags.contains(.maskShift) } == [true, true, true, false])
     #expect(events.allSatisfy { $0.getIntegerValueField(.eventSourceUserData) == 42 })
-    // Shift gets time on both sides of the key, and after its release; the key's own press and release do not wait.
-    #expect(events.indices.map { KeyboardStroke.pauses(after: $0, of: events) } == [true, false, true, true])
 
     // An unshifted key presses nothing else, and Shift is only pressed when asked for.
     let plain = KeyboardStroke(keyCode: CGKeyCode(kVK_ANSI_A), flags: [])
-    let plainEvents = try #require(plain.events(for: "a", source: source, marker: 42, pressingShift: true))
-    #expect(plainEvents.indices.allSatisfy { !KeyboardStroke.pauses(after: $0, of: plainEvents) }, "Plain keys never wait.")
     #expect(try #require(plain.events(for: "a", source: source, marker: 42, pressingShift: true)).map(\.type) == [.keyDown, .keyUp])
     #expect(try #require(shifted.events(for: "A", source: source, marker: 42)).map(\.type) == [.keyDown, .keyUp])
 }
