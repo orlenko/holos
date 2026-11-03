@@ -27,7 +27,7 @@ final class SectionEmptyView: NSView {
 
     var onAction: (() -> Void)?
     private let image = NSImageView()
-    private let titleLabel = NSTextField(labelWithString: "")
+    private let titleLabel = NSTextField(wrappingLabelWithString: "")
     private let textLabel = NSTextField(wrappingLabelWithString: "")
     private let button = NSButton(title: "", target: nil, action: nil)
     private static let textWidth: CGFloat = 340
@@ -41,6 +41,8 @@ final class SectionEmptyView: NSView {
         textLabel.alignment = .center
         textLabel.textColor = .secondaryLabelColor
         button.bezelStyle = .push
+        button.lineBreakMode = .byTruncatingTail
+        button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         button.target = self
         button.action = #selector(actionPressed)
         let stack = NSStackView(views: [image, titleLabel, textLabel, button])
@@ -58,17 +60,13 @@ final class SectionEmptyView: NSView {
             stack.bottomAnchor.constraint(equalTo: bottomAnchor),
             textLabel.widthAnchor.constraint(lessThanOrEqualToConstant: Self.textWidth),
             textLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
+            titleLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
+            button.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
         ])
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
-
-    override func layout() {
-        let width = min(Self.textWidth, max(80, bounds.width))
-        if textLabel.preferredMaxLayoutWidth != width { textLabel.preferredMaxLayoutWidth = width }
-        super.layout()
-    }
 
     /// Replaces what shows (invariants 1 and 2); `enabled` is the action's state.
     func show(_ content: Content, enabled: Bool = true) {
@@ -78,6 +76,7 @@ final class SectionEmptyView: NSView {
         titleLabel.isHidden = content.title == nil
         textLabel.stringValue = content.text
         button.title = content.action ?? ""
+        button.toolTip = content.action  // the title truncates in the narrowest column
         button.isHidden = content.action == nil
         button.isEnabled = enabled
         button.bezelColor = content.prominent ? .controlAccentColor : nil

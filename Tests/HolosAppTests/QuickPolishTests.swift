@@ -113,13 +113,31 @@ struct QuickPolishTests {
         #expect(!shown().contains("Turn On Dictation"))
     }
 
-    @Test func aNarrowEmptyViewKeepsItsTextInsideItsWidth() {
-        let view = SectionEmptyView(frame: NSRect(x: 0, y: 0, width: 160, height: 300))
-        view.show(.init(symbol: "mic", title: "Dictation is off", text: String(repeating: "word ", count: 30),
-                        action: "Turn On Dictation", prominent: true))
-        view.layoutSubtreeIfNeeded()
-        view.layoutSubtreeIfNeeded()
-        let labels = MainWindowNarrowTests.allViews(view).compactMap { $0 as? NSTextField }
-        for label in labels where !label.isHidden { #expect(label.frame.width <= 161) }
+    /// History's list at the narrowest window, the tightest place an empty view goes.
+    @Test(arguments: [(false, 0, true), (true, 0, true), (false, 2, true), (false, 0, false)])
+    func emptyHistoryFitsTheNarrowestList(unreadable: Bool, hidden: Int, recording: Bool) throws {
+        let actions = HistoryPane.Actions(copy: { _ in true }, correct: { _ in }, delete: { _ in }, clear: {},
+                                          audioURL: { _ in nil }, rerun: { _ in throw CancellationError() }, update: { _, _ in })
+        let pane = HistoryPane(actions: actions)
+        let controller = try MainWindowNarrowTests.window(on: .history, sidebarHidden: true, pane: pane)
+        controller.updateStatus(MainStatus(tone: .off, title: "Dictation off", message: ""))
+        let retention = recording ? HistoryRetention.standard : HistoryRetention.off
+        pane.update(records: [], retention: retention, problem: nil, hidden: hidden, unreadable: unreadable)
+        let content = try #require(controller.window.contentView)
+        for _ in 0..<3 { content.layoutSubtreeIfNeeded() }  // wrapped labels take their width, then their height
+        let empty = try #require(MainWindowNarrowTests.allViews(pane.view).compactMap { $0 as? SectionEmptyView }.first)
+        let list = try #require(empty.superview)
+        #expect(!empty.isHidden)
+        #expect(list.bounds.insetBy(dx: -0.5, dy: -0.5).contains(empty.frame), "\(empty.frame) in \(list.bounds)")
+        #expect(empty.frame.width > 100, "The text uses the column's width, not a stale narrow one.")
+        let parts = MainWindowNarrowTests.allViews(empty).filter { $0 is NSTextField || $0 is NSImageView || $0 is NSButton }
+        for view in parts where !view.isHiddenOrHasHiddenAncestor {
+            // Alignment rectangles: a symbol's image and a text field draw a little outside theirs.
+            let frame = try #require(view.superview).convert(view.alignmentRect(forFrame: view.frame), to: empty)
+            #expect(empty.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame), "\(view) at \(frame) in \(empty.bounds)")
+            if let label = view as? NSTextField {
+                #expect(label.frame.height + 0.5 >= label.intrinsicContentSize.height, "\(label.stringValue) is cut off.")
+            }
+        }
     }
 }

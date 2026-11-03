@@ -173,7 +173,7 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
             listStack.bottomAnchor.constraint(equalTo: listPane.bottomAnchor),
             emptyView.centerXAnchor.constraint(equalTo: listPane.centerXAnchor),
             emptyView.centerYAnchor.constraint(equalTo: listPane.centerYAnchor),
-            emptyView.widthAnchor.constraint(lessThanOrEqualTo: listPane.widthAnchor, constant: -40),
+            emptyView.widthAnchor.constraint(lessThanOrEqualTo: listPane.widthAnchor, constant: -16),
             listPane.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.listNarrowestWidth),
         ])
         // The list's width is set by moving the divider (`sizeList`), not by a width constraint, so a drag can move
