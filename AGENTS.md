@@ -253,6 +253,8 @@ Planned, see the [architecture roadmap](docs/architecture-roadmap.md) (`docs/arc
   `--color-moved` evidence and an unchanged test suite are also required.
 - `.quality/` and `docs/quality-adoption.md` record these gates for the shared quality runner, with execution disabled.
   They change no gate above; passing or failing that runner does not decide a merge.
+- Substantial features also follow the manual review procedure in `docs/quality-adoption.md` "Review procedure for
+  features": design review before code, then separate reviews, adjudicated. It adds to these gates and replaces none.
 
 ## Privacy
 

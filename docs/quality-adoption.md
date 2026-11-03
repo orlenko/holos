@@ -66,4 +66,44 @@ These stand between this setup and verified adoption:
 - Tests need isolated preferences before they can run under a wrapper.
 - The test suite needs a route that fits the time limit without running a subset.
 - Review routes need an enforced boundary and durable, exact-commit evidence.
-- No pre-implementation design critique route is required here, and there is no named dispute adjudicator.
+
+## Review procedure for features
+
+This repository adopts the manual
+[review workflow v0.2](https://github.com/orlenko/software-quality/blob/36b0b858b293e14af726e0adf58af476334ccd5d/docs/review-workflow.md)
+and its [role instructions](https://github.com/orlenko/software-quality/blob/36b0b858b293e14af726e0adf58af476334ccd5d/docs/review-roles.md),
+pinned to source `36b0b858b293e14af726e0adf58af476334ccd5d`. This pin is for those documents only. The runner's pin stays
+in `.quality/lock.json`, and nothing here runs automatically. The stricter rule wins wherever this and `AGENTS.md` differ.
+
+For a substantial feature:
+
+1. Before coding, write the user problem, acceptance, smallest alternative, data effects, failure behavior and test
+   plan, split into working increments. About 500 changed lines per PR is the aim. It is guidance, and the limit in
+   `AGENTS.md` "Pull requests" stays.
+2. Get a skeptical design review in a separate context, and pick the lenses below. Record the responses.
+3. After coding, get a general bug review in a fresh context that starts from the diff, not from the author's reasoning,
+   plus each selected lens in its own context with its own report.
+4. Someone other than the author and the report writers reconciles the reports, keeping each finding's original ID, and
+   orders the fixes. A valid blocker stays blocking until it is fixed and re-reviewed.
+5. Run every gate in `AGENTS.md` "Pull requests" on the final commit, and keep the record in the PR.
+
+Small changes inside a settled design skip step 1 and step 2, and keep the code reviews and all gates.
+
+| Lens | Applies when a change touches | Route today |
+|---|---|---|
+| Security and privacy | Permissions, user data, logs, Accessibility, the network | Separate agent context |
+| Data integrity | Anything in `<id>.holos`, the stores, locks, formats | Separate agent context |
+| Reliability and performance | The main actor, background jobs, cancellation, recording | Separate agent context |
+| Product and accessibility | A changed workflow or output, keyboard, VoiceOver | Separate agent context, then the owner in the real app |
+
+Other routes: the design review and adjudication use a separate agent context or a peer session. The general bug review is
+the local astra review. GitHub Codex stays a separate required gate and does not count as one of the lenses.
+
+The repository owner decides disputed findings.
+
+Limits of these routes:
+
+- A separate agent context is a fresh conversation on the same account. It does not prove independence, and it enforces no
+  permission boundary. The agent writing a change cannot adjudicate it.
+- No lens runs automatically, and nothing attests that one ran. A selected lens that did not run is a missing review.
+- This process has not yet been walked through on a real feature in this repository.
