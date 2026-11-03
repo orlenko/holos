@@ -124,8 +124,8 @@ struct MeetingsPaneGridTests {
         #expect(try !Self.actions(pane, first.id).revealed)
         #expect(try Self.actions(pane, second.id).revealed)
 
-        let row = try #require(pane.table.rowView(atRow: try #require(pane.rowIndex(of: first.id)), makeIfNecessary: true)
-            as? MeetingTableRowView)
+        let index = try #require(pane.rowIndex(of: first.id))
+        let row = try #require(pane.table.rowView(atRow: index, makeIfNecessary: true) as? MeetingTableRowView)
         let enter = try #require(NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0,
                                                         windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0,
                                                         userData: nil))
