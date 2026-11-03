@@ -100,6 +100,17 @@ private func exampleLayout() -> [Character: KeyboardStroke] {
     #expect(try #require(shifted.events(for: "A", source: source, marker: 42)).map(\.type) == [.keyDown, .keyUp])
 }
 
+@Test func leftOptionIsToldFromRightOptionByItsDeviceBit() {
+    // The flags macOS reports with only Right Option held, measured on a real keyboard.
+    #expect(!KeyboardTyping.leftOption(in: CGEventFlags(rawValue: 0x80140)))
+    #expect(KeyboardTyping.leftOption(in: CGEventFlags(rawValue: 0x80120)), "Left Option alone.")
+    #expect(KeyboardTyping.leftOption(in: CGEventFlags(rawValue: 0x80160)), "Both.")
+    #expect(!KeyboardTyping.leftOption(in: CGEventFlags(rawValue: 0x100)), "Nothing held.")
+    // Holding only the hold-to-talk key never refuses typing, which is what lets words go out mid-hold.
+    let right = CGEventFlags(rawValue: 0x80140)
+    #expect(!KeyboardTyping.heldKeysReachRemote(right, leftOption: KeyboardTyping.leftOption(in: right), shortcut: .rightOption))
+}
+
 @Test func keysHeldForTheOtherComputerAreTold() {
     // Right Option alone never reaches the remote screen when it is the hold-to-talk key: the hotkey tap consumes it.
     #expect(!KeyboardTyping.heldKeysReachRemote([], leftOption: false, shortcut: .rightOption))
