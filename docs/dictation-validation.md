@@ -270,9 +270,9 @@ audio of dictations (for Run Again)** on (the default):
    speech assets are missing, run `voiceislocal setup --locale <language>` first.)
 5. **Off stops keeping audio**: untick **Keep the audio of dictations**; it asks whether
    to also delete the audio already kept; choose **Keep It**. Dictate: the new dictation
-   has "No audio was kept for this dictation." and no new file appears in `audio/`. Tick
+   has no audio row and no Run Again, and no new file appears in `audio/`. Tick
    it again, untick it and choose **Delete Audio**: `audio/` is empty, the older
-   dictations say no audio was kept, and their text stays. Tick it again.
+   dictations show no audio row, and their text stays. Tick it again.
 6. **Cancelled and refused dictations leave no audio**: press Escape while dictating,
    and try a password field: no file appears in `audio/`.
 7. **Delete and Clear remove audio**: Delete one dictation (⌫): its `.m4a` is gone.

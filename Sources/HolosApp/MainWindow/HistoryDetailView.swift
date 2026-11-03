@@ -3,6 +3,10 @@ import HolosCore
 
 /// The selected dictation: app and time, the text as written, the text as heard with the changed words marked, the
 /// result, language, fixes, and length, and Copy, Copy As Heard, Correct…, Delete.
+///
+/// Invariants:
+/// 1. A hidden button does not answer its shortcut.
+/// 2. A dictation that never had audio shows no audio row, since nothing is wrong; audio that went missing says so.
 @MainActor
 final class HistoryDetailView: NSView {
     var onCopy: ((_ heard: Bool) -> Void)?
@@ -16,7 +20,10 @@ final class HistoryDetailView: NSView {
     /// The selected dictation's audio: playable (and whether it plays, "0:03 / 0:12"), or why there is none.
     enum AudioState {
         case available(playing: Bool, time: String)
+        /// Kept once, and no longer on this Mac.
         case missing(String)
+        /// None was kept for this dictation.
+        case none
     }
 
     private let playButton = NSButton(title: "Play", target: nil, action: nil)
@@ -86,7 +93,7 @@ final class HistoryDetailView: NSView {
             values[name] = value
             grid.addRow(with: [label, value])
         }
-        grid.column(at: 0).xPlacement = .trailing
+        grid.column(at: 0).xPlacement = .leading
 
         for (button, action) in [(copyButton, #selector(copyPressed)), (copyHeardButton, #selector(copyHeardPressed)),
                                  (correctButton, #selector(correctPressed)), (deleteButton, #selector(deletePressed))] {
@@ -252,6 +259,7 @@ final class HistoryDetailView: NSView {
     func showAudio(_ state: AudioState, running: Bool) {
         switch state {
         case .available(let playing, let time):
+            audioRow.isHidden = false
             playButton.isHidden = false
             playButton.isEnabled = true
             playButton.title = playing ? "Pause" : "Play"
@@ -262,13 +270,24 @@ final class HistoryDetailView: NSView {
             runAgainButton.isHidden = false
             runAgainButton.isEnabled = !running
         case .missing(let reason):
-            playButton.isHidden = true
-            playButton.isEnabled = false
+            audioRow.isHidden = false
+            hideAudioControls()
             audioTime.stringValue = reason
             audioTime.toolTip = reason  // whole when a narrow window cuts it short
-            runAgainButton.isHidden = true
-            runAgainButton.isEnabled = false  // a hidden button must not answer ⌘R either
+        case .none:
+            audioRow.isHidden = true  // invariant 2
+            hideAudioControls()
+            audioTime.stringValue = ""
+            audioTime.toolTip = nil
         }
+        needsLayout = true
+    }
+
+    private func hideAudioControls() {
+        playButton.isHidden = true
+        playButton.isEnabled = false
+        runAgainButton.isHidden = true
+        runAgainButton.isEnabled = false  // invariant 1: ⌘R
     }
 
     /// The Run Again result for the selected dictation; nil hides it.
