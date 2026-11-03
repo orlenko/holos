@@ -9,11 +9,16 @@ final class HistoryRowView: NSTableCellView {
     private let badge = BadgeLabel()
     private let preview = NSTextField(wrappingLabelWithString: "")
 
+    /// Below this row width the badge is a dot, with its word in a tooltip: the app's name and the time come first.
+    static let fullBadgeWidth: CGFloat = 260
+
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
         time.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         time.textColor = .secondaryLabelColor
+        time.setContentCompressionResistancePriority(.required, for: .horizontal)
+        time.setContentHuggingPriority(.required, for: .horizontal)
         app.font = .systemFont(ofSize: 12, weight: .semibold)
         app.lineBreakMode = .byTruncatingTail
         preview.font = .systemFont(ofSize: 12)
@@ -45,6 +50,8 @@ final class HistoryRowView: NSTableCellView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     override func layout() {
+        // Set before the stack lays out: the badge's width depends on it, and the name and time must fit beside it.
+        badge.compact = bounds.width < Self.fullBadgeWidth
         super.layout()
         let width = max(100, bounds.width - 12)
         if preview.preferredMaxLayoutWidth != width { preview.preferredMaxLayoutWidth = width }
@@ -61,10 +68,18 @@ final class HistoryRowView: NSTableCellView {
     }
 }
 
-/// A small rounded badge ("Fixed", "Not inserted").
+/// A small rounded badge ("Fixed", "Not inserted"), or only a dot of its color where the row is narrow.
 @MainActor
 final class BadgeLabel: NSTextField {
     private var warning = false
+    private static let dotSize: CGFloat = 7
+    var compact = false {
+        didSet {
+            guard compact != oldValue else { return }
+            invalidateIntrinsicContentSize()
+            needsDisplay = true
+        }
+    }
 
     init() {
         super.init(frame: .zero)
@@ -73,6 +88,8 @@ final class BadgeLabel: NSTextField {
         isBordered = false
         drawsBackground = false
         font = .systemFont(ofSize: 10, weight: .semibold)
+        maximumNumberOfLines = 1
+        cell?.wraps = false  // squeezed to a dot, the word must not grow the field downward
         wantsLayer = true
         setContentCompressionResistancePriority(.required, for: .horizontal)
     }
@@ -82,11 +99,17 @@ final class BadgeLabel: NSTextField {
 
     override var intrinsicContentSize: NSSize {
         let size = super.intrinsicContentSize
-        return NSSize(width: size.width + 10, height: size.height + 2)
+        return NSSize(width: compact ? Self.dotSize : size.width + 10, height: size.height + 2)
     }
 
     override func draw(_ dirtyRect: NSRect) {
         let color: NSColor = warning ? .systemOrange : .controlAccentColor
+        if compact {
+            color.setFill()
+            let origin = NSPoint(x: (bounds.width - Self.dotSize) / 2, y: (bounds.height - Self.dotSize) / 2)
+            NSBezierPath(ovalIn: NSRect(origin: origin, size: NSSize(width: Self.dotSize, height: Self.dotSize))).fill()
+            return
+        }
         color.withAlphaComponent(0.18).setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 4, yRadius: 4).fill()
         let text = NSAttributedString(string: stringValue, attributes: [
@@ -99,6 +122,7 @@ final class BadgeLabel: NSTextField {
     func show(_ text: String?, warning: Bool) {
         self.warning = warning
         stringValue = text ?? ""
+        toolTip = text
         isHidden = text == nil
         invalidateIntrinsicContentSize()
         needsDisplay = true

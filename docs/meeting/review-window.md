@@ -173,7 +173,7 @@ public enum SessionAudioComposition {
   words changed elsewhere refuse the split), never an index read again. Then the second
   part's row is selected and its speaker pop-up opens, so it can be given its speaker at
   once; it keeps the first part's until then (a search hiding that row is cleared first).
-  The edit-mode banner says so. The Split Turn sheet stays: it chooses a place by keyboard, and plays from
+  The edit-mode banner's help button says so. The Split Turn sheet stays: it chooses a place by keyboard, and plays from
   it first. Joining rows is the inverse, as removing the line break between two paragraphs
   of text (2026-10-08): in edit mode, Backspace with the caret at the very start of a row's
   first word and nothing changed joins that row to the row before it, and forward Delete at
@@ -333,8 +333,8 @@ public enum SessionAudioComposition {
 shown, Otter-style.
 
 - *Mode.* "Edit Words" (a toggle in the toolbar, ⌘E; Export moves to ⇧⌘E) turns edit
-  mode on: a tinted banner says "Editing — click a word to change it…" and the turn list
-  is tinted. Off, a word click plays from it as before. On, a word click does not seek: it
+  mode on: a tinted banner says "Editing — click a word to change it. Return saves, Esc cancels.", with a help
+  button that lists every key of the mode, and the turn list is tinted. Off, a word click plays from it as before. On, a word click does not seek: it
   opens a field over the word, prefilled with it and selected. ⇧-click or a drag in the
   same row extends the selection, keeping what was typed in the field; it stops at the end of
   the word's turn and segment (the

@@ -153,7 +153,7 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             [Self.title("Speakers"), speakers],
             [Self.title("Language"), languagePopup],
             [Self.title("Also detect"), alsoDetectPopup],
-            [NSGridCell.emptyContentView, speech],
+            [Self.title("Model"), speech],
             [Self.title("Screen"), screenChoice],
         ])
         grid.rowSpacing = 10

@@ -1407,8 +1407,8 @@ that place: terms the recognizer should expect (names, products, jargon), kept i
   count; the field below adds (Return adds; a paste of several lines adds one term per
   line; a term that could not be added, too long or with the list full or unsaved, stays
   in the field), Remove or ⌫ removes the selected terms. Its "Often heard as" column is
-  edited in place (double-click, comma-separated, saved when the field is left); the
-  search finds those words too. `voiceislocal words list|add <term>… [--heard-as a,b]|
+  edited in place (double-click, comma-separated, saved when the field is left), and its hint shows on the
+  selected row only, or the first when none is selected; the search finds those words too. `voiceislocal words list|add <term>… [--heard-as a,b]|
   remove <term>…|import <file>|heard-as [<term>] [--add a,b] [--remove a,b]` does the same
   from Terminal (import: one term per line, `-` for standard input; `--heard-as` with one
   term, added to those a listed term has). Nothing is added automatically.
