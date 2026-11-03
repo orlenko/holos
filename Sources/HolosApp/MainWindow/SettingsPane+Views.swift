@@ -33,6 +33,18 @@ extension SettingsPane {
         return note
     }
 
+    /// A caption's one line, and a help button with the rest. It wraps at the width it gets (the card's).
+    static func note(_ caption: SettingsCaption, about subject: String) -> NSStackView {
+        let line = note(caption.short)
+        line.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let help = HelpPopoverButton(text: caption.more, label: "About \(subject)")
+        help.controlSize = .small
+        let row = NSStackView(views: [line, help, NSView()])
+        row.alignment = .firstBaseline
+        row.spacing = 6
+        return row
+    }
+
     /// A checkbox whose title wraps when the card is narrower than it (the window beside a call's window).
     static func wrapsTitle(_ checkbox: NSButton) {
         checkbox.lineBreakMode = .byWordWrapping

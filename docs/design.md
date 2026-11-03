@@ -383,7 +383,9 @@ remove meetings, which stay until deleted in Meetings), and Run Setup Assistantâ
 the permissions every second while on screen.
 
 Settings stays one scrolling page, with chapters and a search field (`SettingsChapter`,
-`SettingsChapterTracking`, `SettingsSearch`). The sidebar lists the cards under Settings as
+`SettingsChapterTracking`, `SettingsSearch`). A setting's caption is one line, with the rest behind a help button
+(`SettingsCaption`, `HelpPopoverButton`), and search looks in both. What is sent, and what stays on this Mac, stays in the
+line that shows. The sidebar lists the cards under Settings as
 chapters (General, Permissions, Dictation, Meetings, Reading, Dictation history), always
 shown and indented under it. Choosing a chapter scrolls its card to the top, smoothly when
 Settings was already on screen (at once with Reduce Motion), and clears a search. While the
