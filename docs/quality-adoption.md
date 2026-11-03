@@ -78,16 +78,21 @@ in `.quality/lock.json`, and nothing here runs automatically. The stricter rule 
 For a substantial feature:
 
 1. Before coding, write the user problem, acceptance, smallest alternative, data effects, failure behavior and test
-   plan, split into working increments. About 500 changed lines per PR is the aim. It is guidance, and the limit in
-   `AGENTS.md` "Pull requests" stays.
-2. Get a skeptical design review in a separate context, and pick the lenses below. Record the responses.
-3. After coding, get a general bug review in a fresh context that starts from the diff, not from the author's reasoning,
-   plus each selected lens in its own context with its own report.
-4. Someone other than the author and the report writers reconciles the reports, keeping each finding's original ID, and
+   plan, split into working increments. About 500 changed lines per PR is the aim, counting handwritten tests, docs and
+   config. It is guidance, and the limit in `AGENTS.md` "Pull requests" stays.
+2. Choose the lenses below for the design and for the code, and record why any lens does not apply.
+3. Before coding, get a skeptical general design review and each lens chosen for the design, each in its own context
+   with its own report. Someone else reconciles them. Design advice is advisory: record what was accepted or rejected, and
+   why. Existing privacy and security rules still bind.
+4. After coding, get a general bug review in a fresh context that starts from the diff, not from the author's reasoning,
+   plus each lens chosen for the code, each in its own context with its own report.
+5. Someone other than the author and the report writers reconciles the reports, keeping each finding's original ID, and
    orders the fixes. A valid blocker stays blocking until it is fixed and re-reviewed.
-5. Run every gate in `AGENTS.md` "Pull requests" on the final commit, and keep the record in the PR.
+6. Run every gate in `AGENTS.md` "Pull requests" on the final commit, and keep the record in the PR. Restacking a PR
+   invalidates its affected reviews, and stacked PRs also get a review of the combined result.
 
-Small changes inside a settled design skip step 1 and step 2, and keep the code reviews and all gates.
+A small change inside a settled design skips steps 1 and 3. It still chooses the lenses for its code, and keeps the code
+reviews and all gates. A relevant lens that cannot run is a missing review, not one that does not apply.
 
 | Lens | Applies when a change touches | Route today |
 |---|---|---|
@@ -99,7 +104,8 @@ Small changes inside a settled design skip step 1 and step 2, and keep the code 
 Other routes: the design review and adjudication use a separate agent context or a peer session. The general bug review is
 the local astra review. GitHub Codex stays a separate required gate and does not count as one of the lenses.
 
-The repository owner decides disputed findings.
+The repository owner decides disputed findings. That does not waive a valid blocker or a missing review, and an owner who
+wrote the change or a report in dispute hands that dispute to a separate context for a recommendation first.
 
 Limits of these routes:
 
