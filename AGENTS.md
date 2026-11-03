@@ -251,6 +251,8 @@ Planned, see the [architecture roadmap](docs/architecture-roadmap.md) (`docs/arc
 - Gates before merge, all on the head commit: `./scripts/test.sh --no-parallel` passes, `scripts/check-size.sh`
   passes, the GitHub Codex review is clean, and a local astra review is clean. For a moves-only refactor, the
   `--color-moved` evidence and an unchanged test suite are also required.
+- `.quality/` and `docs/quality-adoption.md` record these gates for the shared quality runner, with execution disabled.
+  They change no gate above; passing or failing that runner does not decide a merge.
 
 ## Privacy
 
