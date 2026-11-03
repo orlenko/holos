@@ -29,9 +29,9 @@ How each item gets covered:
 - [ ] **Titles and summaries.** After the meeting, the Meetings row gets a title and a summary that match
   what was discussed; a name you gave the meeting is kept.
 - [ ] **Meetings list.** One line per meeting under Today / Yesterday / This Week headers: Name with
-  badges, When, Description, and the Open, View, Delete Audio and Copy Path buttons, each acting on its
-  own row (View opens the Markdown transcript in your Markdown app; Copy Path pastes as the meeting's
-  folder; Delete Audio asks, and "Don't ask again" sticks). A click on the selected meeting's name
+  badges, When, Description, and, on the selected row or the one under the pointer, Open and a ··· with
+  View Transcript, Delete Audio… and Copy Path, each acting on its own row (View Transcript opens the
+  Markdown transcript in your Markdown app; Copy Path pastes as the meeting's folder; Delete Audio asks, and "Don't ask again" sticks). A click on the selected meeting's name
   renames it, a double-click opens it; Rename… (⌘R) works; the search field filters by title, summary
   and people. Narrow the window beside a call: When hides and nothing overlaps.
 - [ ] **Automatic audio cleanup.** Settings › Meetings: turn on "Delete the audio of meetings older

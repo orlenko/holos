@@ -93,9 +93,11 @@ struct MeetingsMultiSelectTests {
         fixture.pane.performBulk = { bulk.append(($0, $1)) }
         fixture.pane.update(running: ["C": "Cleaning up…"])
         fixture.select(["R", "A", "C", "D"])
-        let delete = try fixture.button("Delete Meeting…")
+        let menu = try #require(fixture.pane.selectionMenu())
+        let delete = try #require(menu.items.last)
+        #expect(delete.title == "Delete 4 Meetings…")
         #expect(delete.isEnabled)
-        delete.performClick(nil)
+        menu.performActionForItem(at: menu.index(of: delete))
         #expect(single.isEmpty, "Several selected: no single deletion.")
         let (action, plan) = try #require(bulk.first)
         #expect(action == .deleteMeeting)
@@ -124,7 +126,8 @@ struct MeetingsMultiSelectTests {
 
         // One meeting selected: the single deletion, as before.
         fixture.select(["A"])
-        try fixture.button("Delete Meeting…").performClick(nil)
+        let oneMenu = try #require(fixture.pane.selectionMenu())
+        oneMenu.performActionForItem(at: oneMenu.numberOfItems - 1)
         #expect(single.map(\.1) == ["A"])
         #expect(bulk.count == 3)
     }
@@ -135,13 +138,13 @@ struct MeetingsMultiSelectTests {
         fixture.pane.update(running: ["A": "Waiting to move to the Trash…", "B": "Moving to the Trash…"])
         fixture.pane.update(bulkStatus: "Moving 1 of 2 meetings to the Trash…")
         fixture.select(["A"])
-        #expect(try !fixture.button("Delete Meeting…").isEnabled)
+        #expect(try !fixture.deleteItem().isEnabled)
         #expect(fixture.pane.statusText.hasPrefix("Moving 1 of 2 meetings to the Trash…"))
         let a = try #require(fixture.meetings.first { $0.id == "A" })
         #expect(fixture.pane.badges(a, livePhase: nil).contains { $0.text == "Waiting to move to the Trash…" })
         fixture.pane.update(running: [:])
         fixture.pane.update(bulkStatus: nil)
-        #expect(try fixture.button("Delete Meeting…").isEnabled)
+        #expect(try fixture.deleteItem().isEnabled)
         #expect(!fixture.pane.statusText.contains("Moving"))
     }
 
@@ -150,12 +153,9 @@ struct MeetingsMultiSelectTests {
         fixture.select(["A", "B", "C"])
         #expect(fixture.pane.statusText == "3 meetings selected · 1 h 30 min · 300 MB")
         #expect(fixture.pane.selectionAnnouncement == "3 meetings selected")
-        for title in ["Delete Meeting…", "Advanced…"] {
-            #expect(try fixture.button(title).isEnabled, "\(title)")
-        }
-        for title in ["Open"] {
-            #expect(try !fixture.button(title).isEnabled, "\(title) is for one meeting")
-        }
+        #expect(fixture.pane.selectionActions.isEnabled)
+        #expect(try fixture.deleteItem().isEnabled)
+        #expect(try fixture.deleteItem().title == "Delete 3 Meetings…")
         fixture.select(["A"])
         #expect(fixture.pane.selectionAnnouncement == nil)
         #expect(!fixture.pane.statusText.contains("selected"))
@@ -243,9 +243,9 @@ struct MeetingsMultiSelectTests {
                                    byExtendingSelection: false)
         }
 
-        func button(_ title: String) throws -> NSButton {
-            try #require(MainWindowNarrowTests.allViews(pane.view).compactMap { $0 as? NSButton }
-                .first { $0.title == title })
+        /// The deletion in the selection's ···.
+        func deleteItem() throws -> NSMenuItem {
+            try #require(pane.selectionMenu()?.items.last)
         }
 
         /// A key press in the window (125: ↓, 51: ⌫).

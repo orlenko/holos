@@ -1584,13 +1584,13 @@ headers (Today, Yesterday, This Week, then by month), newest first (the meeting 
 saved first). The columns are Name (the meeting's title in bold, with small badges at its right),
 When (the start, as the time alone today and yesterday, the weekday this week, else the date, and
 the length), Description (the first line of the summary, else the people its speaker labels name,
-"Alex, Sam and 2 others"; the whole of both on hover), and four buttons that act on their own row
-whatever is selected: Open (pencil: the meeting screen, where speakers are named), View
-(magnifying glass: exports/transcript.md in the app that opens Markdown; off without a saved
-transcript, and a beep when the file is missing), Delete
-Audio (speaker with a slash; off when `MeetingActionPolicy` refuses it, for example while the meeting
-records, is worked on, or has no audio), and Copy Path (the meeting's folder, for an agent or
-Terminal). The buttons' states come from the catalog read, so drawing a row reads no files. Where
+"Alex, Sam and 2 others"; the whole of both on hover), and, while the row is selected or under the
+pointer, Open and a ··· that act on their own row whatever is selected. Open is the meeting screen,
+where speakers are named. The ··· holds View Transcript (exports/transcript.md in the app that opens
+Markdown; off without a saved transcript, and a beep when the file is missing), Delete Audio… (off
+when `MeetingActionPolicy` refuses it, for example while the meeting records, is worked on, or has
+no audio), and Copy Path (the meeting's folder, for an agent or Terminal). Their states come from
+the catalog read, so drawing a row reads no files. Where
 the list is narrower than 470 points (beside a call's window) the When column is
 hidden; the day headers still say when. Badges appear only when there is something to say:
 ● Recording (red), ● Paused, Starting…, Saving…, what a command is doing ("Labelling speakers…",
@@ -1601,7 +1601,7 @@ and VoiceOver reads the whole row from the name; the footer keeps the total and 
 search field above the list (⌘F) filters by title, name, summary, key points, action items and
 people, ignoring case and accents.
 
-Delete Audio on one meeting (its row's button or the menu) asks first, with "Don't ask again"
+Delete Audio on one meeting (its row's ··· or the menu) asks first, with "Don't ask again"
 (`MeetingAudioPreferences`, UserDefaults `confirmMeetingAudioDeletion`); Delete Audio of several
 meetings always asks, since it names the meetings it skips.
 
@@ -1637,10 +1637,12 @@ transcript files get the summary, key points and action items (Markdown and JSON
 `voiceislocal session summarize` makes them from Terminal. docs/meeting/titles-summaries.md §4.17 has the
 method, files and measurements.
 
-The Meetings page offers Start Recording… to open the same start panel as the menu bar.
+The Meetings page offers Start Recording… beside the search field, in the accent colour, to open
+the same start panel as the menu bar (with no meetings, the empty list offers it instead).
 It is available while the recorder is idle or failed; recording, starting, and saving keep it off.
-The list offers Open, Delete Meeting…, and Advanced. Open, Return, and double-click all
-enter the same meeting screen inside the main window. The row context menu keeps Open
+The ··· beside it holds the selection's Advanced actions and Delete Meeting…, and is off with nothing
+selected; Delete Meeting… is also ⌫ and the right-click menu. A row's Open, Return, and double-click
+all enter the same meeting screen inside the main window. The row context menu keeps Open
 and Delete Meeting… at the top; Advanced contains export, transcript-file preview, Finder,
 Copy Path, rename, summaries, final transcription, recovery, speaker labelling, and audio deletion.
 The meeting screen's three-dot button exposes these advanced actions too. Editable review
@@ -1654,7 +1656,8 @@ selects the meetings on both sides. The selection is kept by meeting, not by row
 is read again (every 2 s, and as a meeting records or a command works on one), and once every
 selected meeting is deleted the meeting after the first of them is selected (the one before when
 they were last); for a deletion of several, once it ended, from the list as it was when it began,
-however the refreshes in between saw them go. With several selected, the line under the buttons sums them up ("5 meetings selected ·
+however the refreshes in between saw them go. One selected meeting's title, length and size are on the line under the list unless something is
+happening to it. With several selected, that line sums them up ("5 meetings selected ·
 3 h 12 min · 1.2 GB") and VoiceOver announces the count. Show in Finder reveals all of them;
 Delete Meeting… (also ⌫ and ⌘⌫) and Delete Audio… act on every selected meeting that
 `MeetingActionPolicy` allows, the rule a single deletion follows; the actions for one meeting
