@@ -2,6 +2,11 @@ import AppKit
 import HolosMeeting
 
 extension MeetingsPane {
+    static let noMeetings = SectionEmptyView.Content(
+        symbol: "waveform", title: "No meetings yet",
+        text: "Record a call or a room. Everything is transcribed on this Mac; you name the speakers afterwards.",
+        action: "Start Recording…", prominent: true)
+
     var onStartRecording: (() -> Void)? {
         get { listState.onStartRecording }
         set { listState.onStartRecording = newValue; updateButtons() }

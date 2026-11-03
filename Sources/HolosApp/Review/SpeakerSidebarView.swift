@@ -7,6 +7,9 @@ import HolosSpeakers
 /// box of known people, most recently used first), talk time, the start of the speaker's two longest turns, Play
 /// samples, "This is me", Merge into…, and the suggestion ("Maybe Maria" with Confirm / Not Maria) or automatic name
 /// ("Jim (auto)" with Not Jim). Speakers without turns are not listed (except ones made in the window).
+///
+/// Invariants:
+/// 1. An update that arrives while a name is being edited waits for the edit to end: typing is never replaced.
 @MainActor
 final class SpeakerSidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSComboBoxDelegate {
     /// What one row shows.
@@ -72,7 +75,6 @@ final class SpeakerSidebarView: NSView, NSTableViewDataSource, NSTableViewDelega
         table.headerView = nil
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.selectionHighlightStyle = .none
-        table.gridStyleMask = .solidHorizontalGridLineMask
         table.dataSource = self
         table.delegate = self
         let scroll = NSScrollView()
@@ -99,7 +101,7 @@ final class SpeakerSidebarView: NSView, NSTableViewDataSource, NSTableViewDelega
     /// Shows `rows`; while a name is being typed the update waits until the field is left.
     func update(rows newRows: [Row], people newPeople: [SpeakerProfile], editable newEditable: Bool,
                 suggestions: Int) {
-        guard !editing, !nameFieldIsActive else {
+        guard !editing, !nameFieldIsActive else {  // invariant 1
             pending = (newRows, newPeople, newEditable, suggestions)
             return
         }

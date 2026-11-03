@@ -6,6 +6,9 @@ import HolosCore
 /// the search field. Each term's "Often heard as" words (real words the recognizer writes for it, such as "cloud" for
 /// "Claude") are edited in place in their column, comma-separated. The app keeps the list (`words.json`); this view
 /// shows it and reports what each change did.
+///
+/// Invariants:
+/// 1. At most one row shows the "Often heard as" hint (`hintRow`), so the column does not repeat it.
 @MainActor
 final class WordListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
     struct AddResult {
@@ -71,7 +74,6 @@ final class WordListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         table.addTableColumn(heardAs)
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.allowsMultipleSelection = true
-        table.usesAlternatingRowBackgroundColors = true
         table.dataSource = self
         table.delegate = self
         table.setAccessibilityLabel("Word list")
@@ -232,7 +234,8 @@ final class WordListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
 
     private static let heardAsHint = "Double-click to add, e.g. cloud, clot"
 
-    /// The one row whose empty "Often heard as" field shows the hint: the selected row, or the first when none is.
+    /// The one row whose empty "Often heard as" field shows the hint: the selected row, or the first when none is
+    /// (invariant 1).
     static func hintRow(selected: IndexSet, count: Int) -> Int? {
         guard count > 0 else { return nil }
         return selected.first ?? 0

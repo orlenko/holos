@@ -77,4 +77,67 @@ struct QuickPolishTests {
         banner.show(message: nil)
         #expect(banner.label.stringValue == EditModeBanner.usual)
     }
+
+    @Test func anEmptyHistorySaysHowToStartAndOffersTurningDictationOn() {
+        func content(unreadable: Bool = false, hidden: Int = 0, recording: Bool = true, off: Bool) -> SectionEmptyView.Content {
+            HistoryPane.emptyContent(unreadable: unreadable, hidden: hidden, recording: recording, dictationOff: off,
+                                     shortcut: "Right Option")
+        }
+        let off = content(off: true)
+        #expect(off.action == "Turn On Dictation")
+        #expect(off.text.contains("Right Option"))
+        let on = content(off: false)
+        #expect(on.action == nil)
+        #expect(on.title == "No dictations yet")
+        #expect(on.text.contains("Right Option"))
+        // History itself being off, or the file unreadable, is what the section has to say, whatever dictation does.
+        #expect(content(recording: false, off: true).title == "History is off")
+        #expect(content(recording: false, off: true).action == nil)
+        #expect(content(unreadable: true, off: true).title == "History could not be read")
+        #expect(content(hidden: 2, off: true).text.contains("2 dictations were"))
+    }
+
+    @Test func theMainWindowTellsHistoryWhenDictationIsOff() throws {
+        let actions = HistoryPane.Actions(copy: { _ in true }, correct: { _ in }, delete: { _ in }, clear: {},
+                                          audioURL: { _ in nil }, rerun: { _ in throw CancellationError() }, update: { _, _ in })
+        let pane = HistoryPane(actions: actions)
+        let controller = try MainWindowNarrowTests.window(on: .history, sidebarHidden: false, pane: pane)
+        pane.update(records: [], retention: .standard, problem: nil, hidden: 0, unreadable: false)
+        func shown() -> [String] {
+            MainWindowNarrowTests.allViews(pane.view).compactMap { $0 as? NSButton }
+                .filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.title)
+        }
+        controller.updateStatus(MainStatus(tone: .off, title: "Dictation off", message: ""))
+        #expect(shown().contains("Turn On Dictation"))
+        controller.updateStatus(MainStatus(tone: .ready, title: "Dictation ready", message: ""))
+        #expect(!shown().contains("Turn On Dictation"))
+    }
+
+    /// History's list at the narrowest window, the tightest place an empty view goes.
+    @Test(arguments: [(false, 0, true), (true, 0, true), (false, 2, true), (false, 0, false)])
+    func emptyHistoryFitsTheNarrowestList(unreadable: Bool, hidden: Int, recording: Bool) throws {
+        let actions = HistoryPane.Actions(copy: { _ in true }, correct: { _ in }, delete: { _ in }, clear: {},
+                                          audioURL: { _ in nil }, rerun: { _ in throw CancellationError() }, update: { _, _ in })
+        let pane = HistoryPane(actions: actions)
+        let controller = try MainWindowNarrowTests.window(on: .history, sidebarHidden: true, pane: pane)
+        controller.updateStatus(MainStatus(tone: .off, title: "Dictation off", message: ""))
+        let retention = recording ? HistoryRetention.standard : HistoryRetention.off
+        pane.update(records: [], retention: retention, problem: nil, hidden: hidden, unreadable: unreadable)
+        let content = try #require(controller.window.contentView)
+        for _ in 0..<3 { content.layoutSubtreeIfNeeded() }  // wrapped labels take their width, then their height
+        let empty = try #require(MainWindowNarrowTests.allViews(pane.view).compactMap { $0 as? SectionEmptyView }.first)
+        let list = try #require(empty.superview)
+        #expect(!empty.isHidden)
+        #expect(list.bounds.insetBy(dx: -0.5, dy: -0.5).contains(empty.frame), "\(empty.frame) in \(list.bounds)")
+        #expect(empty.frame.width > 100, "The text uses the column's width, not a stale narrow one.")
+        let parts = MainWindowNarrowTests.allViews(empty).filter { $0 is NSTextField || $0 is NSImageView || $0 is NSButton }
+        for view in parts where !view.isHiddenOrHasHiddenAncestor {
+            // Alignment rectangles: a symbol's image and a text field draw a little outside theirs.
+            let frame = try #require(view.superview).convert(view.alignmentRect(forFrame: view.frame), to: empty)
+            #expect(empty.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame), "\(view) at \(frame) in \(empty.bounds)")
+            if let label = view as? NSTextField {
+                #expect(label.frame.height + 0.5 >= label.intrinsicContentSize.height, "\(label.stringValue) is cut off.")
+            }
+        }
+    }
 }

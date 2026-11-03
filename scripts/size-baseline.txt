@@ -1,12 +1,13 @@
 # Line counts of Sources/ Swift files over 600 lines; read by scripts/check-size.sh.
 # Regenerate with scripts/check-size.sh --update-baseline. A raised entry needs a
 # reason in the PR description (AGENTS.md "Size caps").
-# entries: 42
+# entries: 43
 1702 Sources/HolosApp/HolosApp+Meeting.swift
 1604 Sources/HolosApp/HolosApp.swift
+629 Sources/HolosApp/MainWindow/HistoryPane.swift
 625 Sources/HolosApp/MainWindow/LiveMeetingView.swift
-731 Sources/HolosApp/MainWindow/MainWindowController.swift
-1756 Sources/HolosApp/MainWindow/MeetingsPane.swift
+738 Sources/HolosApp/MainWindow/MainWindowController.swift
+1755 Sources/HolosApp/MainWindow/MeetingsPane.swift
 833 Sources/HolosApp/MainWindow/ReadingPane.swift
 1350 Sources/HolosApp/MainWindow/SettingsPane.swift
 960 Sources/HolosApp/Reading/ReadingController.swift

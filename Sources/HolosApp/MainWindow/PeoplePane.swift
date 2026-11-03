@@ -9,6 +9,10 @@ import HolosStorage
 /// listed whatever the setting. Every store read and write runs off the main actor through `VoiceProfileService`;
 /// the section shows names and counts, never a voiceprint. The main window's People section; it rereads the store
 /// whenever it comes on screen or the window becomes key.
+///
+/// Invariants:
+/// 1. The tables and the empty view never show together: the empty view shows exactly when the store has no people.
+/// 2. Every store read and write runs off the main actor.
 @MainActor
 final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDelegate, MainSectionContent {
     private enum Column: String {
@@ -19,6 +23,10 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
     private let sessionsRoot: URL
     private let rememberBox = NSButton(checkboxWithTitle: "Remember voices of people I name", target: nil, action: nil)
     private let peopleTable = KeyTableView()
+    private let emptyView = SectionEmptyView()
+    private var splitView: NSView?
+    /// The empty section's Open Meetings.
+    var onOpenMeetings: (() -> Void)?
     private let samplesTable = NSTableView()
     private let nameLabel = NSTextField(labelWithString: "")
     private let renameButton = NSButton(title: "Rename…", target: nil, action: nil)
@@ -113,6 +121,7 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
         }
 
         let split = NSStackView(views: [peopleScroll, detail])
+        splitView = split
         split.orientation = .horizontal
         split.alignment = .top
         split.spacing = 12
@@ -137,7 +146,17 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 12)
 
-        let stack = NSStackView(views: [rememberBox, explanation, split, footer, statusLabel])
+        let body = NSView()
+        split.translatesAutoresizingMaskIntoConstraints = false
+        body.addSubview(split)
+        emptyView.show(.init(symbol: "person.2", title: "No remembered voices",
+                             text: "Name a speaker in a meeting's Review and allow learning. Voiceprints stay on this Mac.",
+                             action: "Open Meetings"))
+        emptyView.onAction = { [weak self] in self?.onOpenMeetings?() }
+        emptyView.isHidden = true
+        emptyView.translatesAutoresizingMaskIntoConstraints = false
+        body.addSubview(emptyView)
+        let stack = NSStackView(views: [rememberBox, explanation, body, footer, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
@@ -150,8 +169,15 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
             explanation.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -20),
-            split.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            body.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            split.leadingAnchor.constraint(equalTo: body.leadingAnchor),
+            split.trailingAnchor.constraint(equalTo: body.trailingAnchor),
+            split.topAnchor.constraint(equalTo: body.topAnchor),
+            split.bottomAnchor.constraint(equalTo: body.bottomAnchor),
             split.heightAnchor.constraint(greaterThanOrEqualToConstant: 260),
+            emptyView.centerXAnchor.constraint(equalTo: body.centerXAnchor),
+            emptyView.centerYAnchor.constraint(equalTo: body.centerYAnchor),
+            emptyView.widthAnchor.constraint(lessThanOrEqualTo: body.widthAnchor, constant: -40),
             footer.widthAnchor.constraint(equalTo: stack.widthAnchor),
             statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
@@ -167,7 +193,6 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
         }
         table.dataSource = self
         table.delegate = self
-        table.usesAlternatingRowBackgroundColors = true
     }
 
     private func scroll(_ table: NSTableView) -> NSScrollView {
@@ -213,6 +238,8 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
             self.database = database
             self.people = people
             self.peopleTable.reloadData()
+            self.splitView?.isHidden = people.isEmpty  // invariant 1
+            self.emptyView.isHidden = !people.isEmpty
             if let selected, let row = people.firstIndex(where: { $0.id == selected }) {
                 self.peopleTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
             } else if !people.isEmpty, self.peopleTable.selectedRow < 0 {

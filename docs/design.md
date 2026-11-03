@@ -340,7 +340,9 @@ The app's windows other than the transient ones are one main window, "Voice is L
 (`MainWindowController`, Sources/HolosApp/MainWindow): an `NSSplitViewController` with a
 native source-list sidebar and the selected section's content. Sections: Dictation ›
 History (⌘1), Corrections (⌘2); Meetings › Meetings (⌘3), People (⌘4); Listen › Reading
-(⌘5, see "Reading section"); Settings (⌘,). A status card at
+(⌘5, see "Reading section"); Settings (⌘,). A section with nothing in it shows a symbol, a headline, a sentence and
+at most its one action (`SectionEmptyView`): Turn On Dictation in History while dictation is off, Start Recording… in
+Meetings, Open Meetings in People. A status card at
 the sidebar's bottom shows the dictation state and message, independently of any
 meeting recording. The sidebar can be hidden, so the window fits beside a call's window
 (Teams, Zoom) during a meeting: View › **Hide Sidebar** / **Show Sidebar** (⌃⌘S), the

@@ -102,6 +102,7 @@ struct MainStatus: Equatable {
 /// Invariants:
 /// 1. Only the selected section receives window visibility and keyboard-focus notifications.
 /// 2. An embedded meeting's save gate decides whether the window may close, including from another section.
+/// 3. History knows whether dictation is off from the moment it exists, and at every status change after.
 @MainActor
 final class MainWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation {
     /// The narrowest the section content gets: the whole window's width with the sidebar hidden.
@@ -243,6 +244,7 @@ final class MainWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate,
         if let existing = sections[section] { return existing }
         let made = makeSection(section)
         sections[section] = made
+        (made as? HistoryPane)?.showDictation(off: dictationOff)  // invariant 3
         if let settings = made as? SettingsPane {
             settings.onChapterChange = { [weak self] chapter in
                 guard let self, self.current == .settings else { return }
@@ -253,12 +255,15 @@ final class MainWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate,
     }
 
     private var settingsPane: SettingsPane? { sections[.settings] as? SettingsPane }
+    private var dictationOff = false
 
     /// The section's view controller if it was created.
     func existingController(for section: MainSection) -> NSViewController? { sections[section] }
 
     func updateStatus(_ status: MainStatus) {
+        dictationOff = status.tone == .off
         sidebar.updateStatus(status)
+        (sections[.history] as? HistoryPane)?.showDictation(off: dictationOff)  // invariant 3
     }
 
     /// ⌘F: focuses the current section's search field.
