@@ -21,6 +21,9 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         var rerun: @MainActor (DictationRecord) async throws -> DictationRerunReport
         /// Update History: keeps a Run Again result as the dictation's text.
         var update: (DictationRecord, DictationRerunReport) -> Void
+        /// The empty section's Turn On Dictation, and the name of the hold-to-talk key it mentions.
+        var turnOnDictation: () -> Void = {}
+        var shortcutTitle: () -> String = { "Right Option" }
     }
 
     private enum Row {
@@ -67,7 +70,9 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private var rows: [Row] = []
     private let search = NSSearchField()
     private let table = KeyTableView()
-    private let emptyLabel = NSTextField(wrappingLabelWithString: "")
+    private let emptyView = SectionEmptyView()
+    /// Dictation is off: with no history, the section says how to turn it on.
+    private var dictationOff = false
     private let footer = NSTextField(wrappingLabelWithString: "")
     private let clearButton = NSButton(title: "Clear History…", target: nil, action: nil)
     private let detail = HistoryDetailView()
@@ -142,9 +147,8 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
 
-        emptyLabel.alignment = .center
-        emptyLabel.textColor = .secondaryLabelColor
-        emptyLabel.isHidden = true
+        emptyView.isHidden = true
+        emptyView.onAction = { [weak self] in self?.actions.turnOnDictation() }
 
         let listStack = NSStackView(views: [search, scroll])
         listStack.orientation = .vertical
@@ -154,17 +158,17 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         search.widthAnchor.constraint(equalTo: listStack.widthAnchor, constant: -24).isActive = true
         scroll.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
         listStack.translatesAutoresizingMaskIntoConstraints = false
-        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        emptyView.translatesAutoresizingMaskIntoConstraints = false
         listPane.addSubview(listStack)
-        listPane.addSubview(emptyLabel)
+        listPane.addSubview(emptyView)
         NSLayoutConstraint.activate([
             listStack.leadingAnchor.constraint(equalTo: listPane.leadingAnchor),
             listStack.trailingAnchor.constraint(equalTo: listPane.trailingAnchor),
             listStack.topAnchor.constraint(equalTo: listPane.topAnchor),
             listStack.bottomAnchor.constraint(equalTo: listPane.bottomAnchor),
-            emptyLabel.centerXAnchor.constraint(equalTo: listPane.centerXAnchor),
-            emptyLabel.centerYAnchor.constraint(equalTo: listPane.centerYAnchor),
-            emptyLabel.widthAnchor.constraint(lessThanOrEqualTo: listPane.widthAnchor, constant: -40),
+            emptyView.centerXAnchor.constraint(equalTo: listPane.centerXAnchor),
+            emptyView.centerYAnchor.constraint(equalTo: listPane.centerYAnchor),
+            emptyView.widthAnchor.constraint(lessThanOrEqualTo: listPane.widthAnchor, constant: -40),
             listPane.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.listNarrowestWidth),
         ])
         // The list's width is set by moving the divider (`sizeList`), not by a width constraint, so a drag can move
@@ -308,21 +312,44 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
             table.deselectAll(nil)
         }
         if records.isEmpty {
-            emptyLabel.stringValue = if unreadable {
-                "History could not be read.\nIt may still keep dictations on this Mac; Clear History… deletes them."
-            } else if hidden > 0 {
-                "\(hidden) \(hidden == 1 ? "dictation was" : "dictations were") recorded by a newer Voice is Local "
-                    + "and \(hidden == 1 ? "is" : "are") not shown here.\nClear History… deletes \(hidden == 1 ? "it" : "them")."
-            } else if retention.records {
-                "No dictations yet.\nEach dictation you finish appears here."
-            } else {
-                "History is off.\nTurn it on in Settings › Dictation history."
-            }
+            emptyView.show(Self.emptyContent(unreadable: unreadable, hidden: hidden, recording: retention.records,
+                                             dictationOff: dictationOff, shortcut: actions.shortcutTitle()))
         } else if filtered.isEmpty {
-            emptyLabel.stringValue = "No dictations match “\(search.stringValue)”."
+            emptyView.show(.init(text: "No dictations match “\(search.stringValue)”."))
         }
-        emptyLabel.isHidden = !filtered.isEmpty
+        emptyView.isHidden = !filtered.isEmpty
         showSelection()
+    }
+
+    /// What the list says with no dictations at all.
+    static func emptyContent(unreadable: Bool, hidden: Int, recording: Bool, dictationOff: Bool,
+                             shortcut: String) -> SectionEmptyView.Content {
+        if unreadable {
+            return .init(title: "History could not be read",
+                         text: "It may still keep dictations on this Mac; Clear History… deletes them.")
+        }
+        if hidden > 0 {
+            let one = hidden == 1
+            return .init(text: "\(hidden) \(one ? "dictation was" : "dictations were") recorded by a newer Voice is "
+                + "Local and \(one ? "is" : "are") not shown here. Clear History… deletes \(one ? "it" : "them").")
+        }
+        guard recording else {
+            return .init(symbol: "clock", title: "History is off", text: "Turn it on in Settings › Dictation history.")
+        }
+        let finish = "speak, and release. Each dictation you finish appears here."
+        guard dictationOff else {
+            return .init(symbol: "mic", title: "No dictations yet", text: "Hold \(shortcut) in any app, \(finish)")
+        }
+        return .init(symbol: "mic", title: "Dictation is off",
+                     text: "Turn it on, then hold \(shortcut) in any app, \(finish)", action: "Turn On Dictation",
+                     prominent: true)
+    }
+
+    /// Dictation turned on or off (`MainWindowController.updateStatus`).
+    func showDictation(off: Bool) {
+        guard off != dictationOff else { return }
+        dictationOff = off
+        reloadRows(selecting: selectedRecord?.id)
     }
 
     private var selectedRecord: DictationRecord? {

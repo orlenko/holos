@@ -43,7 +43,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     private let listView = NSView()
     private let search = NSSearchField()
     let table = KeyTableView()
-    private let emptyLabel = NSTextField(wrappingLabelWithString: "")
+    private let emptyView = SectionEmptyView()
     private let footer = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
     private var buttons: [String: NSButton] = [:]
@@ -150,7 +150,6 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.allowsColumnReordering = false
         table.style = .fullWidth
-        table.gridStyleMask = .solidHorizontalGridLineMask
         table.floatsGroupRows = true
         table.dataSource = self
         table.delegate = self
@@ -176,10 +175,9 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         scroll.translatesAutoresizingMaskIntoConstraints = false
         fitColumnsToWidth()
 
-        emptyLabel.alignment = .center
-        emptyLabel.textColor = .secondaryLabelColor
-        emptyLabel.isHidden = true
-        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        emptyView.isHidden = true
+        emptyView.onAction = { [weak self] in self?.startRecording() }
+        emptyView.translatesAutoresizingMaskIntoConstraints = false
 
         // Rows that wrap, so the section fits the window at its narrowest (beside a call's window).
         let row = WrappingRowView(views: [
@@ -201,7 +199,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         stack.setCustomSpacing(8, after: search)
         stack.translatesAutoresizingMaskIntoConstraints = false
         listView.addSubview(stack)
-        listView.addSubview(emptyLabel)
+        listView.addSubview(emptyView)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: listView.leadingAnchor, constant: 20),
             stack.trailingAnchor.constraint(equalTo: listView.trailingAnchor, constant: -20),
@@ -212,9 +210,9 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
             row.widthAnchor.constraint(equalTo: stack.widthAnchor),
             statusLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
-            emptyLabel.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
-            emptyLabel.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
-            emptyLabel.widthAnchor.constraint(lessThanOrEqualTo: scroll.widthAnchor, constant: -40),
+            emptyView.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
+            emptyView.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
+            emptyView.widthAnchor.constraint(lessThanOrEqualTo: scroll.widthAnchor, constant: -40),
         ])
         scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
         let content = NSView()
@@ -591,11 +589,11 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         }
         if scroll, let first = indexes.first { table.scrollRowToVisible(first) }
         if sessions.isEmpty {
-            emptyLabel.stringValue = "No meetings yet.\nStart one from the menu bar; it appears here."
+            emptyView.show(Self.noMeetings, enabled: canStartRecording)
         } else if shown.isEmpty {
-            emptyLabel.stringValue = "No meetings match “\(query)”."
+            emptyView.show(.init(text: "No meetings match “\(query)”."))
         }
-        emptyLabel.isHidden = !shown.isEmpty
+        emptyView.isHidden = !shown.isEmpty
     }
 
     /// Reloads the rows' contents (badges, the live phase) with the selection kept.

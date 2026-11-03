@@ -31,7 +31,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private let makeButton = NSButton(title: "Make Audio", target: nil, action: nil)
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
     private let table = KeyTableView()
-    private let emptyLabel = NSTextField(wrappingLabelWithString: "")
+    private let emptyView = SectionEmptyView()
     private let footer = NSTextField(wrappingLabelWithString: "")
     private let dropView = ReadingDropView()
     private var rows: [ReadingEntry] = []
@@ -226,11 +226,10 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         let listHeading = NSTextField(labelWithString: "Readings")
         listHeading.font = .systemFont(ofSize: 13, weight: .semibold)
 
-        emptyLabel.alignment = .center
-        emptyLabel.textColor = .secondaryLabelColor
-        emptyLabel.stringValue = "No readings yet.\nPaste a link or drop a document above: it becomes one audio file "
-            + "you can play here or send to your phone."
-        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        emptyView.show(.init(symbol: "book", title: "No readings yet",
+                             text: "Paste a link or drop a document above: it becomes one audio file you can play here "
+                                 + "or send to your phone."))
+        emptyView.translatesAutoresizingMaskIntoConstraints = false
 
         footer.font = .systemFont(ofSize: 11)
         footer.textColor = .secondaryLabelColor
@@ -255,15 +254,15 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
 
         dropView.addSubview(stack)
-        dropView.addSubview(emptyLabel)
+        dropView.addSubview(emptyView)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: dropView.leadingAnchor, constant: 24),
             stack.trailingAnchor.constraint(equalTo: dropView.trailingAnchor, constant: -24),
             stack.topAnchor.constraint(equalTo: dropView.topAnchor, constant: 18),
             stack.bottomAnchor.constraint(equalTo: dropView.bottomAnchor, constant: -12),
-            emptyLabel.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
-            emptyLabel.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
-            emptyLabel.widthAnchor.constraint(lessThanOrEqualTo: scroll.widthAnchor, constant: -40),
+            emptyView.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
+            emptyView.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
+            emptyView.widthAnchor.constraint(lessThanOrEqualTo: scroll.widthAnchor, constant: -40),
         ])
         // A drop of things that cannot be read is taken too, so the reason shows under the card.
         dropView.accepts = { [weak self] pasteboard in
@@ -499,7 +498,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         if let selected, let index = rows.firstIndex(where: { $0.id == selected }) {
             table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         }
-        emptyLabel.isHidden = !rows.isEmpty
+        emptyView.isHidden = !rows.isEmpty
         footer.stringValue = footerText
         footer.textColor = controller.notice == nil ? .secondaryLabelColor : .systemOrange
         stopPlaybackOfGoneFile()

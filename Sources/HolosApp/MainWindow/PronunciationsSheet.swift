@@ -71,7 +71,6 @@ final class PronunciationsSheet: NSViewController, NSTableViewDataSource, NSTabl
         }
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.allowsMultipleSelection = true
-        table.usesAlternatingRowBackgroundColors = true
         table.dataSource = self
         table.delegate = self
         table.setAccessibilityLabel("Pronunciations")

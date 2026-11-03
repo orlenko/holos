@@ -46,7 +46,9 @@ extension HolosAppDelegate {
             return pane
         case .people:
             PeopleLaunch.resumePendingForgetsOnce()
-            return PeoplePane()
+            let pane = PeoplePane()
+            pane.onOpenMeetings = { [weak self] in self?.mainWindow?.show(.meetings) }
+            return pane
         case .reading:
             return makeReadingPane()
         case .settings:

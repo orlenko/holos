@@ -243,6 +243,7 @@ final class MainWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate,
         if let existing = sections[section] { return existing }
         let made = makeSection(section)
         sections[section] = made
+        (made as? HistoryPane)?.showDictation(off: dictationOff)
         if let settings = made as? SettingsPane {
             settings.onChapterChange = { [weak self] chapter in
                 guard let self, self.current == .settings else { return }
@@ -253,12 +254,15 @@ final class MainWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate,
     }
 
     private var settingsPane: SettingsPane? { sections[.settings] as? SettingsPane }
+    private var dictationOff = false
 
     /// The section's view controller if it was created.
     func existingController(for section: MainSection) -> NSViewController? { sections[section] }
 
     func updateStatus(_ status: MainStatus) {
+        dictationOff = status.tone == .off
         sidebar.updateStatus(status)
+        (sections[.history] as? HistoryPane)?.showDictation(off: dictationOff)
     }
 
     /// ⌘F: focuses the current section's search field.

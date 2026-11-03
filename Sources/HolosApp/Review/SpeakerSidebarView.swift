@@ -72,7 +72,6 @@ final class SpeakerSidebarView: NSView, NSTableViewDataSource, NSTableViewDelega
         table.headerView = nil
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.selectionHighlightStyle = .none
-        table.gridStyleMask = .solidHorizontalGridLineMask
         table.dataSource = self
         table.delegate = self
         let scroll = NSScrollView()

@@ -42,7 +42,9 @@ extension HolosAppDelegate {
             },
             update: { [weak self] record, report in
                 self?.history.update(DictationRerun.updated(record, with: report))
-            }))
+            },
+            turnOnDictation: { [weak self] in self?.enable() },
+            shortcutTitle: { [weak self] in self?.shortcutTitle ?? "" }))
         updateHistoryPane(pane)
         return pane
     }

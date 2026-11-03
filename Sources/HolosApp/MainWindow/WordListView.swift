@@ -71,7 +71,6 @@ final class WordListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         table.addTableColumn(heardAs)
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.allowsMultipleSelection = true
-        table.usesAlternatingRowBackgroundColors = true
         table.dataSource = self
         table.delegate = self
         table.setAccessibilityLabel("Word list")
