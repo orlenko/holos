@@ -189,6 +189,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         startButton.action = #selector(startRecording)
         startButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         selectionActions.makeMenu = { [weak self] in self?.selectionMenu() }
+        selectionActions.toolTip = "Actions for the selected meetings"
+        selectionActions.setAccessibilityLabel("Actions for the selected meetings")
         selectionActions.setContentCompressionResistancePriority(.required, for: .horizontal)
         search.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let header = NSStackView(views: [search, startButton, selectionActions])
@@ -662,7 +664,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
         guard case .meeting = rows[row] else { return nil }
-        return MeetingTableRowView()
+        return MeetingTableRowView(table: tableView)
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
@@ -695,6 +697,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                     title: summary.displayTitle, detail: MeetingListFormat.detailLine(summary, people: names, now: now),
                     summary: summaryText(summary), badges: badges(summary, livePhase: phase),
                     toolTip: toolTip(summary, isLive: isLive), progress: listState.progress[summary.id]))
+                row.setAccessibilityCustomActions(accessibilityActions(summary))
                 return row
             case .when:
                 return cell(MeetingTextCell.self).showing(MeetingListFormat.detailLine(summary, people: [], now: now))
@@ -702,7 +705,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                 let text = [summaryText(summary), MeetingListFormat.peopleText(names)].compactMap { $0 }
                 return cell(MeetingTextCell.self).showing(text.first ?? "", toolTip: text.joined(separator: "\n\n"))
             case .actions:
-                return cell(MeetingRowActionsView.self).showing(rowActions(summary), action: actionHandler(summary.id))
+                return cell(MeetingRowActionsView.self).showing(rowActions(summary), title: summary.displayTitle,
+                                                                action: actionHandler(summary.id))
             }
         }
     }
@@ -749,6 +753,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         updateButtons()
+        revealRowActions()
         announceSelection()
     }
 
@@ -858,7 +863,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             }
             // Not while a command works on it (a rename rewriting them).
             if staleFiles.contains(summary.id), running[summary.id] == nil {
-                parts.append("The transcript files are out of date; choose Update Transcript Files from Advanced.")
+                parts.append("The transcript files are out of date; choose Update Transcript Files from the ··· at the top of the Meetings section.")
             }
             statusLabel.stringValue = parts.isEmpty ? MeetingSelection.summary(of: summary)
                 : parts.joined(separator: " ")
@@ -1293,7 +1298,9 @@ extension MeetingsPane: NSMenuDelegate {
             return item
         }
         let isLive = MeetingOpenPolicy.isLive(summary, liveSessionID: liveSessionID)
-        add("Show Transcript File", #selector(openTranscript), hasExport(summary))
+        let hasTranscript = hasExport(summary)
+        add("View Transcript", #selector(viewTranscript), hasTranscript).representedObject = summary.id
+        add("Show Transcript File", #selector(openTranscript), hasTranscript)
         add("Show in Finder", #selector(showInFinder), enabled.contains(.showInFinder))
         add("Copy Path", #selector(copyPath), true).representedObject = summary.id
         add("Save Transcript As…", #selector(saveTranscript), enabled.contains(.saveTranscript))

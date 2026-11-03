@@ -498,7 +498,7 @@ timeline and a larger local-model benchmark are follow-ups.
 - Meetings list (docs/design.md "Meetings list"): a grid, one line per meeting under Today,
   Yesterday, This Week and month headers: Name (with badges, renamed by a click on the selected
   meeting's name), When, Description, and, on the selected row or the one under the pointer, Open and
-  a ··· with View Transcript, Delete Audio… and Copy Path; a search field filters by title, summary and people. Automatic audio cleanup (docs/design.md
+  a ··· with View Transcript, Copy Path, Delete Audio… and Delete Meeting…; a search field filters by title, summary and people. Automatic audio cleanup (docs/design.md
   "Automatic audio cleanup"): off by default; deletes the audio of finished meetings older than N
   days (7 preset) as background work, oldest first. Start Recording… beside the search opens the menu
   bar's start panel; the ··· beside it holds exports, maintenance and Delete Meeting…. Open, Return, and double-click enter

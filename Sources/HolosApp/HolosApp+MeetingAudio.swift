@@ -2,7 +2,7 @@ import AppKit
 import HolosAppModel
 
 extension HolosAppDelegate {
-    /// Delete Audio on one meeting (a row's button or the menu): asks first unless the user chose "Don't ask again"
+    /// Delete Audio on one meeting (a row's ··· or the menu): asks first unless the user chose "Don't ask again"
     /// (`MeetingAudioPreferences`). Deleting audio of several meetings always asks, since it names what is skipped.
     func confirmDeleteAudio(_ name: String, preferences: MeetingAudioPreferences = .init()) -> Bool {
         guard preferences.confirmsDeletion else { return true }
