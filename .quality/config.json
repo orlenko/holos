@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "repository": "orlenko/holos",
+  "execution": {
+    "trusted_local": false,
+    "isolation": "unavailable",
+    "checks": [
+      {
+        "id": "full-test-suite",
+        "argv": ["./scripts/test.sh", "--no-parallel"],
+        "timeout_seconds": 600,
+        "max_log_bytes": 1048576,
+        "effects": [
+          "Requirement only; execution is disabled. 600 is the schema ceiling, not a budget this suite meets.",
+          "Compiles the package and may fetch Swift packages over the network.",
+          "Runs tests against temporary HOLOS_DATA_DIR and HOLOS_SUPPORT_DIR folders.",
+          "Some tests write defaults domains into the macOS preferences of the user who runs them; no wrapper covers this store."
+        ]
+      },
+      {
+        "id": "size-cap",
+        "argv": ["scripts/check-size.sh"],
+        "timeout_seconds": 60,
+        "max_log_bytes": 65536,
+        "effects": ["Requirement only; execution is disabled. Reads source files and scripts/size-baseline.txt."]
+      },
+      {
+        "id": "doc-citations",
+        "argv": ["scripts/check-doc-citations.py"],
+        "timeout_seconds": 60,
+        "max_log_bytes": 65536,
+        "effects": ["Requirement only; execution is disabled. Reads tracked files through the real Git index, which a Git-free snapshot does not have."]
+      }
+    ]
+  },
+  "reviewer": {
+    "protocol": "recorded-v1",
+    "require_distinct_identities": true,
+    "routes": [
+      {
+        "id": "github-codex",
+        "reviewer_id": "chatgpt-codex-connector",
+        "boundary": {
+          "read_only": true,
+          "enforced": true,
+          "paths": "tracked-source",
+          "tools": ["source-read", "diff-read"],
+          "network": true,
+          "disclosure": "public-source"
+        }
+      },
+      {
+        "id": "local-astra",
+        "reviewer_id": "codex-review-gpt-6-astra",
+        "boundary": {
+          "read_only": true,
+          "enforced": true,
+          "paths": "tracked-source",
+          "tools": ["source-read", "diff-read"],
+          "network": false,
+          "disclosure": "public-source"
+        }
+      }
+    ]
+  },
+  "references": {
+    "instructions": "AGENTS.md",
+    "architecture": "AGENTS.md",
+    "threat_model": "docs/quality-adoption.md",
+    "integration": "AGENTS.md"
+  }
+}
