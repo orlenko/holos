@@ -231,16 +231,12 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         openAtLaunchToggle.target = self
         openAtLaunchToggle.action = #selector(buttonPressed(_:))
         openAtLaunchToggle.tag = SetupAction.toggleOpenWindowAtLaunch.rawValue
-        let launchNote = Self.note("""
-            Closing the window keeps Voice is Local running in the menu bar; Quit in its menu, or ⌘Q, quits it. \
-            When this is off, the app starts in the menu bar only (Open Voice is Local, ⌘0, opens the window), and \
-            Settings still opens while dictation is off.
-            """)
+        let launchNote = Self.note(.openAtLaunch, about: "opening at launch")
         let launch = NSStackView(views: [openAtLaunchToggle, launchNote])
         launch.orientation = .vertical
         launch.alignment = .leading
         launch.spacing = 4
-        addItem(.general, openAtLaunchToggle.title, caption: launchNote.stringValue,
+        addItem(.general, openAtLaunchToggle.title, caption: SettingsCaption.openAtLaunch.searchText,
                 keywords: ["launch", "startup", "login", "menu bar", "quit"], views: [launch],
                 focus: openAtLaunchToggle)
 
@@ -257,16 +253,12 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         updateChecksToggle.target = self
         updateChecksToggle.action = #selector(buttonPressed(_:))
         updateChecksToggle.tag = SetupAction.toggleUpdateChecks.rawValue
-        let updatesNote = Self.note("""
-            About once a day, downloads one small file from voiceislocal.com that names the latest version; the \
-            request sends only the app's name and version. An update downloads only when you choose to install \
-            it. Check for Updates… in the menu works either way.
-            """)
+        let updatesNote = Self.note(.updateChecks, about: "update checks")
         let updates = NSStackView(views: [updateChecksToggle, updatesNote])
         updates.orientation = .vertical
         updates.alignment = .leading
         updates.spacing = 4
-        addItem(.general, Self.updateChecksTitle, caption: updatesNote.stringValue,
+        addItem(.general, Self.updateChecksTitle, caption: SettingsCaption.updateChecks.searchText,
                 keywords: ["update", "upgrade", "new version", "sparkle", "privacy", "network", "online"],
                 views: [updates], focus: updateChecksToggle, titledBy: updateChecksToggle)
         return card(.general, [launch, updates, grid], widths: [launch, launchNote, updates, updatesNote, grid])
@@ -286,14 +278,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
             addRowItem(.permissions, action, keywords: keywords[action] ?? [])
         }
         setRowHidden(.inputMonitoring, true)  // until macOS refuses the hotkey tap (`update`)
-        let note = Self.note("""
-            This updates on its own while you change System Settings. After rebuilding Voice is Local, macOS can \
-            keep an old entry that looks switched on but no longer matches the app: select Voice is Local in that \
-            list, remove it with –, then click Allow… here to add it again. An entry named Holos is this app from \
-            before it was renamed; remove it the same way. Allow… only asks macOS (its prompt appears once); \
-            System Settings… only opens the page.
-            """)
-        addItem(.permissions, "", caption: note.stringValue, keywords: [], views: [note], focus: nil)
+        let note = Self.note(.permissions, about: "permissions")
+        addItem(.permissions, "", caption: SettingsCaption.permissions.searchText, keywords: [], views: [note], focus: nil)
         return card(.permissions, [grid, note], widths: [grid, note])
     }
 
@@ -380,29 +366,16 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         screenCaptureToggle.target = self
         screenCaptureToggle.action = #selector(buttonPressed(_:))
         screenCaptureToggle.tag = SetupAction.toggleMeetingScreenCapture.rawValue
-        let screenDetail = Self.note(MeetingScreenText.settingCaption)
-        let detail = Self.note("""
-            On: meetings record your microphone and everything the Mac plays, and speakers are labelled on both. \
-            Off: meetings record the microphone only.
-            """)
+        let screenDetail = Self.note(.screenCapture, about: "capturing the screen")
+        let detail = Self.note(.recordSystemAudio, about: "recording the computer's audio")
         deepTranscriptionToggle.target = self
         deepTranscriptionToggle.action = #selector(buttonPressed(_:))
         deepTranscriptionToggle.tag = SetupAction.toggleDeepTranscription.rawValue
-        let deepDetail = Self.note("""
-            After a meeting is saved, its audio is transcribed again with a larger model, prompted with your word \
-            list and people's names, and the result replaces the transcript (the one before is kept). It runs on AC \
-            power, one meeting at a time; on battery it waits for the power adapter. Right-click a meeting for Make \
-            Final Transcript Now or Cancel. It is tuned for English meetings; meetings in other languages, or in \
-            several, keep their transcript.
-            """)
+        let deepDetail = Self.note(.deepTranscription, about: "deep transcription")
         meetingSummariesToggle.target = self
         meetingSummariesToggle.action = #selector(buttonPressed(_:))
         meetingSummariesToggle.tag = SetupAction.toggleMeetingSummaries.rawValue
-        let summariesDetail = Self.note("""
-            Once a meeting's transcript is final, Apple's on-device model writes a short title and a summary for the \
-            Meetings list, with key points and action items in the transcript files. Nothing leaves this Mac. A name \
-            you give a meeting is never replaced. Right-click a meeting for Summarize Again.
-            """)
+        let summariesDetail = Self.note(.meetingSummaries, about: "titles and summaries")
         let grid = makeGrid()
         addRow(.speakerModels, "Speaker labels", to: grid)
         addRow(.deepTranscriptionModel, "Final transcript", to: grid)
@@ -412,16 +385,16 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         rows[.people]?.icon.image = NSImage(systemSymbolName: "person.2", accessibilityDescription: nil)
         rows[.people]?.icon.contentTintColor = .secondaryLabelColor
 
-        addItem(.meetings, recordSystemAudioToggle.title, caption: detail.stringValue,
+        addItem(.meetings, recordSystemAudioToggle.title, caption: SettingsCaption.recordSystemAudio.searchText,
                 keywords: ["system sound", "computer audio", "calls", "zoom", "video"],
                 views: [recordSystemAudioToggle, detail], focus: recordSystemAudioToggle)
-        addItem(.meetings, MeetingScreenText.settingTitle, caption: screenDetail.stringValue,
+        addItem(.meetings, MeetingScreenText.settingTitle, caption: SettingsCaption.screenCapture.searchText,
                 keywords: ["screen", "screenshot", "display", "displays", "monitor", "slides", "capture"],
                 views: [screenCaptureToggle, screenDetail], focus: screenCaptureToggle)
-        addItem(.meetings, deepTranscriptionToggle.title, caption: deepDetail.stringValue,
+        addItem(.meetings, deepTranscriptionToggle.title, caption: SettingsCaption.deepTranscription.searchText,
                 keywords: ["whisper", "final transcript", "accuracy", "transcribe again"],
                 views: [deepTranscriptionToggle, deepDetail], focus: deepTranscriptionToggle)
-        addItem(.meetings, Self.meetingSummariesTitle, caption: summariesDetail.stringValue,
+        addItem(.meetings, Self.meetingSummariesTitle, caption: SettingsCaption.meetingSummaries.searchText,
                 keywords: ["summary", "summaries", "titles", "action items", "key points", "ai"],
                 views: [meetingSummariesToggle, summariesDetail], focus: meetingSummariesToggle,
                 titledBy: meetingSummariesToggle)

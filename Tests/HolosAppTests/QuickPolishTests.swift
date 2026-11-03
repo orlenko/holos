@@ -158,4 +158,18 @@ struct QuickPolishTests {
         #expect(!shownTexts().contains("0:00 / 0:07"))
         #expect(runAgain()?.isEnabled == false, "A hidden button must not answer its shortcut.")
     }
+
+    @Test func settingsCaptionsAreOneLineAndKeepTheirPromisesInSight() {
+        let captions: [SettingsCaption] = [.openAtLaunch, .updateChecks, .permissions, .recordSystemAudio,
+                                           .screenCapture, .deepTranscription, .meetingSummaries]
+        for caption in captions {
+            #expect(caption.short.count <= 90, "\(caption.short)")
+            #expect(!caption.more.isEmpty)
+            #expect(caption.searchText.contains(caption.more), "Search still finds the detail.")
+        }
+        // What the app sends, and that nothing leaves the Mac, show without opening anything.
+        #expect(SettingsCaption.updateChecks.short.contains("only the app's name and version"))
+        #expect(SettingsCaption.meetingSummaries.short.contains("nothing leaves"))
+        #expect(SettingsCaption.deepTranscription.short.contains("on this Mac"))
+    }
 }
