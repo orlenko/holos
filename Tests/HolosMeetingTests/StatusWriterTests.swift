@@ -287,7 +287,14 @@ func inProcessRecordingEndsOnlyOnceItsExitedStatusIsWritten(folderRemoved: Bool)
     #expect(try SessionArchive.isActive(at: session), "Its lock is still held.")
 
     if folderRemoved {
-        try FileManager.default.removeItem(at: session)
+        // While the recording shuts down, a removal sometimes fails with EPERM (about 3 runs in 10) and works when tried
+        // again: this test is about the folder going, not the first try.
+        var removalError: (any Error)?
+        let removed = await eventually {
+            do { try FileManager.default.removeItem(at: session) } catch { removalError = error }
+            return !FileManager.default.fileExists(atPath: session.path)
+        }
+        #expect(removed, "The last removal failed with: \(String(describing: removalError))")
     } else {
         failing.set(0)
     }
