@@ -140,4 +140,22 @@ struct QuickPolishTests {
             }
         }
     }
+
+    @Test func aDictationWithNoAudioShowsNoAudioRowAndMissingAudioSaysSo() {
+        let detail = HistoryDetailView(frame: NSRect(x: 0, y: 0, width: 500, height: 500))
+        func shownTexts() -> [String] {
+            MainWindowNarrowTests.allViews(detail).compactMap { $0 as? NSTextField }
+                .filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.stringValue)
+        }
+        func runAgain() -> NSButton? {
+            MainWindowNarrowTests.allViews(detail).compactMap { $0 as? NSButton }.first { $0.title == "Run Again" }
+        }
+        detail.showAudio(.missing("The audio is no longer on this Mac."), running: false)
+        #expect(shownTexts().contains("The audio is no longer on this Mac."))
+        detail.showAudio(.available(playing: false, time: "0:00 / 0:07"), running: false)
+        #expect(runAgain()?.isHiddenOrHasHiddenAncestor == false)
+        detail.showAudio(.none, running: false)
+        #expect(!shownTexts().contains("0:00 / 0:07"))
+        #expect(runAgain()?.isEnabled == false, "A hidden button must not answer its shortcut.")
+    }
 }

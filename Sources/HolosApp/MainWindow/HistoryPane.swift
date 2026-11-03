@@ -384,7 +384,7 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         } else if record.audio != nil {
             state = .missing("The audio is no longer on this Mac.")
         } else {
-            state = .missing("No audio was kept for this dictation.")
+            state = .none
         }
         detail.showAudio(state, running: rerunTask != nil)
     }
