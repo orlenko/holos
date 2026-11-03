@@ -554,8 +554,11 @@ struct AXHandle: Equatable {
                                              pressingShift: remoteShortcut != nil) else {
                 return .unverified("Could not create a keystroke; inspect \(appName) before copying.")
             }
-            for event in events {
+            for (position, event) in events.enumerated() {
                 event.postToPid(pid)
+                if KeyboardStroke.pauses(after: position, of: events) {
+                    usleep(KeyboardStroke.shiftPauseMicroseconds)
+                }
             }
         }
         return .typed

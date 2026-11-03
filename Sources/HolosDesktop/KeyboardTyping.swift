@@ -29,6 +29,17 @@ struct KeyboardStroke: Equatable {
         return [down] + events + [up]
     }
 
+    /// How long Shift's own events get on either side, for an app that forwards keys to another computer: sent with no
+    /// gap, the key can arrive there before Shift does, and "?" comes out as "/". Short enough to stay on the main actor.
+    static let shiftPauseMicroseconds: UInt32 = 15_000
+
+    /// Whether a pause follows the event at `index`: after any event of Shift's own, and before Shift's release.
+    static func pauses(after index: Int, of events: [CGEvent]) -> Bool {
+        guard events.indices.contains(index) else { return false }
+        if events[index].type == .flagsChanged { return true }
+        return events.indices.contains(index + 1) && events[index + 1].type == .flagsChanged
+    }
+
     private static func shift(pressed: Bool, source: CGEventSource?, marker: Int64) -> CGEvent? {
         guard let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Shift), keyDown: pressed) else { return nil }
         event.type = .flagsChanged
@@ -57,9 +68,9 @@ enum KeyboardTyping {
     }
 
     /// Whether a key held now also counts on the other computer. A remote screen sees every key that reaches it. With
-    /// the hold-to-talk shortcut Right Option does not (`HotkeyReducer` consumes it), which the flags cannot tell from
-    /// Left Option, so that one is asked for by its key. With Control-Option-Space every Option does, and Control too,
-    /// before Space starts the dictation.
+    /// the hold-to-talk shortcut Right Option does not (`HotkeyReducer` consumes it), so only Left Option counts, told
+    /// apart by its device bit (`leftOption(in:)`). With Control-Option-Space every Option does, and Control too, before
+    /// Space starts the dictation.
     static func heldKeysReachRemote(_ flags: CGEventFlags, leftOption: Bool, shortcut: HotkeyChoice) -> Bool {
         let option = shortcut == .rightOption ? leftOption : flags.contains(.maskAlternate) || leftOption
         return option || !flags.intersection([.maskControl, .maskCommand, .maskShift]).isEmpty
@@ -67,8 +78,17 @@ enum KeyboardTyping {
 
     /// The same, for the keys held now.
     static func heldKeysReachRemote(shortcut: HotkeyChoice) -> Bool {
-        heldKeysReachRemote(CGEventSource.flagsState(.hidSystemState),
-                            leftOption: CGEventSource.keyState(.hidSystemState, key: CGKeyCode(kVK_Option)), shortcut: shortcut)
+        let flags = CGEventSource.flagsState(.hidSystemState)
+        return heldKeysReachRemote(flags, leftOption: leftOption(in: flags), shortcut: shortcut)
+    }
+
+    /// NX_DEVICELALTKEYMASK. `CGEventSource.keyState` is no use here: it says kVK_Option is down, and kVK_RightOption
+    /// is not, while only Right Option is held.
+    private static let leftOptionDeviceBit: UInt64 = 0x20
+
+    /// Whether Left Option is among the keys `flags` says are held.
+    static func leftOption(in flags: CGEventFlags) -> Bool {
+        flags.rawValue & leftOptionDeviceBit != 0
     }
 
     /// Preflight the entire chunk so an untypable character never leaves a partially typed chunk.
