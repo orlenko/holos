@@ -102,17 +102,13 @@ final class WordListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
 
         feedbackLabel.font = .systemFont(ofSize: 12)
         feedbackLabel.textColor = .secondaryLabelColor
-        let note = NSTextField(wrappingLabelWithString: """
-            Words the recognizer should expect: names, products, jargon. Add each as you write it ("Keycloak", \
-            "Urban Sky"). New dictations and meetings use the list; the recognizer gets its first \
-            \(RecognizerVocabulary.maximumStrings) terms, ahead of the words of corrections. Apple Intelligence's \
-            fix counts them as real words. Double-click "Often heard as" to list real words the recognizer writes \
-            for a term ("cloud, clot" for "Claude"): with Apple Intelligence's fix on, dictation and meetings get \
-            the term there only where the context says it was meant. Also: voiceislocal words add Claude \
-            --heard-as cloud,clot.
-            """)
-        note.font = .systemFont(ofSize: 11)
-        note.textColor = .secondaryLabelColor
+        let caption = NSTextField(labelWithString: "Words the recognizer should expect: names, products, jargon.")
+        caption.font = .systemFont(ofSize: 11)
+        caption.textColor = .secondaryLabelColor
+        caption.lineBreakMode = .byTruncatingTail
+        caption.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let note = NSStackView(views: [caption, HelpPopoverButton(text: Self.noteHelp, label: "About the word list"), NSView()])
+        note.spacing = 6
 
         let stack = NSStackView(views: [header, scroll, addRow, feedbackLabel, note])
         stack.orientation = .vertical
@@ -208,7 +204,8 @@ final class WordListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         field.isBordered = false
         field.drawsBackground = false
         field.lineBreakMode = .byTruncatingTail
-        field.placeholderString = "Double-click to add, e.g. cloud, clot"
+        let hint = Self.hintRow(selected: table.selectedRowIndexes, count: entries.count)
+        field.placeholderString = row == hint ? Self.heardAsHint : nil
         field.toolTip = "Words the recognizer writes for \(entry.text), comma-separated."
         field.setAccessibilityLabel("Often heard as, for \(entry.text)")
         field.delegate = self
@@ -222,6 +219,33 @@ final class WordListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         updateButtons()
+        updateHeardAsHint()
+    }
+
+    static let noteHelp = """
+        Add each term as you write it ("Keycloak", "Urban Sky"). New dictations and meetings use the list; the \
+        recognizer gets its first \(RecognizerVocabulary.maximumStrings) terms, ahead of the words of corrections. \
+        Apple Intelligence's fix counts them as real words. Double-click "Often heard as" to list real words the \
+        recognizer writes for a term ("cloud, clot" for "Claude"): with Apple Intelligence's fix on, dictation and \
+        meetings get the term there only where the context says it was meant.
+        """
+
+    private static let heardAsHint = "Double-click to add, e.g. cloud, clot"
+
+    /// The one row whose empty "Often heard as" field shows the hint: the selected row, or the first when none is.
+    static func hintRow(selected: IndexSet, count: Int) -> Int? {
+        guard count > 0 else { return nil }
+        return selected.first ?? 0
+    }
+
+    private func updateHeardAsHint() {
+        let hint = Self.hintRow(selected: table.selectedRowIndexes, count: entries.count)
+        guard let column = table.tableColumns.firstIndex(where: { $0.identifier == Self.heardAsColumn }) else { return }
+        table.enumerateAvailableRowViews { _, row in
+            let cell = self.table.view(atColumn: column, row: row, makeIfNecessary: false)
+            guard let field = cell as? HeardAsField else { return }
+            field.placeholderString = row == hint ? Self.heardAsHint : nil
+        }
     }
 
     /// Saves an edited "Often heard as" field when it is left (Return, Tab, or a click elsewhere), unless it did not

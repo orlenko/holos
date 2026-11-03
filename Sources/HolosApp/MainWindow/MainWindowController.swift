@@ -679,7 +679,8 @@ final class StatusCardView: NSView {
         message.font = .systemFont(ofSize: 11)
         message.textColor = .secondaryLabelColor
         message.maximumNumberOfLines = 4
-        message.lineBreakMode = .byTruncatingTail
+        message.lineBreakMode = .byWordWrapping  // a truncating mode would keep the message on one line
+        message.cell?.truncatesLastVisibleLine = true
         message.preferredMaxLayoutWidth = 170
         let header = NSStackView(views: [dot, title])
         header.spacing = 6
@@ -726,6 +727,7 @@ final class StatusCardView: NSView {
         title.stringValue = status.title
         message.stringValue = status.message
         message.isHidden = status.message.isEmpty || status.message == status.title
+        message.toolTip = status.message
         setAccessibilityLabel("\(status.title). \(status.message)")
     }
 }

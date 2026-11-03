@@ -288,8 +288,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
 
     private var footerText: String {
         if let notice = controller.notice { return notice }
-        return "Audio files are saved in \(ReadingPreferences.folderText) (Settings › Reading). Nothing is uploaded: "
-            + "the only things fetched are the page you paste and, when you download them, the natural voices."
+        return "Audio files are saved in \(ReadingPreferences.folderText). Nothing is uploaded; only the page you paste "
+            + "and, if you choose, the natural voices are fetched."
     }
 
     /// Refreshes the picker while retaining the card's choice (invariant 1).

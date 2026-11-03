@@ -27,7 +27,7 @@ final class PronunciationsSheet: NSViewController, NSTableViewDataSource, NSTabl
         Names and jargon no voice knows how to say: write each as documents have it and spell how it sounds \
         ("XIMEA", "zay mee ah"). Every reading voice uses the list, natural and Apple's, from the next part it \
         reads. A word in lower case matches in any case; one with a capital matches only as written. Only whole \
-        words match. Also: voiceislocal pronunciations set XIMEA "zay mee ah".
+        words match.
         """
 
     private let store: Store
