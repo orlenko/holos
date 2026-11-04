@@ -187,23 +187,40 @@ public enum SessionCatalog {
     ///
     /// Lists the folders named `<something>.holos` directly inside `root` (not symbolic links, not hidden folders
     /// such as an import's staging folder). A missing or unreadable `root` gives an empty list. Sessions created in
-    /// the same second are ordered by ID.
-    public static func list(root: URL = HolosPaths.sessions, now: Date = Date()) -> [SessionSummary] {
+    /// the same second are ordered by ID. `cache`: what a caller that lists again and again keeps between listings, so
+    /// a meeting whose files did not change is not read again (`SessionCatalogCache`).
+    public static func list(root: URL = HolosPaths.sessions, now: Date = Date(), cache: SessionCatalogCache? = nil)
+        -> [SessionSummary] {
         // The background-job lock is read once for the whole listing.
         let job = DeepTranscriptionLock.state()
-        return sessionFolders(in: root).map { summary(session: $0, now: now, jobState: job) }.sorted { left, right in
+        let folders = sessionFolders(in: root)
+        cache?.keep(only: Set(folders.map(\.path)))
+        return folders.map { summary(session: $0, now: now, jobState: job, cache: cache) }.sorted { left, right in
             if left.createdAt != right.createdAt { return left.createdAt > right.createdAt }
             return left.id < right.id
         }
     }
 
     /// `jobState`: the background-job lock (`DeepTranscriptionLock.state()`, read when nil), which says whether a
-    /// summary or final transcript of this meeting runs in any process (`jobInProgress`).
-    public static func summary(session: URL, now: Date = Date(), jobState: DeepTranscriptionLock.State? = nil)
-        -> SessionSummary {
+    /// summary or final transcript of this meeting runs in any process (`jobInProgress`). `cache`: see `list`; the
+    /// folder is walked before anything is read, so a write during the reads makes the next listing read again.
+    public static func summary(session: URL, now: Date = Date(), jobState: DeepTranscriptionLock.State? = nil,
+                               cache: SessionCatalogCache? = nil) -> SessionSummary {
         let liveness = RecorderChannel.liveness(session: session, now: now)
-        let status = try? RecorderChannel.readStatus(session: session)
         let sizes = sizes(of: session)
+        if let stamp = sizes.stamp, var known = cache?.summary(of: session, stamp: stamp, liveness: liveness, now: now) {
+            known.jobInProgress = jobInProgress(jobState ?? DeepTranscriptionLock.state(), sessionID: known.id)
+            return known
+        }
+        let read = readSummary(session: session, liveness: liveness, sizes: (sizes.bytes, sizes.derived), jobState: jobState)
+        if let stamp = sizes.stamp { cache?.remember(read, session: session, stamp: stamp, now: now) }
+        return read
+    }
+
+    /// The meeting's summary from its files.
+    private static func readSummary(session: URL, liveness: RecorderLiveness, sizes: (bytes: Int64, derived: Int64),
+                                    jobState: DeepTranscriptionLock.State?) -> SessionSummary {
+        let status = try? RecorderChannel.readStatus(session: session)
         let live = liveness == .capturing || liveness == .processing
         let phase: RecorderPhase? = live ? status?.phase : (liveness == .exited ? .exited : nil)
         let pid = live ? status?.pid : nil
@@ -444,22 +461,29 @@ public enum SessionCatalog {
         return Date(timeIntervalSince1970: TimeInterval(info.st_birthtimespec.tv_sec))
     }
 
-    /// Bytes of the regular files in the session folder and in its `derived/`, without following a symbolic link.
-    static func sizes(of session: URL) -> (bytes: Int64, derived: Int64) {
+    /// Bytes of the regular files in the session folder and in its `derived/`, without following a symbolic link, and
+    /// the folder's stamp (`SessionCatalogCache`), nil when the folder cannot be opened.
+    static func sizes(of session: URL) -> (bytes: Int64, derived: Int64, stamp: Int?) {
         let folder = Darwin.open(session.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard folder >= 0 else { return (0, 0) }
+        guard folder >= 0 else { return (0, 0, nil) }
         defer { Darwin.close(folder) }
+        var ignored = Hasher()
         let derivedFD = openat(folder, "derived", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        let derived = derivedFD >= 0 ? treeBytes(consuming: derivedFD, depth: 1) : 0
+        let derived = derivedFD >= 0 ? treeBytes(consuming: derivedFD, depth: 1, stamp: &ignored) : 0
         let whole = dup(folder)
-        return (whole >= 0 ? treeBytes(consuming: whole, depth: 0) : 0, derived)
+        guard whole >= 0 else { return (0, derived, nil) }
+        var stamp = Hasher()
+        let bytes = treeBytes(consuming: whole, depth: 0, stamp: &stamp)
+        return (bytes, derived, stamp.finalize())
     }
 
     /// Bytes of the regular files under the open folder `fd`, which this closes. Symbolic links are not followed and
-    /// count as nothing; entries that vanish meanwhile are skipped.
-    private static func treeBytes(consuming fd: Int32, depth: Int) -> Int64 {
+    /// count as nothing; entries that vanish meanwhile are skipped. Every entry seen goes into `stamp`: its name, kind,
+    /// file number, size and change times, so a file written, replaced, added or removed changes the stamp.
+    private static func treeBytes(consuming fd: Int32, depth: Int, stamp: inout Hasher) -> Int64 {
         guard let stream = fdopendir(fd) else {
             Darwin.close(fd)
+            stamp.combine(depth)
             return 0
         }
         defer { closedir(stream) }
@@ -472,12 +496,20 @@ public enum SessionCatalog {
             if name == [46, 0] || name == [46, 46, 0] { continue }  // "." and ".."
             var info = stat()
             guard fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else { continue }
+            stamp.combine(name)
+            stamp.combine(info.st_mode)
+            stamp.combine(info.st_ino)
+            stamp.combine(info.st_size)
+            stamp.combine(info.st_mtimespec.tv_sec)
+            stamp.combine(info.st_mtimespec.tv_nsec)
+            stamp.combine(info.st_ctimespec.tv_sec)
+            stamp.combine(info.st_ctimespec.tv_nsec)
             switch info.st_mode & S_IFMT {
             case S_IFREG:
                 total += Int64(info.st_size)
             case S_IFDIR where depth < maxDepth:
                 let child = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-                if child >= 0 { total += treeBytes(consuming: child, depth: depth + 1) }
+                if child >= 0 { total += treeBytes(consuming: child, depth: depth + 1, stamp: &stamp) }
             default:
                 break
             }

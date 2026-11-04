@@ -11,6 +11,8 @@ import HolosMeeting
 @MainActor
 final class MeetingListState {
     let filesCache = TranscriptFilesCache()
+    /// The list reads the catalog every 2 s while it shows (`SessionCatalogCache`).
+    let catalogCache = SessionCatalogCache()
     var progress: [String: PostProcessingProgress] = [:]
     var onStartRecording: (() -> Void)?
     /// The meeting selected alone when the mouse went down, and the rename a click on its name waits to start.

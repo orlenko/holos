@@ -146,6 +146,8 @@ struct MeetingControllerTuning: Sendable {
     private var vocabularyFiles: [String: URL] = [:]
     private var loop: Task<Void, Never>?
     private let clock = ContinuousClock()
+    /// The automatic relabel lists every 30 s (`SessionCatalogCache`).
+    private let catalogCache = SessionCatalogCache()
     private var lastRescan: ContinuousClock.Instant?
     private var lastRelabel: ContinuousClock.Instant?
     /// Control requests waiting for the previous request's acknowledgement.
@@ -283,7 +285,8 @@ struct MeetingControllerTuning: Sendable {
     public func interruptedSessions(excluding prompted: Set<String>) async -> [SessionSummary] {
         let root = self.root
         let at = now()
-        let listed = await Task.detached { SessionCatalog.list(root: root, now: at) }.value
+        let cache = catalogCache
+        let listed = await Task.detached { SessionCatalog.list(root: root, now: at, cache: cache) }.value
         return listed.filter { $0.state == .interrupted && !prompted.contains($0.id) }
     }
 
@@ -479,8 +482,9 @@ struct MeetingControllerTuning: Sendable {
         let generation = offerGeneration
         let root = self.root
         let at = now()
+        let cache = catalogCache
         Task { [weak self] in
-            let listed = await Task.detached { SessionCatalog.list(root: root, now: at) }.value
+            let listed = await Task.detached { SessionCatalog.list(root: root, now: at, cache: cache) }.value
             guard let self, generation == self.offerGeneration else { return }
             let dismissed = self.loadDismissedOffers()
             let kept = NamingOfferPolicy.pruned(dismissed, listed: listed)
@@ -693,8 +697,9 @@ struct MeetingControllerTuning: Sendable {
         relabelling = true
         let root = self.root
         let at = now()
+        let cache = catalogCache
         Task { [weak self] in
-            let listed = await Task.detached { SessionCatalog.list(root: root, now: at) }.value
+            let listed = await Task.detached { SessionCatalog.list(root: root, now: at, cache: cache) }.value
             guard let self else { return }
             let active: Bool = if case .idle = self.state { false } else { true }
             // A meeting the app uses right now (`sessionsInUse`) is left alone: two commands would contend for its
