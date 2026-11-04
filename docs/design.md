@@ -116,7 +116,8 @@ is not appropriate for interacting with the logged-in desktop.
 
 On hotkey down, capture the focused application/element/selection and start audio.
 Show provisional words only in the overlay. The overlay fits its words, from one line to four, and its bottom edge stays
-put as it grows. While listening its title is "Listening", with the keys to finish or cancel beside it. Anything that
+put as it grows. While listening its title is "Listening", with the keys to finish or cancel beside it and bars showing the microphone's
+last few levels, so it is plain the app hears you before any words appear; only the loudness is used. Anything that
 needs the user, such as text that could not be written, carries a warning sign and keeps the words on screen. On release,
 finalize, apply corrections, revalidate the destination, and insert once. Esc cancels without insertion. The
 recognizer may stay warm while enabled, but the microphone is active only while
