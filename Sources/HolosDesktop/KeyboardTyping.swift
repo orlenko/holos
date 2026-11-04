@@ -8,7 +8,8 @@ struct KeyboardStroke: Equatable {
     let flags: CGEventFlags
 
     /// `pressingShift`: a Shift stroke also presses and releases Shift itself around the key, as a keyboard does, for
-    /// an app that follows Shift's own events rather than each key's flags.
+    /// an app that follows Shift's own events rather than each key's flags. Its flags are a real Left Shift's: Screen
+    /// Sharing ignores a Shift without the device bit that says which key it was.
     func events(for character: Character, source: CGEventSource?, marker: Int64, pressingShift: Bool = false) -> [CGEvent]? {
         let units = Array(String(character).utf16)
         var events: [CGEvent] = []
@@ -24,15 +25,21 @@ struct KeyboardStroke: Equatable {
             events.append(event)
         }
         guard pressingShift, flags.contains(.maskShift) else { return events }
+        for event in events { event.flags = Self.leftShiftHeld }
         guard let down = Self.shift(pressed: true, source: source, marker: marker),
               let up = Self.shift(pressed: false, source: source, marker: marker) else { return nil }
         return [down] + events + [up]
     }
 
+    /// As macOS reports a real Left Shift: the Shift flag, NX_DEVICELSHIFTKEYMASK and the non-coalesced bit.
+    static let leftShiftHeld = CGEventFlags(rawValue: CGEventFlags.maskShift.rawValue | 0x2 | 0x100)
+    /// As macOS reports all modifiers released: only the non-coalesced bit.
+    static let nothingHeld = CGEventFlags(rawValue: 0x100)
+
     private static func shift(pressed: Bool, source: CGEventSource?, marker: Int64) -> CGEvent? {
         guard let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Shift), keyDown: pressed) else { return nil }
         event.type = .flagsChanged
-        event.flags = pressed ? .maskShift : []
+        event.flags = pressed ? leftShiftHeld : nothingHeld
         event.setIntegerValueField(.eventSourceUserData, value: marker)
         return event
     }
