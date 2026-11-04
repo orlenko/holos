@@ -91,7 +91,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     }
     private var bulkSelection: BulkSelection?
     /// Reads of the catalog begun (`refresh`), and one more asked for while a read ran.
-    private var readsStarted = 0
+    private(set) var readsStarted = 0
     private var refreshAgain = false
     /// The selection count VoiceOver was last told about.
     private var announcedCount = 0
