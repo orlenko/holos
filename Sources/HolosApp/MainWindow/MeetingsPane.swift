@@ -458,7 +458,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         readsStarted += 1
         let read = readsStarted
         let root = self.root
-        let cache = peopleCache
+        let (cache, catalogCache) = (peopleCache, listState.catalogCache)
         Task { [weak self] in
             // A meeting that misses a language is checked for its speech model, so Label Speakers is offered once
             // the language can be detected (§4.14). The people its labels name come from a cache that reads a
@@ -475,7 +475,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             let foreground = Set(self?.running.keys.map { $0 } ?? [])
             let listed = await Task.detached {
                 () -> ([SessionSummary], [String: [String]], Int64?, Set<String>, Set<String>, [String: PostProcessingProgress]) in
-                let summaries = await SessionCatalog.checkingLanguageModels(SessionCatalog.list(root: root))
+                let summaries = await SessionCatalog.checkingLanguageModels(SessionCatalog.list(root: root, cache: catalogCache))
                 let store = SpeakerProfileStore()
                 let names = VoiceProfileService.profileNames(store: store)
                 let recognition = VoiceProfileService.recognitionAllowed(store: store)
