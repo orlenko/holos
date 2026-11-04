@@ -2,8 +2,8 @@ import Foundation
 import Synchronization
 
 /// What the catalog read for each finished meeting, for a caller that lists again and again: reading a meeting parses
-/// its transcript, its event journal and its speaker labels, so listing every meeting every 2 s kept a CPU core busy
-/// while the app sat idle. A meeting whose folder did not change is not read again.
+/// its transcript, its event journal and its speaker labels, so listing every meeting again and again kept a CPU
+/// core busy. A meeting whose folder did not change is not read again.
 ///
 /// Invariants:
 /// 1. A summary is reused only while its folder's stamp (`SessionCatalog.sizes`) and the recorder's liveness equal

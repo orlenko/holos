@@ -1244,12 +1244,12 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// (Meetings says so, and the next review rewrites them) and an alert says what happened, unless Holos is
     /// quitting or the meeting is being deleted.
     private func reviewClosed(_ sessionID: String, review: ReviewSession, title: String) {
+        defer { meeting.meetingsPane?.refresh() }
         guard review.exportsPending else {
             PendingExports().clear(sessionID)
             return
         }
         PendingExports().mark(sessionID)
-        if let controller = meeting.controller { meeting.meetingsPane?.update(running: controller.sessionsInUse) }
         Self.meetingLog.error("Session \(sessionID, privacy: .public): transcript files not rewritten when the review closed; marked pending")
         guard !meeting.quitting, meeting.maintenanceOn[sessionID]?.command != .deleteMeeting else { return }
         let name = Self.short(title)

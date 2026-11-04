@@ -11,7 +11,9 @@ import HolosMeeting
 @MainActor
 final class MeetingListState {
     let filesCache = TranscriptFilesCache()
-    /// The list reads the catalog every 2 s while it shows (`SessionCatalogCache`).
+    /// The next read while something works on a meeting (`readAgainWhileWorking`).
+    var readAgain: Task<Void, Never>?
+    /// The list reads the catalog often while something works on a meeting (`SessionCatalogCache`).
     let catalogCache = SessionCatalogCache()
     var progress: [String: PostProcessingProgress] = [:]
     var onStartRecording: (() -> Void)?

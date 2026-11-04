@@ -1651,7 +1651,8 @@ Open is named or where it navigates.
 Several meetings can be selected as in any Mac list: click, ⇧-click for a range, ⌘-click to add
 or remove one, ⌘A for all, ⇧↑/↓ to extend. Day headers are never selected; a range over one
 selects the meetings on both sides. The selection is kept by meeting, not by row, when the list
-is read again (every 2 s, and as a meeting records or a command works on one), and once every
+is read again (when the section shows, when its window becomes key, when the app changes a meeting, and every 2 s while a
+meeting records or a command or job works on one; with nothing working, nothing polls), and once every
 selected meeting is deleted the meeting after the first of them is selected (the one before when
 they were last); for a deletion of several, once it ended, from the list as it was when it began,
 however the refreshes in between saw them go. With several selected, the line under the buttons sums them up ("5 meetings selected ·

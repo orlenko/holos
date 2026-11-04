@@ -118,12 +118,11 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// The rows were asked to be rebuilt while a name was edited: they are once it ends.
     private var reloadDeferred = false
     private var pendingSelection: String?
-    private var refreshTask: Task<Void, Never>?
     private var loading = false
     private var previewURL: URL?
 
     /// On screen: the window is visible and shows this section.
-    private var onScreen = false
+    private(set) var onScreen = false
 
     init(root: URL, perform: @escaping (Action, SessionSummary) -> Void,
          openReview: @escaping (SessionSummary) -> Void,
@@ -175,6 +174,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
         fitColumnsToWidth()
+        readWhenTheWindowBecomesKey()
 
         emptyView.isHidden = true
         emptyView.onAction = { [weak self] in self?.startRecording() }
@@ -260,24 +260,18 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         live?.start()
         live?.embeddedReview?.reloadAll()
         refresh()
-        refreshTask?.cancel()
-        refreshTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
-                guard let self, self.onScreen, !Task.isCancelled else { return }
-                self.refresh()
-            }
-        }
     }
 
     func sectionDidHide() {
         onScreen = false
-        refreshTask?.cancel()
-        refreshTask = nil
+        stopReadingAgain()
         live?.stop(); live?.contentState.afterClose = nil
     }
 
     // MARK: - Live transcript
+
+    /// The app itself is working on a meeting (`readAgainWhileWorking`).
+    var appIsWorking: Bool { liveSessionID != nil || !running.isEmpty || deepRunning != nil || summarizing != nil }
 
     /// The meeting the app follows while it starts, records, or saves (`MeetingOpenPolicy.isLive`).
     private var liveSessionID: String? {
@@ -390,6 +384,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// The meetings the app is working on (`MeetingController.sessionsInUse`).
     func update(running: [String: String]) {
         self.running = running
+        readAgainWhileWorking()
         // The badges show what a running command is doing; reloading keeps the selection.
         reloadKeepingSelection()
         updateButtons()
@@ -402,6 +397,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         guard deepStates != self.deepStates || running != deepRunning else { return }
         self.deepStates = deepStates
         deepRunning = running
+        readAgainWhileWorking()
         reloadKeepingSelection()
         updateButtons()
     }
@@ -419,6 +415,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     func update(summarizing: String?) {
         guard summarizing != self.summarizing else { return }
         self.summarizing = summarizing
+        readAgainWhileWorking()
         reloadKeepingSelection()
     }
 
@@ -509,6 +506,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                 PendingExports().clear(id, ifGeneration: reviewGenerations[id] ?? 0)
             }
             self.show(listed.0, people: listed.1, freeBytes: listed.2, read: read)
+            self.readAgainWhileWorking()
             if self.refreshAgain {
                 self.refreshAgain = false
                 self.refresh()
