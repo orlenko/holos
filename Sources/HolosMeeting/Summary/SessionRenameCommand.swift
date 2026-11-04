@@ -89,7 +89,7 @@ public enum MeetingRenameRun {
         case 3:
             return (outcome.renamed ? "“\(shown)” was renamed, with a warning."
                         : "The transcript files for “\(shown)” could not be updated.",
-                    outcome.message + "\n\nChoose \(repair) from the meeting’s Advanced menu to try again.")
+                    outcome.message + "\n\nChoose \(repair) from the ··· at the top of the Meetings section to try again.")
         default:
             return ("Voice is Local could not rename “\(shown)”.", outcome.message)
         }
