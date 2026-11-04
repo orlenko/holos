@@ -348,11 +348,7 @@ struct MainWindowNarrowTests {
             .first { $0.stringValue == pane.statusText })
         #expect(!status.isHiddenOrHasHiddenAncestor)
         #expect(status.frame.width >= status.intrinsicContentSize.width - 1, "The summary is not cut off.")
-        for title in ["Advanced…", "Delete Meeting…"] {
-            let button = try #require(Self.allViews(pane.view).compactMap { $0 as? NSButton }
-                .first { $0.title == title })
-            #expect(button.isEnabled && !button.isHiddenOrHasHiddenAncestor, "\(title)")
-        }
+        #expect(pane.selectionActions.isEnabled && !pane.selectionActions.isHiddenOrHasHiddenAncestor)
         SettingsEmbeddingTests.render(controller.window,
                                       name: "narrow-meetings-several-\(sidebarHidden ? "hidden" : "sidebar")")
     }

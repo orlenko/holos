@@ -2,26 +2,44 @@ import AppKit
 import HolosMeeting
 import HolosStorage
 
-/// The Meetings grid's row buttons, Copy Path, and the rename a click on a selected meeting's name starts.
+/// The Meetings grid's row actions, Copy Path, and the rename a click on a selected meeting's name starts.
 extension MeetingsPane {
-    /// The row buttons each meeting offers (`MeetingRowActionsView`): Open and Copy Path always, View with a saved
-    /// transcript, Delete Audio when `MeetingActionPolicy` allows it. Read from the catalog's snapshot only, since rows
+    /// The row actions each meeting offers (`MeetingRowActionsView`): Open and Copy Path always, View with a saved
+    /// transcript, Delete Audio and Delete Meeting when `MeetingActionPolicy` allows them. Read from the catalog's snapshot only, since rows
     /// are drawn on the main actor; View checks the file when clicked.
     func rowActions(_ summary: SessionSummary) -> Set<MeetingRowActionsView.Kind> {
         var kinds: Set<MeetingRowActionsView.Kind> = [.open, .copyPath]
         if summary.transcriptID != nil { kinds.insert(.view) }
-        if MeetingActionPolicy.enabled(summary, inUse: isBusy(summary), hasExport: false, transcriptFiles: false)
-            .contains(.deleteAudio) { kinds.insert(.deleteAudio) }
+        let allowed = MeetingActionPolicy.enabled(summary, inUse: isBusy(summary), hasExport: false, transcriptFiles: false)
+        if allowed.contains(.deleteAudio) { kinds.insert(.deleteAudio) }
+        if allowed.contains(.deleteMeeting) { kinds.insert(.deleteMeeting) }
         return kinds
     }
 
-    /// What a row's buttons call: `rowAction` on that row's meeting.
+    /// VoiceOver's way to a row's actions (VO-⌘-Space), on any row: Open and ··· show only on the selected row or the one
+    /// under the pointer, and a hidden control is not in the accessibility tree.
+    func accessibilityActions(_ summary: SessionSummary) -> [NSAccessibilityCustomAction] {
+        let offered = rowActions(summary), handler = actionHandler(summary.id)
+        return MeetingRowActionsView.Kind.allCases.filter(offered.contains).map { kind in
+            NSAccessibilityCustomAction(name: kind.title) {
+                handler(kind)
+                return true
+            }
+        }
+    }
+
+    /// The selection changed: a row may have become, or stopped being, the only one selected.
+    func revealRowActions() {
+        table.enumerateAvailableRowViews { row, _ in (row as? MeetingTableRowView)?.revealActions() }
+    }
+
+    /// What a row's Open and ··· call: `rowAction` on that row's meeting.
     func actionHandler(_ sessionID: String) -> (MeetingRowActionsView.Kind) -> Void {
         { [weak self] kind in self?.rowAction(kind, sessionID: sessionID) }
     }
 
-    /// A row's button, on that row's meeting whatever is selected. A button's click does not go through the table, so
-    /// it cancels a pending rename here (`MeetingListState` invariant 2).
+    /// A row's action, on that row's meeting whatever is selected. A click on Open or ··· does not go through the table,
+    /// so it cancels a pending rename here (`MeetingListState` invariant 2).
     func rowAction(_ kind: MeetingRowActionsView.Kind, sessionID: String) {
         listState.cancelPendingRename()
         guard let summary = sessions.first(where: { $0.id == sessionID }) else { return }
@@ -38,6 +56,10 @@ extension MeetingsPane {
         case .deleteAudio:
             guard enabledActions(summary).contains(.deleteAudio) else { return NSSound.beep() }
             perform(.deleteAudio, summary)
+            updateButtons()
+        case .deleteMeeting:
+            guard enabledActions(summary).contains(.deleteMeeting) else { return NSSound.beep() }
+            perform(.deleteMeeting, summary)
             updateButtons()
         case .copyPath:
             listState.pasteboard.clearContents()
@@ -84,6 +106,12 @@ extension MeetingsPane {
     @objc private func listWidthChanged(_ notification: Notification) {
         guard let clip = notification.object as? NSView else { return }
         MeetingGridColumn.fit(table, width: clip.bounds.width)
+    }
+
+    /// The menu's View Transcript: the Markdown transcript in the app that opens Markdown.
+    @objc func viewTranscript(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        rowAction(.view, sessionID: id)
     }
 
     /// The menu's Copy Path: the meeting's folder.

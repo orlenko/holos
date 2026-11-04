@@ -39,6 +39,17 @@ public enum MeetingSelection {
         return previous[..<first].last(where: remaining.contains)
     }
 
+    /// "Harbour Lane lease · 45 min · 180 MB": what the section says about one selected meeting. A meeting whose audio
+    /// was deleted has no length.
+    public static func summary(of meeting: SessionSummary) -> String {
+        var parts = [meeting.displayTitle]
+        if !meeting.audioDeleted, meeting.savedSeconds.isFinite, meeting.savedSeconds >= 1 {
+            parts.append(MeetingListFormat.duration(meeting.savedSeconds))
+        }
+        parts.append(MeetingFormat.size(max(0, meeting.bytes)))
+        return parts.joined(separator: " · ")
+    }
+
     /// "5 meetings selected · 3 h 12 min · 1.2 GB": what the section says about a selection of several meetings, in
     /// place of one meeting's details. The length counts the meetings that have audio.
     public static func summary(_ meetings: [SessionSummary]) -> String {

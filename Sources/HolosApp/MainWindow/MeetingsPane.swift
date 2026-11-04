@@ -8,15 +8,17 @@ import Quartz
 import UniformTypeIdentifiers
 
 /// The main window's meeting list and inline meeting screen (docs/design.md "Meetings list").
-/// Rows group by day and show title, people, summary, state, and processing progress. Open and Delete are primary;
-/// the Advanced menu holds exports, recovery, processing, Finder, and Rename (⌘R).
+/// Rows group by day and show title, people, summary, state, and processing progress. Start Recording… and the ··· of
+/// the selection are beside the search; a row shows Open and its own ··· when selected or under the pointer. The
+/// Advanced menu holds exports, recovery, processing, Finder, and Rename (⌘R).
 ///
 /// Invariants:
 /// 1. Double-click and Return open the same inline meeting screen in every processing state.
 /// 2. Leaving an embedded review passes through its save gate before detaching the screen.
 /// 3. Catalog refreshes preserve selection by meeting ID and publish progress with the rows.
 /// 4. Catalog and processing-record reads run off the main actor.
-/// 5. The empty view shows exactly when no meeting row is shown.
+/// 5. The empty view shows exactly when no meeting row is shown; Start Recording… beside the search shows unless the
+///    list is empty (the empty view has it then).
 @MainActor
 final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
     @preconcurrency QLPreviewPanelDataSource, QLPreviewPanelDelegate, MainSectionContent {
@@ -47,9 +49,10 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     private let emptyView = SectionEmptyView()
     private let footer = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
-    private var buttons: [String: NSButton] = [:]
-    /// The rows of `buttons` under the list; they wrap when the section is narrow.
-    private var actionRows: [WrappingRowView] = []
+    /// The section's one task: its accent colour marks it, and no Return key does (Return opens the selected meeting).
+    private let startButton = NSButton(title: "Start Recording…", target: nil, action: nil)
+    /// The selection's actions (`selectionMenu`): off with nothing selected.
+    let selectionActions = MeetingActionsButton()
     /// Every meeting, in list order (`MeetingOpenPolicy.ordered`).
     private(set) var sessions: [SessionSummary] = []
     /// What the table shows: the meetings that match the search, under their day headers.
@@ -180,24 +183,30 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         emptyView.onAction = { [weak self] in self?.startRecording() }
         emptyView.translatesAutoresizingMaskIntoConstraints = false
 
-        // Rows that wrap, so the section fits the window at its narrowest (beside a call's window).
-        let row = WrappingRowView(views: [
-            button("Start Recording…", #selector(startRecording)),
-            button("Open", #selector(openSelection)), button("Delete Meeting…", #selector(deleteMeeting)),
-            button("Advanced…", #selector(showAdvanced)),
-        ])
-        actionRows = [row]
+        startButton.bezelStyle = .push
+        startButton.bezelColor = .controlAccentColor
+        startButton.target = self
+        startButton.action = #selector(startRecording)
+        startButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        selectionActions.makeMenu = { [weak self] in self?.selectionMenu() }
+        selectionActions.toolTip = "Actions for the selected meetings"
+        selectionActions.setAccessibilityLabel("Actions for the selected meetings")
+        selectionActions.setContentCompressionResistancePriority(.required, for: .horizontal)
+        search.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let header = NSStackView(views: [search, startButton, selectionActions])
+        header.spacing = 8
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 12)
         statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         footer.textColor = .secondaryLabelColor
         footer.font = .systemFont(ofSize: 12)
 
-        let stack = NSStackView(views: [search, scroll, row, statusLabel, footer])
+        let stack = NSStackView(views: [header, scroll, statusLabel, footer])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
-        stack.setCustomSpacing(8, after: search)
+        stack.setCustomSpacing(8, after: header)
         stack.translatesAutoresizingMaskIntoConstraints = false
         listView.addSubview(stack)
         listView.addSubview(emptyView)
@@ -206,10 +215,9 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             stack.trailingAnchor.constraint(equalTo: listView.trailingAnchor, constant: -20),
             stack.topAnchor.constraint(equalTo: listView.topAnchor, constant: 16),
             stack.bottomAnchor.constraint(equalTo: listView.bottomAnchor, constant: -16),
-            search.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            header.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor),
             statusLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
             emptyView.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
             emptyView.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
@@ -238,13 +246,6 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     var preferredFirstResponder: NSView? { live?.preferredFirstResponder ?? table }
     var searchField: NSSearchField? { live == nil ? search : nil }
-
-    private func button(_ title: String, _ action: Selector) -> NSButton {
-        let button = NSButton(title: title, target: self, action: action)
-        button.bezelStyle = .push
-        buttons[title] = button
-        return button
-    }
 
     /// Selects the meeting after the current review saves pending edits (nil keeps the selection).
     func select(sessionID: String?) {
@@ -593,6 +594,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             emptyView.show(.init(text: "No meetings match “\(query)”."))
         }
         emptyView.isHidden = !shown.isEmpty  // invariant 5
+        startButton.isHidden = sessions.isEmpty
     }
 
     /// Reloads the rows' contents (badges, the live phase) with the selection kept.
@@ -658,6 +660,11 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         MeetingSelection.selectable(proposed, rows: rowIDs)
     }
 
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        guard case .meeting = rows[row] else { return nil }
+        return MeetingTableRowView(table: tableView)
+    }
+
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         switch rows[row] {
         case .group: return 28
@@ -688,6 +695,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                     title: summary.displayTitle, detail: MeetingListFormat.detailLine(summary, people: names, now: now),
                     summary: summaryText(summary), badges: badges(summary, livePhase: phase),
                     toolTip: toolTip(summary, isLive: isLive), progress: listState.progress[summary.id]))
+                row.setAccessibilityCustomActions(accessibilityActions(summary))
                 return row
             case .when:
                 return cell(MeetingTextCell.self).showing(MeetingListFormat.detailLine(summary, people: [], now: now))
@@ -695,7 +703,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                 let text = [summaryText(summary), MeetingListFormat.peopleText(names)].compactMap { $0 }
                 return cell(MeetingTextCell.self).showing(text.first ?? "", toolTip: text.joined(separator: "\n\n"))
             case .actions:
-                return cell(MeetingRowActionsView.self).showing(rowActions(summary), action: actionHandler(summary.id))
+                return cell(MeetingRowActionsView.self).showing(rowActions(summary), title: summary.displayTitle,
+                                                                action: actionHandler(summary.id))
             }
         }
     }
@@ -723,7 +732,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                                         echoNotRemoved: echoFailed)
     }
 
-    /// The line under the buttons, about the selected meeting.
+    /// The line under the list, about the selected meeting.
     var statusText: String { statusLabel.stringValue }
 
     private func toolTip(_ summary: SessionSummary, isLive: Bool) -> String {
@@ -742,6 +751,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         updateButtons()
+        revealRowActions()
         announceSelection()
     }
 
@@ -791,8 +801,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     // MARK: - Buttons
 
-    /// What `MeetingActionPolicy` enables for `summary` now, the rules of the commands behind the actions. The
-    /// buttons show it, and every way to an action (button, menu, ⌫, Return, double-click) checks it again when used.
+    /// What `MeetingActionPolicy` enables for `summary` now, the rules of the commands behind the actions. The menus
+    /// show it, and every way to an action (button, menu, ⌫, Return, double-click) checks it again when used.
     func enabledActions(_ summary: SessionSummary?) -> Set<MeetingActionPolicy.Action> {
         MeetingActionPolicy.enabled(summary, inUse: summary.map(isBusy) ?? false,
                                     hasExport: summary.map(hasExport) ?? false,
@@ -819,26 +829,13 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         return summary
     }
 
-    /// The buttons follow `MeetingActionPolicy`, the rules of the commands behind them.
+    /// Start Recording… follows the recorder, the selection's ··· the selection; the line under the list says what is
+    /// happening to the selection, else what it is.
     func updateButtons() {
         let selected = selectedSessions
         let summary = selectedSession
-        buttons["Open"]?.isEnabled = summary != nil
-        buttons["Start Recording…"]?.isEnabled = canStartRecording
-        buttons["Advanced…"]?.isEnabled = !selected.isEmpty
-        if selected.count > 1 {
-            // Several: Show in Finder and the deletions act on all of them; the rest is for one meeting.
-            let offered = bulkActions(selected)
-            for (title, action) in Self.buttonActions { buttons[title]?.isEnabled = offered.contains(action) }
-        } else {
-            let enabled = enabledActions(summary)
-            for (title, action) in Self.buttonActions { buttons[title]?.isEnabled = enabled.contains(action) }
-        }
-        let cleanUpHidden = (summary?.derivedBytes ?? 0) == 0
-        if buttons["Clean Up"]?.isHidden != cleanUpHidden {
-            buttons["Clean Up"]?.isHidden = cleanUpHidden
-            actionRows.forEach { $0.viewsChanged() }
-        }
+        startButton.isEnabled = canStartRecording
+        selectionActions.isEnabled = !selected.isEmpty
         let progress = bulkStatus.map { [$0] } ?? []
         if selected.count > 1 {
             statusLabel.stringValue = (progress + [MeetingSelection.summary(selected)]).joined(separator: " ")
@@ -864,9 +861,10 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             }
             // Not while a command works on it (a rename rewriting them).
             if staleFiles.contains(summary.id), running[summary.id] == nil {
-                parts.append("The transcript files are out of date; choose Update Transcript Files from Advanced.")
+                parts.append("The transcript files are out of date; choose Update Transcript Files from the ··· at the top of the Meetings section.")
             }
-            statusLabel.stringValue = parts.joined(separator: " ")
+            statusLabel.stringValue = parts.isEmpty ? MeetingSelection.summary(of: summary)
+                : parts.joined(separator: " ")
         } else {
             statusLabel.stringValue = progress.joined(separator: " ")
         }
@@ -890,13 +888,6 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                                allowed: { enabledActions($0).contains(policy) }, inUse: isBusy)
     }
 
-    /// The buttons (and menu items) run by `MeetingActionPolicy`.
-    private static let buttonActions: [(String, MeetingActionPolicy.Action)] = [
-        ("Recover…", .recover), ("Label Speakers", .labelSpeakers), ("Show in Finder", .showInFinder),
-        ("Open Transcript", .openTranscript), ("Save Transcript As…", .saveTranscript),
-        ("Delete Audio…", .deleteAudio), ("Delete Meeting…", .deleteMeeting), ("Clean Up", .cleanUp),
-    ]
-
     /// Review needs speaker labels and no recording, labelling, or command running on the meeting.
     private func canReview(_ summary: SessionSummary) -> Bool {
         MeetingOpenPolicy.canReview(summary, inUse: running[summary.id] != nil)
@@ -908,13 +899,6 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         let row = table.clickedRow
         guard session(at: row) != nil else { return }
         openSelection()
-    }
-
-    @objc private func showAdvanced(_ sender: NSButton) {
-        let menu = NSMenu()
-        fill(menu, clickedRow: table.selectedRow)
-        let advanced = menu.items.first { $0.title == "Advanced" }?.submenu ?? menu
-        advanced.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY), in: sender)
     }
 
     /// Open, Return, and double-click share one meeting screen.
@@ -932,7 +916,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     @objc private func deleteAudio() { act(.deleteAudio, .deleteAudio) }
 
-    /// The button, and ⌫ (or ⌘⌫) in the list: refused (with a beep) whenever the button is off, for example while
+    /// The menu's item, and ⌫ (or ⌘⌫) in the list: refused (with a beep) whenever the item is off, for example while
     /// another process holds the meeting.
     @objc private func deleteMeeting() { act(.deleteMeeting, .deleteMeeting) }
 
@@ -1299,6 +1283,7 @@ extension MeetingsPane: NSMenuDelegate {
         rootMenu.addItem(delete)
         let advanced = NSMenuItem(title: "Advanced", action: nil, keyEquivalent: "")
         let menu = NSMenu(title: "Advanced")
+        menu.autoenablesItems = false
         advanced.submenu = menu
         rootMenu.addItem(.separator())
         rootMenu.addItem(advanced)
@@ -1311,7 +1296,9 @@ extension MeetingsPane: NSMenuDelegate {
             return item
         }
         let isLive = MeetingOpenPolicy.isLive(summary, liveSessionID: liveSessionID)
-        add("Show Transcript File", #selector(openTranscript), hasExport(summary))
+        let hasTranscript = hasExport(summary)
+        add("View Transcript", #selector(viewTranscript), hasTranscript).representedObject = summary.id
+        add("Show Transcript File", #selector(openTranscript), hasTranscript)
         add("Show in Finder", #selector(showInFinder), enabled.contains(.showInFinder))
         add("Copy Path", #selector(copyPath), true).representedObject = summary.id
         add("Save Transcript As…", #selector(saveTranscript), enabled.contains(.saveTranscript))
@@ -1403,12 +1390,13 @@ extension MeetingsPane: NSMenuDelegate {
         add("Delete Audio…", #selector(deleteAudio), enabled.contains(.deleteAudio))
     }
 
-    /// The menu of a selection of several meetings: what acts on all of them, enabled as the buttons are.
+    /// The menu of a selection of several meetings: what acts on all of them.
     private func fillBulk(_ menu: NSMenu) {
         let selected = selectedSessions
         let enabled = bulkActions(selected)
         let count = selected.count
         let advanced = NSMenu(title: "Advanced")
+        advanced.autoenablesItems = false
         for (title, action, policy) in [
             ("Show \(count) in Finder", #selector(showInFinder), MeetingActionPolicy.Action.showInFinder),
             ("Delete Audio of \(count) Meetings…", #selector(deleteAudio), .deleteAudio),
