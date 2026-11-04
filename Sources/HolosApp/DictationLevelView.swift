@@ -1,23 +1,11 @@
 import AppKit
-import HolosCore
-
-/// How loud a stretch of microphone audio is, from 0 (silence) to 1 (loud speech), for the dictation preview.
-enum DictationLevel {
-    /// Below this, a room's noise; at the top, speech close to the microphone.
-    private static let quietDecibels: Float = -55
-    private static let loudDecibels: Float = -15
-
-    static func level(of samples: [Float]) -> CGFloat {
-        guard !samples.isEmpty else { return 0 }
-        let power = samples.reduce(Float(0)) { $0 + $1 * $1 } / Float(samples.count)
-        guard power.isFinite, power > 0 else { return 0 }
-        let decibels = 10 * log10(power)
-        return CGFloat(min(1, max(0, (decibels - quietDecibels) / (loudDecibels - quietDecibels))))
-    }
-}
 
 /// The last few levels the microphone gave, newest on the right: proof the preview is hearing you before any words
 /// appear. The audio itself is not kept here. Drawn with a semantic colour, so it follows light and dark.
+///
+/// Invariants:
+/// 1. `levels` always holds `bars` values, oldest first, each from 0 to 1 (`DictationLevel`).
+/// 2. Every change to `levels` asks for a redraw.
 final class DictationLevelView: NSView {
     private static let bars = 5
     private static let barWidth: CGFloat = 3

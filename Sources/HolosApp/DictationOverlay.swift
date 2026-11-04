@@ -223,7 +223,7 @@ final class DictationOverlay {
     /// A frame of the microphone's audio: the level bars move. Only its loudness is used.
     func hear(_ frame: PCMFrame) {
         guard !levelView.isHidden else { return }
-        levelView.add(DictationLevel.level(of: frame.samples))
+        levelView.add(CGFloat(DictationLevel.level(of: frame.samples)))
     }
 
     /// Called when a new dictation starts, so its preview appears again.
