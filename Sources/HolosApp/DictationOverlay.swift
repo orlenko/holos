@@ -12,13 +12,23 @@ final class DictationOverlay {
     private static let closeSize: CGFloat = 22
     /// Set by the close button; `show` stays quiet until the next dictation calls `allowShowing()`.
     private var dismissed = false
-    private let titleLabel = NSTextField(labelWithString: "")
+    private let titleLabel = NSTextField(wrappingLabelWithString: "")
+    /// What to do next, beside the title; it gives way to the title when both do not fit.
+    private let hintLabel = NSTextField(labelWithString: "")
+    /// Marks content that needs the user, so a failure never looks like listening.
+    private let attentionIcon = NSImageView()
     private let previewLabel = NSTextField(wrappingLabelWithString: "")
-    private static let previewWidth: CGFloat = 520 - 36
+    private let material = NSVisualEffectView()
+    private let stack = NSStackView()
+    private static let panelWidth: CGFloat = 520
+    private static let margin: CGFloat = 18
+    private static let verticalMargin: CGFloat = 14
+    private static let previewWidth: CGFloat = panelWidth - margin * 2
     private static let previewLines: CGFloat = 4
+    private static let titleLines = 3
 
     init() {
-        panel = OverlayPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 150),
+        panel = OverlayPanel(contentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: 80),
                              styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
@@ -40,7 +50,7 @@ final class DictationOverlay {
         closePanel.becomesKeyOnlyIfNeeded = true
         panel.isReleasedWhenClosed = false
 
-        let material = NSVisualEffectView(frame: panel.contentView!.bounds)
+        material.frame = panel.contentView!.bounds
         material.material = .hudWindow
         material.blendingMode = .behindWindow
         material.state = .active
@@ -48,15 +58,34 @@ final class DictationOverlay {
         material.layer?.cornerRadius = 14
         material.layer?.masksToBounds = true
         titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = Self.titleLines
+        titleLabel.lineBreakMode = .byWordWrapping
+        hintLabel.font = .systemFont(ofSize: 12)
+        hintLabel.textColor = .secondaryLabelColor
+        hintLabel.lineBreakMode = .byTruncatingTail
+        hintLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        hintLabel.setContentHuggingPriority(.required, for: .horizontal)
+        attentionIcon.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill",
+                                      accessibilityDescription: "Needs attention")
+        attentionIcon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        attentionIcon.contentTintColor = .systemOrange
+        attentionIcon.setContentHuggingPriority(.required, for: .horizontal)
+        attentionIcon.setContentCompressionResistancePriority(.required, for: .horizontal)
         previewLabel.font = .systemFont(ofSize: 15)
         previewLabel.maximumNumberOfLines = Int(Self.previewLines)
         previewLabel.lineBreakMode = .byWordWrapping
         previewLabel.preferredMaxLayoutWidth = Self.previewWidth
-        let stack = NSStackView(views: [titleLabel, previewLabel])
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        let header = NSStackView(views: [attentionIcon, titleLabel, spacer, hintLabel])
+        header.orientation = .horizontal
+        header.alignment = .firstBaseline
+        header.spacing = 8
+        stack.setViews([header, previewLabel], in: .leading)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
+        stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
         material.addSubview(stack)
 
@@ -73,37 +102,56 @@ final class DictationOverlay {
         closePanel.contentView = closeButton
         NSLayoutConstraint.activate([
             // Leave room for the close panel that sits over the top-right corner.
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: material.trailingAnchor,
-                                                 constant: -(18 + Self.closeSize + 8)),
-            stack.leadingAnchor.constraint(equalTo: material.leadingAnchor, constant: 18),
-            stack.trailingAnchor.constraint(equalTo: material.trailingAnchor, constant: -18),
-            stack.topAnchor.constraint(equalTo: material.topAnchor, constant: 16),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: material.bottomAnchor, constant: -16),
-            titleLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
+            header.trailingAnchor.constraint(equalTo: material.trailingAnchor,
+                                             constant: -(Self.margin + Self.closeSize + 4)),
+            stack.leadingAnchor.constraint(equalTo: material.leadingAnchor, constant: Self.margin),
+            stack.trailingAnchor.constraint(equalTo: material.trailingAnchor, constant: -Self.margin),
+            stack.topAnchor.constraint(equalTo: material.topAnchor, constant: Self.verticalMargin),
             previewLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
         panel.contentView = material
     }
 
     /// Shows or updates the preview. After the close button was clicked, updates stay hidden until
-    /// `allowShowing()`; `force` is for messages the user must see (such as the rebuilt-app warning).
-    func show(title: String, text: String, force: Bool = false, attention: Bool = false) {
+    /// `allowShowing()`; `force` is for messages the user must see (such as the rebuilt-app warning). `hint`: what to
+    /// do next, beside the title. `attention`: content that needs the user, marked with a warning sign.
+    func show(title: String, hint: String? = nil, text: String, force: Bool = false, attention: Bool = false) {
         if dismissed && !force { return }
         if force { dismissed = false }
         contentToken &+= 1
         showingAttention = attention
-        titleLabel.stringValue = title
-        previewLabel.stringValue = Self.latestWords(of: text, font: previewLabel.font ?? .systemFont(ofSize: 15))
+        let height = fill(title: title, hint: hint, text: text, attention: attention)
         let pointer = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(pointer) } ?? NSScreen.main
-        if let frame = screen?.visibleFrame {
-            panel.setFrameOrigin(NSPoint(x: frame.midX - panel.frame.width / 2, y: frame.minY + 70))
-        }
+        // The bottom edge stays put, so the words being spoken do not move as the panel grows.
+        let origin = (screen?.visibleFrame)
+            .map { NSPoint(x: $0.midX - Self.panelWidth / 2, y: $0.minY + 70) } ?? panel.frame.origin
+        panel.setFrame(NSRect(origin: origin, size: NSSize(width: Self.panelWidth, height: height)), display: true)
+        panel.invalidateShadow()
         panel.orderFrontRegardless()
         let frame = panel.frame
         closePanel.setFrameOrigin(NSPoint(x: frame.maxX - 10 - Self.closeSize, y: frame.maxY - 10 - Self.closeSize))
         if closePanel.parent == nil { panel.addChildWindow(closePanel, ordered: .above) }
         closePanel.orderFrontRegardless()
+    }
+
+    /// Puts the content in place and returns the panel's height for it: the title and the words, at least one line of
+    /// them. Nothing goes on screen.
+    func fill(title: String, hint: String?, text: String, attention: Bool) -> CGFloat {
+        titleLabel.stringValue = title
+        hintLabel.stringValue = hint ?? ""
+        hintLabel.isHidden = hint == nil
+        attentionIcon.isHidden = !attention
+        previewLabel.stringValue = Self.latestWords(of: text, font: previewLabel.font ?? .systemFont(ofSize: 15))
+        let reserved = Self.closeSize + 4 + (attentionIcon.isHidden ? 0 : 22)
+            + (hintLabel.isHidden ? 0 : min(hintLabel.intrinsicContentSize.width, Self.previewWidth / 2) + 8)
+        titleLabel.preferredMaxLayoutWidth = Self.previewWidth - reserved
+        material.layoutSubtreeIfNeeded()
+        let oneLine = NSTextField(labelWithString: "X")
+        oneLine.font = previewLabel.font
+        let words = max(oneLine.intrinsicContentSize.height, previewLabel.intrinsicContentSize.height)
+        let title = titleLabel.intrinsicContentSize.height
+        return ceil(title + stack.spacing + words + Self.verticalMargin * 2)
     }
 
     /// The end of `text` that fits the preview, so the words just spoken stay visible; older words
@@ -136,6 +184,9 @@ final class DictationOverlay {
     }
 
     var isVisible: Bool { panel.isVisible }
+    /// What the panel shows (tests).
+    var isMarkedForAttention: Bool { !attentionIcon.isHidden }
+    var shownHint: String? { hintLabel.isHidden ? nil : hintLabel.stringValue }
     /// Changes every time the panel shows new content, so a timer can tell whether its content is still up.
     private(set) var contentToken = 0
     /// Whether the content on screen needs the user (a failure, text that could not be written, a warning).
@@ -160,6 +211,7 @@ final class DictationOverlay {
         closePanel.orderOut(nil)
         panel.orderOut(nil)
         titleLabel.stringValue = ""
+        hintLabel.stringValue = ""
         previewLabel.stringValue = ""
     }
 }
