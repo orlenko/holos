@@ -1124,7 +1124,7 @@ public enum SessionDeletion {
    would use, written by a newer Holos is refused (`unavailable`), even with `force`.
 
 **Listing often (`SessionCatalogCache`).** Reading a meeting parses its transcript, event journal and speaker labels. The
-Meetings list reads the catalog every 2 s while it shows and the automatic relabel every 30 s, so both keep each settled
+Meetings list reads the catalog every 2 s while something works on a meeting and the automatic relabel every 30 s, so both keep each settled
 meeting's summary and reuse it while the folder's stamp (name, kind, file number, size and change times of every entry)
 and the recorder's liveness stay the same, for at most 10 minutes. A meeting being recorded or processed, or with anything
 unreadable, is read every time, and the background-job lock is read for each listing. The CLI lists without a cache.

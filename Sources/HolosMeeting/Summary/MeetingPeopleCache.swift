@@ -5,7 +5,7 @@ import HolosStorage
 import Synchronization
 
 /// The people a meeting's speaker labels name (`MeetingSummarySource.people`), for the Meetings list, which reads the
-/// catalog every 2 s: a meeting's labels are loaded again only when something they depend on changed (the current
+/// catalog often: a meeting's labels are loaded again only when something they depend on changed (the current
 /// transcript, the head run, the edit journal, the recognition results, people's names, "Remember voices").
 public final class MeetingPeopleCache: Sendable {
     private struct Entry {
