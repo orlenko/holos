@@ -4,6 +4,13 @@ import AppKit
 /// whatever is underneath. The close button lives in a separate tiny child panel over the top-right
 /// corner, because a window cannot be click-through in only part of its area. Neither panel ever
 /// becomes key or main, and clicking does not activate Holos.
+///
+/// Invariants:
+/// 1. After the close button, `show` stays quiet until `allowShowing()` or a `force` show, which ends the dismissal.
+/// 2. `contentToken` changes with every show that reaches the panel, so a timer hides only the content it was set for.
+/// 3. `showingAttention` and the warning sign say the same thing for what is on screen, and a failure always has them;
+///    `hide` clears the attention, the title, the hint and the words.
+/// 4. The panel's bottom edge and width do not depend on its content; only its height does.
 @MainActor
 final class DictationOverlay {
     private let panel: NSPanel
@@ -57,31 +64,11 @@ final class DictationOverlay {
         material.wantsLayer = true
         material.layer?.cornerRadius = 14
         material.layer?.masksToBounds = true
-        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-        titleLabel.maximumNumberOfLines = Self.titleLines
-        titleLabel.lineBreakMode = .byWordWrapping
-        hintLabel.font = .systemFont(ofSize: 12)
-        hintLabel.textColor = .secondaryLabelColor
-        hintLabel.lineBreakMode = .byTruncatingTail
-        hintLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        hintLabel.setContentHuggingPriority(.required, for: .horizontal)
-        attentionIcon.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill",
-                                      accessibilityDescription: "Needs attention")
-        attentionIcon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
-        attentionIcon.contentTintColor = .systemOrange
-        attentionIcon.setContentHuggingPriority(.required, for: .horizontal)
-        attentionIcon.setContentCompressionResistancePriority(.required, for: .horizontal)
         previewLabel.font = .systemFont(ofSize: 15)
         previewLabel.maximumNumberOfLines = Int(Self.previewLines)
         previewLabel.lineBreakMode = .byWordWrapping
         previewLabel.preferredMaxLayoutWidth = Self.previewWidth
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        spacer.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-        let header = NSStackView(views: [attentionIcon, titleLabel, spacer, hintLabel])
-        header.orientation = .horizontal
-        header.alignment = .firstBaseline
-        header.spacing = 8
+        let header = makeHeader()
         stack.setViews([header, previewLabel], in: .leading)
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -110,6 +97,32 @@ final class DictationOverlay {
             previewLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
         panel.contentView = material
+    }
+
+    /// The row above the words: the warning sign, the title, and the hint at its far end.
+    private func makeHeader() -> NSStackView {
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.maximumNumberOfLines = Self.titleLines
+        titleLabel.lineBreakMode = .byWordWrapping
+        hintLabel.font = .systemFont(ofSize: 12)
+        hintLabel.textColor = .secondaryLabelColor
+        hintLabel.lineBreakMode = .byTruncatingTail
+        hintLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        hintLabel.setContentHuggingPriority(.required, for: .horizontal)
+        attentionIcon.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill",
+                                      accessibilityDescription: "Needs attention")
+        attentionIcon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        attentionIcon.contentTintColor = .systemOrange
+        attentionIcon.setContentHuggingPriority(.required, for: .horizontal)
+        attentionIcon.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        let header = NSStackView(views: [attentionIcon, titleLabel, spacer, hintLabel])
+        header.orientation = .horizontal
+        header.alignment = .firstBaseline
+        header.spacing = 8
+        return header
     }
 
     /// Shows or updates the preview. After the close button was clicked, updates stay hidden until
