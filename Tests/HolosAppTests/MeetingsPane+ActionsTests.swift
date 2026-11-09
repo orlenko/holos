@@ -46,8 +46,7 @@ struct MeetingsPaneActionsTests {
         let (window, pane) = try LiveMeetingViewTests.meetings(size: .init(width: 601, height: 560), root: temp.url)
         var starts = 0
         pane.onStartRecording = { starts += 1 }
-        let button = try #require(MainWindowNarrowTests.allViews(pane.view).compactMap { $0 as? NSButton }
-            .first { $0.title == "Start Recording…" })
+        let button = pane.startButton
         #expect(button.isEnabled)
         button.performClick(nil)
         #expect(starts == 1)

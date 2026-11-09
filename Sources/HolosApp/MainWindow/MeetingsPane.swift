@@ -50,7 +50,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     private let footer = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
     /// The section's one task: its accent colour marks it, and no Return key does (Return opens the selected meeting).
-    private let startButton = NSButton(title: "Start Recording…", target: nil, action: nil)
+    let startButton = NSButton(title: "Start Recording…", target: nil, action: nil)
     /// The selection's actions (`selectionMenu`): off with nothing selected.
     let selectionActions = MeetingActionsButton()
     /// Every meeting, in list order (`MeetingOpenPolicy.ordered`).
@@ -598,7 +598,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     }
 
     /// Reloads the rows' contents (badges, the live phase) with the selection kept.
-    private func reloadKeepingSelection() {
+    func reloadKeepingSelection() {
         reloadRows(selecting: selectedIDs)
     }
 
@@ -668,7 +668,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         switch rows[row] {
         case .group: return 28
-        case .meeting: return MeetingRowView.height
+        case .meeting: return listState.twoLines ? MeetingRowView.twoLineHeight : MeetingRowView.height
         }
     }
 
@@ -691,26 +691,24 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                 let phase = isLive
                     ? LiveMeetingPhase.of(sessionID: summary.id, state: meetingState, summary: summary) : nil
                 let row = cell(MeetingRowView.self)
-                row.show(MeetingRowView.Content(
-                    title: summary.displayTitle, detail: MeetingListFormat.detailLine(summary, people: names, now: now),
-                    summary: summaryText(summary), badges: badges(summary, livePhase: phase),
-                    toolTip: toolTip(summary, isLive: isLive), progress: listState.progress[summary.id]))
+                row.show(rowContent(summary, people: names, now: now, isLive: isLive, livePhase: phase))
                 row.setAccessibilityCustomActions(accessibilityActions(summary))
                 return row
             case .when:
                 return cell(MeetingTextCell.self).showing(MeetingListFormat.detailLine(summary, people: [], now: now))
             case .description:
-                let text = [summaryText(summary), MeetingListFormat.peopleText(names)].compactMap { $0 }
+                let text = descriptionLines(summary, people: names)
                 return cell(MeetingTextCell.self).showing(text.first ?? "", toolTip: text.joined(separator: "\n\n"))
             case .actions:
                 return cell(MeetingRowActionsView.self).showing(rowActions(summary), title: summary.displayTitle,
+                                                                start: rowStart(summary, now: now),
                                                                 action: actionHandler(summary.id))
             }
         }
     }
 
     /// The row's summary text: the generated one, while the meeting is not being recorded.
-    private func summaryText(_ summary: SessionSummary) -> String? {
+    func summaryText(_ summary: SessionSummary) -> String? {
         guard !MeetingOpenPolicy.isLive(summary, liveSessionID: liveSessionID),
               let text = summary.generatedSummary?.summary, !text.isEmpty else { return nil }
         return text
@@ -735,7 +733,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// The line under the list, about the selected meeting.
     var statusText: String { statusLabel.stringValue }
 
-    private func toolTip(_ summary: SessionSummary, isLive: Bool) -> String {
+    func toolTip(_ summary: SessionSummary, isLive: Bool) -> String {
         var lines: [String] = []
         if summary.displayTitle != summary.name { lines.append("Named “\(summary.name)”; the title was written by "
             + "Apple Intelligence from the transcript.") }

@@ -67,6 +67,18 @@ private func record(_ title: String, _ text: String = "We agreed on the plan.", 
     #expect(line(meeting("d", minutes: 0)) == "2:00 PM")
 }
 
+@Test func theShortStartLeavesTheDayToItsHeader() {
+    func start(_ hoursAgo: Double) -> String {
+        MeetingListFormat.shortStart(listNow.addingTimeInterval(-hoursAgo * 3600), now: listNow, calendar: utc,
+                                     locale: posix).replacingOccurrences(of: "\u{202F}", with: " ")
+    }
+    #expect(start(5) == "10:00 AM")
+    #expect(start(24) == "3:00 PM", "Yesterday: its header says so.")
+    #expect(start(24 * 3) == "Tue 3:00 PM")
+    #expect(start(24 * 20) == "Sep 12")
+    #expect(start(24 * 300) == "Dec 6, 2025")
+}
+
 @Test func durationsAndPeopleReadNaturally() {
     #expect(MeetingListFormat.duration(45) == "45 s")
     #expect(MeetingListFormat.duration(3_120) == "52 min")

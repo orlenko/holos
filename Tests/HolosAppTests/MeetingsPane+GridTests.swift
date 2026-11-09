@@ -37,7 +37,7 @@ struct MeetingsPaneGridTests {
     @Test func aMeetingIsOneRowOfNameWhenDescriptionAndActions() throws {
         let temp = try TemporaryDirectory("meeting-grid-columns")
         defer { temp.remove() }
-        let (_, pane) = try LiveMeetingViewTests.meetings(size: .init(width: 601, height: 560), root: temp.url)
+        let (_, pane) = try LiveMeetingViewTests.meetings(size: .init(width: 1000, height: 700), root: temp.url)
         let summary = try Self.meeting("a", in: temp.url)
         pane.show([summary], people: [summary.id: ["Alex", "Sam"]], freeBytes: nil)
         #expect(pane.table.tableColumns.compactMap(MeetingGridColumn.init) == MeetingGridColumn.allCases)
@@ -48,9 +48,9 @@ struct MeetingsPaneGridTests {
             as? MeetingTextCell)
         #expect(description.textField?.stringValue == "Alex and Sam", "Without a summary, the people it names.")
         let visible = pane.table.enclosingScrollView?.contentView.bounds.width ?? 0
-        #expect(pane.table.frame.width <= visible + 1, "The columns fit the window at its narrowest.")
+        #expect(pane.table.frame.width <= visible + 1, "The columns fit the list.")
         let when = try #require(pane.table.tableColumns.first { MeetingGridColumn($0) == .when })
-        #expect(when.isHidden == (visible < MeetingGridColumn.whenHiddenBelow))
+        #expect(when.isHidden == (visible < MeetingGridColumn.twoLinesBelow))
     }
 
     @Test func aWideWindowShowsWhenEachMeetingWas() throws {
@@ -59,7 +59,7 @@ struct MeetingsPaneGridTests {
         let (_, pane) = try LiveMeetingViewTests.meetings(size: .init(width: 1280, height: 800), root: temp.url)
         pane.show([try Self.meeting("a", in: temp.url)], people: [:], freeBytes: nil)
         let visible = pane.table.enclosingScrollView?.contentView.bounds.width ?? 0
-        #expect(visible >= MeetingGridColumn.whenHiddenBelow)
+        #expect(visible >= MeetingGridColumn.twoLinesBelow)
         #expect(pane.table.tableColumns.first { MeetingGridColumn($0) == .when }?.isHidden == false)
         #expect(pane.table.frame.width <= visible + 1)
     }

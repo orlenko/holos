@@ -1593,8 +1593,14 @@ meeting's folder, for an agent or Terminal), and Delete Audio… and Delete Meet
 Delete Audio… with no audio). Their states come from the catalog read, so drawing a row reads no files.
 VoiceOver offers the same actions on every row, as custom actions of its name, and names the meeting
 on each row's Open and ···. Where
-the list is narrower than 470 points (beside a call's window) the When column is
-hidden; the day headers still say when. Badges appear only when there is something to say:
+the list is narrower than 470 points (beside a call's window) the When and
+Description columns are hidden and each meeting takes two lines: the title and its
+badges, then its length and the summary (else the people), whole in the name's
+tooltip with the start, length and people. The start time ("10:05 AM" under Today
+and Yesterday, "Tue 9:05 AM" this week, "Oct 27" this year, else "Dec 6, 2025") sits
+at the row's right end, where Open and ··· take its place on the one selected row and
+the one under the pointer. The day headers still say the day, and Start Recording… is
+titled Record…. Badges appear only when there is something to say:
 ● Recording (red), ● Paused, Starting…, Saving…, what a command is doing ("Labelling speakers…",
 "Final transcript queued", "Writing summary…"), Interrupted, Failed, Damaged, Transcript incomplete,
 Audio only, No audio, Speakers not labelled, Speaker labels failed, Language missing; a squeezed
