@@ -58,17 +58,35 @@ public enum MeetingListFormat {
     }
 
     static func startText(_ date: Date, now: Date, calendar: Calendar, locale: Locale) -> String {
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+        let template = switch groupTitle(for: date, now: now, calendar: calendar, locale: locale) {
+        case "Today", "Yesterday": "jmm"
+        case "This Week": "EEEEjmm"
+        default: sameYear ? "EEEMMMdjmm" : "MMMdyyyyjmm"
+        }
+        return format(date, template: template, calendar: calendar, locale: locale)
+    }
+
+    /// "10:00 AM" today and yesterday, "Tue 3:00 PM" this week, else "Sep 12" ("Dec 6, 2025" in another year): when
+    /// the meeting started, short enough to sit beside its title in the list at its narrowest, under a day header
+    /// that names the day.
+    public static func shortStart(_ date: Date, now: Date, calendar: Calendar = .current,
+                                  locale: Locale = .current) -> String {
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+        let template = switch groupTitle(for: date, now: now, calendar: calendar, locale: locale) {
+        case "Today", "Yesterday": "jmm"
+        case "This Week": "EEEjmm"
+        default: sameYear ? "MMMd" : "MMMdyyyy"
+        }
+        return format(date, template: template, calendar: calendar, locale: locale)
+    }
+
+    private static func format(_ date: Date, template: String, calendar: Calendar, locale: Locale) -> String {
         let formatter = DateFormatter()
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
         formatter.locale = locale
-        let group = groupTitle(for: date, now: now, calendar: calendar, locale: locale)
-        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
-        switch group {
-        case "Today", "Yesterday": formatter.setLocalizedDateFormatFromTemplate("jmm")
-        case "This Week": formatter.setLocalizedDateFormatFromTemplate("EEEEjmm")
-        default: formatter.setLocalizedDateFormatFromTemplate(sameYear ? "EEEMMMdjmm" : "MMMdyyyyjmm")
-        }
+        formatter.setLocalizedDateFormatFromTemplate(template)
         return formatter.string(from: date)
     }
 

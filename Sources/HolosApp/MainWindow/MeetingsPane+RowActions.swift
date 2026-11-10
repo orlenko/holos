@@ -105,7 +105,7 @@ extension MeetingsPane {
 
     @objc private func listWidthChanged(_ notification: Notification) {
         guard let clip = notification.object as? NSView else { return }
-        MeetingGridColumn.fit(table, width: clip.bounds.width)
+        fitList(to: clip.bounds.width)
     }
 
     /// The menu's View Transcript: the Markdown transcript in the app that opens Markdown.

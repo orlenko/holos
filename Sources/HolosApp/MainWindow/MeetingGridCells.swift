@@ -55,16 +55,21 @@ enum MeetingGridColumn: String, CaseIterable {
         table.makeView(withIdentifier: identifier, owner: nil) as? Cell ?? Cell(identifier: identifier)
     }
 
-    /// Below this width of the list, the When column is hidden so the name, the description and the row's actions fit
-    /// (the day headers still say when).
-    static let whenHiddenBelow: CGFloat = 470
+    /// Below this width of the list, each meeting is two lines in its Name cell (`MeetingsPane.fitList`): the When and
+    /// Description columns are hidden so the name and the row's actions fit, and the day headers still say the day.
+    static let twoLinesBelow: CGFloat = 470
 
-    /// Shows or hides the When column for the list's `width`, then fits the columns to it.
-    static func fit(_ table: NSTableView, width: CGFloat) {
-        guard let when = table.tableColumns.first(where: { MeetingGridColumn($0) == .when }) else { return }
-        let hidden = width < whenHiddenBelow
-        if when.isHidden != hidden { when.isHidden = hidden }
+    /// Shows or hides the When and Description columns for the list's `width`, then fits the columns to it; returns
+    /// whether the list is that narrow.
+    @discardableResult
+    static func fit(_ table: NSTableView, width: CGFloat) -> Bool {
+        let narrow = width < twoLinesBelow
+        for column in table.tableColumns {
+            guard let kind = MeetingGridColumn(column), kind == .when || kind == .description else { continue }
+            if column.isHidden != narrow { column.isHidden = narrow }
+        }
         table.sizeToFit()
+        return narrow
     }
 }
 
@@ -192,6 +197,7 @@ final class MeetingTableRowView: NSTableRowView {
 /// 2. A menu's choice acts on the meeting the cell showed when the menu opened, even if the list was rebuilt and the
 ///    cell reused for another meeting meanwhile (the list is rebuilt every 2 s, also under an open menu).
 /// 3. Each action is on exactly when the last `show(enabled:)` named it.
+/// 4. The start time the last `showing` gave (in the list at its narrowest) shows exactly while Open and ··· do not.
 @MainActor
 final class MeetingRowActionsView: NSTableCellView, IdentifiedCell {
     enum Kind: CaseIterable {
@@ -222,11 +228,12 @@ final class MeetingRowActionsView: NSTableCellView, IdentifiedCell {
 
     /// The row's meeting and which action was chosen.
     var onAction: ((Kind) -> Void)?
-    /// Whether Open and ··· show (`MeetingTableRowView`).
-    var revealed = false { didSet { stack.isHidden = !revealed } }
+    /// Whether Open and ··· show (`MeetingTableRowView`); the start time shows in their place otherwise (invariant 4).
+    var revealed = false { didSet { showRevealed() } }
     let openButton = NSButton(title: Kind.open.title, target: nil, action: nil)
     let moreButton = MeetingActionsButton()
     private let stack = NSStackView()
+    private let start = NSTextField(labelWithString: "")
     private var enabled: Set<Kind> = []
 
     init(identifier: NSUserInterfaceItemIdentifier) {
@@ -245,10 +252,31 @@ final class MeetingRowActionsView: NSTableCellView, IdentifiedCell {
         stack.addArrangedSubview(openButton)
         stack.addArrangedSubview(moreButton)
         addSubview(stack)
+        start.font = .systemFont(ofSize: 12)
+        start.textColor = .secondaryLabelColor
+        start.alignment = .right
+        start.lineBreakMode = .byTruncatingTail
+        start.isHidden = true
+        start.setAccessibilityElement(false)  // The row's name already says when, for VoiceOver.
+        start.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(start)
         NSLayoutConstraint.activate([
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            start.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 2),
+            start.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            start.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+    }
+
+    /// The selected row's start time turns white on the accent colour.
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet { start.cell?.backgroundStyle = backgroundStyle }
+    }
+
+    private func showRevealed() {
+        stack.isHidden = !revealed
+        start.isHidden = revealed || start.stringValue.isEmpty  // invariant 4
     }
 
     @available(*, unavailable)
@@ -261,9 +289,13 @@ final class MeetingRowActionsView: NSTableCellView, IdentifiedCell {
     }
 
     /// The cell for the row of the meeting `title`, which tells its buttons from other rows' for VoiceOver: `enabled`
-    /// actions on, and `action` called with the chosen one; returns the cell.
-    func showing(_ enabled: Set<Kind>, title: String, action: @escaping (Kind) -> Void) -> Self {
+    /// actions on, `start` shown while they are not (nil in a wider list), and `action` called with the chosen one;
+    /// returns the cell.
+    func showing(_ enabled: Set<Kind>, title: String, start: String? = nil,
+                 action: @escaping (Kind) -> Void) -> Self {
         show(enabled: enabled)
+        self.start.stringValue = start ?? ""
+        showRevealed()
         openButton.setAccessibilityLabel("Open \(title)")
         moreButton.setAccessibilityLabel("More actions for \(title)")
         onAction = action
@@ -293,6 +325,7 @@ final class MeetingRowActionsView: NSTableCellView, IdentifiedCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         onAction = nil
+        start.stringValue = ""
         revealed = false
     }
 }

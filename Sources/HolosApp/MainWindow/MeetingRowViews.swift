@@ -31,11 +31,13 @@ final class MeetingGroupView: NSTableCellView {
 }
 
 /// A meeting's Name cell: its title (bold) with its badges; VoiceOver also reads when it was, who spoke, and its
-/// summary. While the meeting is renamed, an editor takes the place of the title and its badges: Return (or leaving
-/// it) saves, Escape cancels.
+/// summary. In the list at its narrowest, a second line under the title says what the hidden Description column
+/// would. While the meeting is renamed, an editor takes the place of the title and its badges: Return (or leaving it)
+/// saves, Escape cancels.
 ///
 /// Invariants:
 /// 1. A rename ends once: `commit` or `cancel` is called at most once, and a reused cell cancels it unsaved.
+/// 2. The second line shows exactly when the last `show` gave it.
 @MainActor
 final class MeetingRowView: NSTableCellView, NSTextFieldDelegate, IdentifiedCell {
     struct Content: Equatable {
@@ -45,6 +47,8 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate, IdentifiedCell
         var badges: [MeetingListFormat.Badge]
         var toolTip: String
         var progress: PostProcessingProgress? = nil
+        /// In the list at its narrowest only: the line under the title (the summary, else the people).
+        var secondLine: String? = nil
     }
 
     private let title = NSTextField(labelWithString: "")
@@ -59,9 +63,11 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate, IdentifiedCell
     private let spacer = NSView()
     /// The editor spans the title line while it shows (set when it is attached to the line).
     private var editorWidth: NSLayoutConstraint?
+    private let secondLine = NSTextField(labelWithString: "")
 
-    /// The row's height: one line, with room for the editor.
+    /// The row's height: one line, with room for the editor; two lines in the list at its narrowest.
     static let height: CGFloat = 30
+    static let twoLineHeight: CGFloat = 44
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -92,12 +98,24 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate, IdentifiedCell
         header.spacing = 6
         header.alignment = .centerY
         self.header = header
-        header.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(header)
+        secondLine.font = .systemFont(ofSize: 12)
+        secondLine.textColor = .secondaryLabelColor
+        secondLine.isHidden = true
+        secondLine.setAccessibilityElement(false)  // The cell's label already reads the summary and the people.
+        secondLine.lineBreakMode = .byTruncatingTail
+        secondLine.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // A hidden second line is detached, so a one-line row lays out its title line alone.
+        let lines = NSStackView(views: [header, secondLine])
+        lines.orientation = .vertical
+        lines.alignment = .leading
+        lines.spacing = 2
+        lines.detachesHiddenViews = true
+        lines.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(lines)
         NSLayoutConstraint.activate([
-            header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
-            header.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -4),
-            header.centerYAnchor.constraint(equalTo: centerYAnchor),
+            lines.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            lines.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -4),
+            lines.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
@@ -110,11 +128,14 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate, IdentifiedCell
             for case let badge as MeetingBadgeView in badges.arrangedSubviews {
                 badge.emphasized = backgroundStyle == .emphasized
             }
+            secondLine.cell?.backgroundStyle = backgroundStyle
         }
     }
 
     func show(_ content: Content) {
         title.stringValue = content.title
+        secondLine.stringValue = content.secondLine ?? ""
+        secondLine.isHidden = content.secondLine?.isEmpty ?? true  // invariant 2
         for view in badges.arrangedSubviews {
             badges.removeArrangedSubview(view)
             view.removeFromSuperview()

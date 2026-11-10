@@ -16,6 +16,8 @@ final class MeetingListState {
     /// The list reads the catalog often while something works on a meeting (`SessionCatalogCache`).
     let catalogCache = SessionCatalogCache()
     var progress: [String: PostProcessingProgress] = [:]
+    /// The list is narrower than `MeetingGridColumn.twoLinesBelow`, so each meeting is two lines.
+    var twoLines = false
     var onStartRecording: (() -> Void)?
     /// The meeting selected alone when the mouse went down, and the rename a click on its name waits to start.
     var renameCandidate: String?
