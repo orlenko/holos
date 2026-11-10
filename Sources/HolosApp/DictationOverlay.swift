@@ -160,6 +160,12 @@ final class DictationOverlay {
             + (hintLabel.isHidden ? 0 : min(hintLabel.intrinsicContentSize.width, Self.previewWidth / 2) + 8)
         titleLabel.preferredMaxLayoutWidth = Self.previewWidth - reserved
         material.layoutSubtreeIfNeeded()
+        // The header's spacing (around the spacer, after the sign) leaves the title less than `reserved` allows, and a
+        // title measured wider than it is drawn loses its last line: measure it again at the width it got.
+        if titleLabel.frame.width < titleLabel.preferredMaxLayoutWidth {
+            titleLabel.preferredMaxLayoutWidth = titleLabel.frame.width
+            material.layoutSubtreeIfNeeded()
+        }
         let oneLine = NSTextField(labelWithString: "X")
         oneLine.font = previewLabel.font
         let words = max(oneLine.intrinsicContentSize.height, previewLabel.intrinsicContentSize.height)
@@ -200,6 +206,11 @@ final class DictationOverlay {
     /// What the panel shows (tests).
     var isMarkedForAttention: Bool { !attentionIcon.isHidden }
     var shownHint: String? { hintLabel.isHidden ? nil : hintLabel.stringValue }
+    /// Whether the title's frame is as tall as its words need at the width it was given.
+    var titleIsWhole: Bool {
+        let given = NSRect(x: 0, y: 0, width: titleLabel.frame.width, height: .greatestFiniteMagnitude)
+        return (titleLabel.cell?.cellSize(forBounds: given).height ?? 0) <= titleLabel.frame.height + 0.5
+    }
     /// Changes every time the panel shows new content, so a timer can tell whether its content is still up.
     private(set) var contentToken = 0
     /// Whether the content on screen needs the user (a failure, text that could not be written, a warning).
@@ -225,6 +236,8 @@ final class DictationOverlay {
         panel.orderOut(nil)
         titleLabel.stringValue = ""
         hintLabel.stringValue = ""
+        hintLabel.isHidden = true
+        attentionIcon.isHidden = true
         previewLabel.stringValue = ""
     }
 }

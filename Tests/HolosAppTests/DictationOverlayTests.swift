@@ -47,4 +47,27 @@ struct DictationOverlayTests {
             hint: nil, text: Self.oneLine, attention: true)
         #expect(long > short)
     }
+
+    /// The header's spacing leaves the title narrower than the width it was first measured at; at every length its
+    /// frame still holds all of its lines.
+    @Test func aWrappedTitleKeepsItsLastLine() {
+        let overlay = DictationOverlay()
+        let words = ("Couldn't write into this field. Some text may already be in the field — check it before using "
+            + "Copy Result, which has the words that were not inserted, and then try again").split(separator: " ")
+        for attention in [true, false] {
+            for count in 1...words.count {
+                let title = words.prefix(count).joined(separator: " ")
+                _ = overlay.fill(title: title, hint: nil, text: Self.oneLine, attention: attention)
+                #expect(overlay.titleIsWhole, "\(attention ? "With" : "Without") the sign: \(title)")
+            }
+        }
+    }
+
+    @Test func hidingClearsTheSignAndTheHint() {
+        let overlay = DictationOverlay()
+        _ = overlay.fill(title: "Couldn't write.", hint: "Esc cancels", text: Self.oneLine, attention: true)
+        overlay.hide()
+        #expect(!overlay.isMarkedForAttention)
+        #expect(overlay.shownHint == nil)
+    }
 }
