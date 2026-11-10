@@ -642,8 +642,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .listening:
             message = "Listening — release \(shortcutTitle) to finish"
             if showPreview {
-                overlay.show(title: message,
-                             text: update.text.isEmpty ? "Speak now · Esc to cancel" : cleaned(update.text))
+                overlay.show(title: "Listening", hint: "Release \(shortcutTitle) to finish · Esc cancels",
+                             text: update.text.isEmpty ? "Speak now" : cleaned(update.text))
             }
             latestCommitted = update.committedText
             stream(cleanedForStreaming(update.committedText))

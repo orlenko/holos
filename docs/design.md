@@ -115,8 +115,10 @@ small non-activating status overlay, and Accessibility integration. A system dae
 is not appropriate for interacting with the logged-in desktop.
 
 On hotkey down, capture the focused application/element/selection and start audio.
-Show provisional words only in the overlay. On release, finalize, apply corrections,
-revalidate the destination, and insert once. Esc cancels without insertion. The
+Show provisional words only in the overlay. The overlay fits its words, from one line to four, and its bottom edge stays
+put as it grows. While listening its title is "Listening", with the keys to finish or cancel beside it. Anything that
+needs the user, such as text that could not be written, carries a warning sign and keeps the words on screen. On release,
+finalize, apply corrections, revalidate the destination, and insert once. Esc cancels without insertion. The
 recognizer may stay warm while enabled, but the microphone is active only while
 dictating. Readiness must be visible so initial syllables are not silently lost.
 A held hotkey sends no further key events, so a long pause would leave the Mac idle
