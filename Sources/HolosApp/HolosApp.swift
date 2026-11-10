@@ -237,8 +237,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         reloadCorrectionsIfChanged()
         refreshWordList()
         controller.frameTap = { [weak self] id, frame in
-            guard let audio = self?.historyAudio, audio.id == id else { return }
-            audio.writer.append(frame)
+            self?.overlay.hear(frame)
+            if let audio = self?.historyAudio, audio.id == id { audio.writer.append(frame) }
         }
         history.onChange = { [weak self] in self?.historyChanged() }
         history.onFailure = { [weak self] problem in self?.showHistoryProblem(problem) }
@@ -643,7 +643,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             message = "Listening — release \(shortcutTitle) to finish"
             if showPreview {
                 overlay.show(title: "Listening", hint: "Release \(shortcutTitle) to finish · Esc cancels",
-                             text: update.text.isEmpty ? "Speak now" : cleaned(update.text))
+                             text: update.text.isEmpty ? "Speak now" : cleaned(update.text), listening: true)
             }
             latestCommitted = update.committedText
             stream(cleanedForStreaming(update.committedText))

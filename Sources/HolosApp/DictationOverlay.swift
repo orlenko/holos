@@ -1,4 +1,5 @@
 import AppKit
+import HolosCore
 
 /// A non-activating preview. It must not steal the insertion target, and clicks on it pass through to
 /// whatever is underneath. The close button lives in a separate tiny child panel over the top-right
@@ -10,7 +11,8 @@ import AppKit
 /// 2. `contentToken` changes with every show that reaches the panel, so a timer hides only the content it was set for.
 /// 3. `showingAttention` and the warning sign say the same thing for what is on screen, and a failure always has them;
 ///    `hide` clears the attention, the title, the hint and the words.
-/// 4. The panel's bottom edge and width do not depend on its content; only its height does.
+/// 4. The level bars show only while listening, and each dictation's start from silence.
+/// 5. The panel's bottom edge and width do not depend on its content; only its height does.
 @MainActor
 final class DictationOverlay {
     private let panel: NSPanel
@@ -24,6 +26,8 @@ final class DictationOverlay {
     private let hintLabel = NSTextField(labelWithString: "")
     /// Marks content that needs the user, so a failure never looks like listening.
     private let attentionIcon = NSImageView()
+    /// Moves while the microphone is heard (`hear`).
+    let levelView = DictationLevelView()
     private let previewLabel = NSTextField(wrappingLabelWithString: "")
     private let material = NSVisualEffectView()
     private let stack = NSStackView()
@@ -118,7 +122,8 @@ final class DictationOverlay {
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         spacer.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-        let header = NSStackView(views: [attentionIcon, titleLabel, spacer, hintLabel])
+        levelView.setAccessibilityElement(false)
+        let header = NSStackView(views: [attentionIcon, levelView, titleLabel, spacer, hintLabel])
         header.orientation = .horizontal
         header.alignment = .firstBaseline
         header.spacing = 8
@@ -128,12 +133,14 @@ final class DictationOverlay {
     /// Shows or updates the preview. After the close button was clicked, updates stay hidden until
     /// `allowShowing()`; `force` is for messages the user must see (such as the rebuilt-app warning). `hint`: what to
     /// do next, beside the title. `attention`: content that needs the user, marked with a warning sign.
-    func show(title: String, hint: String? = nil, text: String, force: Bool = false, attention: Bool = false) {
+    /// `listening`: the microphone is on, so the level bars show.
+    func show(title: String, hint: String? = nil, text: String, force: Bool = false, attention: Bool = false,
+              listening: Bool = false) {
         if dismissed && !force { return }
         if force { dismissed = false }
         contentToken &+= 1
         showingAttention = attention
-        let height = fill(title: title, hint: hint, text: text, attention: attention)
+        let height = fill(title: title, hint: hint, text: text, attention: attention, listening: listening)
         let pointer = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(pointer) } ?? NSScreen.main
         // The bottom edge stays put, so the words being spoken do not move as the panel grows.
@@ -150,13 +157,16 @@ final class DictationOverlay {
 
     /// Puts the content in place and returns the panel's height for it: the title and the words, at least one line of
     /// them. Nothing goes on screen.
-    func fill(title: String, hint: String?, text: String, attention: Bool) -> CGFloat {
+    func fill(title: String, hint: String?, text: String, attention: Bool, listening: Bool = false) -> CGFloat {
+        if !listening { levelView.reset() }
+        levelView.isHidden = !listening
         titleLabel.stringValue = title
         hintLabel.stringValue = hint ?? ""
         hintLabel.isHidden = hint == nil
         attentionIcon.isHidden = !attention
         previewLabel.stringValue = Self.latestWords(of: text, font: previewLabel.font ?? .systemFont(ofSize: 15))
         let reserved = Self.closeSize + 4 + (attentionIcon.isHidden ? 0 : 22)
+            + (levelView.isHidden ? 0 : levelView.intrinsicContentSize.width + 8)
             + (hintLabel.isHidden ? 0 : min(hintLabel.intrinsicContentSize.width, Self.previewWidth / 2) + 8)
         titleLabel.preferredMaxLayoutWidth = Self.previewWidth - reserved
         material.layoutSubtreeIfNeeded()
@@ -169,7 +179,7 @@ final class DictationOverlay {
         let oneLine = NSTextField(labelWithString: "X")
         oneLine.font = previewLabel.font
         let words = max(oneLine.intrinsicContentSize.height, previewLabel.intrinsicContentSize.height)
-        let title = titleLabel.intrinsicContentSize.height
+        let title = stack.arrangedSubviews.first?.fittingSize.height ?? titleLabel.intrinsicContentSize.height
         return ceil(title + stack.spacing + words + Self.verticalMargin * 2)
     }
 
@@ -221,6 +231,12 @@ final class DictationOverlay {
         panel.alphaValue = CGFloat(min(1, max(0.3, value)))
     }
 
+    /// A frame of the microphone's audio: the level bars move. Only its loudness is used.
+    func hear(_ frame: PCMFrame) {
+        guard !levelView.isHidden else { return }
+        levelView.add(CGFloat(DictationLevel.level(of: frame.samples)))
+    }
+
     /// Called when a new dictation starts, so its preview appears again.
     func allowShowing() { dismissed = false }
 
@@ -239,6 +255,8 @@ final class DictationOverlay {
         hintLabel.isHidden = true
         attentionIcon.isHidden = true
         previewLabel.stringValue = ""
+        levelView.reset()
+        levelView.isHidden = true
     }
 }
 
