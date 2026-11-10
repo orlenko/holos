@@ -19,7 +19,8 @@ extension MeetingsPane {
             let length = summary.savedSeconds >= 1 ? MeetingListFormat.duration(summary.savedSeconds) : nil
             let line = ([length] + [description.first]).compactMap { $0 }.joined(separator: " · ")
             secondLine = line.isEmpty ? nil : line
-            tip = ([detail] + description + [tip]).joined(separator: "\n\n")
+            // `detail` already ends with the people.
+            tip = ([detail, summaryText(summary)].compactMap { $0 } + [tip]).joined(separator: "\n\n")
         }
         return MeetingRowView.Content(
             title: summary.displayTitle, detail: detail, summary: summaryText(summary),
@@ -47,6 +48,13 @@ extension MeetingsPane {
         // The visible title is the accessible name too, so Voice Control's "Click Record" finds it.
         startButton.title = twoLines ? "Record…" : "Start Recording…"
         startButton.toolTip = twoLines ? "Start Recording…" : nil
+        // Every row changes height and the clip view keeps its offset in points: keep the same rows in view, and the
+        // selected row too when it was.
+        let visible = table.visibleRect
+        let top = table.row(at: visible.origin)
+        let selected = table.selectedRowIndexes.first { visible.intersects(table.rect(ofRow: $0)) }
         reloadKeepingSelection()
+        if top >= 0 { table.scroll(NSPoint(x: visible.minX, y: table.rect(ofRow: top).minY)) }
+        if let selected { table.scrollRowToVisible(selected) }
     }
 }

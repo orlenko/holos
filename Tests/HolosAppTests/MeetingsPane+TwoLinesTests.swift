@@ -50,6 +50,7 @@ struct MeetingsPaneTwoLinesTests {
         let name = try #require(pane.table.view(atColumn: 0, row: row, makeIfNecessary: true))
         #expect(name.toolTip?.hasPrefix(MeetingListFormat.detailLine(summary, people: ["Alex", "Sam"], now: Date()))
             == true, "The tooltip says when, how long and who, whole.")
+        #expect(name.toolTip?.components(separatedBy: "Alex and Sam").count == 2, "The people once.")
         #expect(try Self.shownText(pane, summary.id, in: .actions) == [start], "At the row's right end.")
         #expect(pane.startButton.title == "Record…")
         #expect(pane.startButton.toolTip == "Start Recording…")
@@ -84,5 +85,23 @@ struct MeetingsPaneTwoLinesTests {
             as? MeetingRowActionsView)
         #expect(actions.revealed && !actions.openButton.isHiddenOrHasHiddenAncestor)
         #expect(try Self.shownText(pane, summary.id, in: .actions).isEmpty, "Open and ··· take its place.")
+    }
+
+    /// Every row changes height when the list crosses the width; the list keeps showing the same meetings.
+    @Test func crossingTheWidthKeepsTheSameMeetingsInView() throws {
+        let temp = try TemporaryDirectory("meeting-two-lines-scroll")
+        defer { temp.remove() }
+        let (window, pane) = try LiveMeetingViewTests.meetings(size: .init(width: 1000, height: 560), root: temp.url)
+        let summaries = try (0..<60).map { try Self.meeting("m\($0)", in: temp.url) }
+        pane.show(summaries, people: [:], freeBytes: nil)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let top = try #require(pane.rowIndex(of: "m40"))
+        pane.table.scroll(NSPoint(x: 0, y: pane.table.rect(ofRow: top).minY))
+        #expect(pane.table.row(at: pane.table.visibleRect.origin) == top)
+        for width in [400.0, 1000.0] {
+            window.setContentSize(.init(width: width, height: 560))
+            window.contentView?.layoutSubtreeIfNeeded()
+            #expect(pane.table.row(at: pane.table.visibleRect.origin) == top, "At \(width) pt.")
+        }
     }
 }
