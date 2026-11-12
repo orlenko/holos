@@ -429,7 +429,7 @@ struct AXHandle: Equatable {
     static let terminalBundleIDs: Set<String> = [
         "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "com.github.wez.wezterm",
         "net.kovidgoyal.kitty", "org.alacritty", "dev.warp.Warp-Stable", "com.superlogical.rex",
-        "com.apple.ScreenSharing",
+        "dev.herdr.app", "com.apple.ScreenSharing",
     ]
 
     /// Windows onto another computer: what runs there is unknown, so they are treated as a terminal (no backticks), the

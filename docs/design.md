@@ -146,6 +146,10 @@ respect secure input. Do not synthesize Return or auto-submit. A terminal must n
 receive an unexpected trailing newline. "Anywhere" means broad tested coverage,
 with a visible copy fallback for unsupported fields.
 
+Native text fields and editable web content are recognized through Accessibility without an app list. Terminals
+use an explicit bundle-identifier list because their input may expose no editable field. Herdr (`dev.herdr.app`)
+uses this terminal keystroke path, with the same focus checks and no synthesized Return.
+
 Rex translates synthetic input from physical key codes. Its dictation events carry the key code and Shift state
 that produce each character in the active keyboard layout, as well as the Unicode text. Each chunk is checked in
 full before typing. Characters needing a dead key, Option, an input method or a different keyboard layout keep
@@ -234,7 +238,7 @@ available for another attempt in the meeting start panel and dictation setup.
 Settings › Dictation › **Write spoken paths and commands as code** (on by default)
 writes "scripts slash restart dash app dot es aytch" as `scripts/restart-app.sh` and
 "slash Q C" as `/qc`; **Wrap them in backticks** (on by default) adds the backticks,
-never for a terminal (Terminal, iTerm2, Ghostty, WezTerm, kitty, Alacritty, Warp, Rex),
+never for a terminal (Terminal, iTerm2, Ghostty, WezTerm, kitty, Alacritty, Warp, Rex, Herdr),
 which gets the token itself. It is its own step (`SpokenCodeFormatter`), after
 learned corrections and before Apple Intelligence's fix, on each committed chunk and
 on the rest at release; Run Again runs it with the current settings (without
