@@ -67,6 +67,8 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate, NSM
     private var reading = false
     /// The text is being replaced or scrolled by the view itself, not by the user.
     private var updating = false
+    /// Words that arrived during a drag; the next refresh after it shows them (the reader has moved past them).
+    private var heldDuringDrag: [LiveParagraph]?
     private var targets: [LiveEditTarget] = []
 
     let backButton = NSButton()
@@ -364,6 +366,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate, NSM
 
     /// Reads what changed, off the main actor, and shows it.
     private func refresh() {
+        showHeldWords()
         guard !reading, embeddedReview == nil else { return }
         reading = true
         let current = reader
@@ -398,8 +401,10 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate, NSM
         if userIsDragging {
             follow.hold()
             updateJump()
+            heldDuringDrag = paragraphs
             return
         }
+        heldDuringDrag = nil
         self.paragraphs = paragraphs
         updating = true
         let anchor = LiveSelectionAnchor(selected: textView.selectedRange(), targets: targets)
@@ -518,8 +523,17 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate, NSM
         return menu
     }
 
+    /// Shows the words that arrived during a drag, once it ended.
+    func showHeldWords() {
+        if let held = heldDuringDrag, embeddedReview == nil { show(held) }
+    }
+
+    /// Replaces the mouse check (tests).
+    var draggingProbe: (() -> Bool)?
+
     /// The primary mouse button is down over the words.
     private var userIsDragging: Bool {
+        if let draggingProbe { return draggingProbe() }
         guard NSEvent.pressedMouseButtons & 1 != 0, let window = scroll.window else { return false }
         return scroll.bounds.contains(scroll.convert(window.mouseLocationOutsideOfEventStream, from: nil))
     }

@@ -54,6 +54,21 @@ struct LiveMeetingEditsTests {
         }
     }
 
+    @Test func wordsWaitDuringADragAndShowAfterIt() throws {
+        let (live, _) = try Self.recording()
+        live.show(Self.later("and"))
+        var dragging = true
+        live.draggingProbe = { dragging }
+        live.show(Self.later("and then"))
+        #expect(!live.shownText.contains("then"), "The text does not move under the pointer.")
+        #expect(!live.followsNewWords)
+        live.showHeldWords()
+        #expect(!live.shownText.contains("then"))
+        dragging = false
+        live.showHeldWords()
+        #expect(live.shownText.contains("and then"), "Shown once the drag ends, with no newer read.")
+    }
+
     @Test func rightClickingAPhraseOffersItsEdits() throws {
         let (live, text) = try Self.recording()
         live.show(Self.later("and"))
