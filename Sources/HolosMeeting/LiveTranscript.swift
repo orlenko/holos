@@ -254,8 +254,8 @@ public enum LiveTranscript {
 }
 
 /// Whether the live transcript follows its newest words (docs/design.md "Live transcript"): it does while the user
-/// is at the bottom; scrolling up stops it and offers "Jump to Live", and scrolling back to the bottom (or the
-/// button) resumes it. Pure.
+/// is at the bottom; scrolling up or selecting a phrase to edit stops it and offers "Jump to Live", and scrolling back
+/// to the bottom (or the button) resumes it. Pure.
 public struct LiveFollow: Sendable, Equatable {
     /// Within this many points of the bottom counts as at the bottom.
     public static let bottomSlack = 24.0
@@ -271,6 +271,9 @@ public struct LiveFollow: Sendable, Equatable {
     public mutating func moved(distanceFromBottom: Double) {
         following = !(distanceFromBottom > Self.bottomSlack)
     }
+
+    /// The user selected a phrase: the view stays where it is, so the phrase does not scroll away while they edit it.
+    public mutating func hold() { following = false }
 
     /// "Jump to Live": back to the newest words, following them again.
     public mutating func jumpToLive() { following = true }

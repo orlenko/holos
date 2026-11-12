@@ -1,4 +1,5 @@
 import AppKit
+import HolosAppModel
 import HolosCore
 import HolosMeeting
 
@@ -34,8 +35,10 @@ struct LiveTextLearning {
 /// 1. Transcript reads run off the main actor and only one read is in flight.
 /// 2. An embedded review owns the visible words; no live read replaces its content.
 /// 3. Back and window closing use the review's save gate before removing its content.
+/// 4. Re-rendering the words keeps a selection inside one finalized phrase on that phrase (`LiveSelectionAnchor`),
+///    and selecting a phrase stops following (`LiveFollow.hold`), so the phrase stays put while the user edits it.
 @MainActor
-final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
+final class LiveMeetingViewController: NSViewController, NSTextViewDelegate, NSMenuItemValidation {
     static let refreshInterval: Duration = .milliseconds(250)
     /// The meeting's name keeps this much of the header before the status gives way.
     static let titleMinimumWidth: CGFloat = 80
@@ -48,6 +51,11 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     private let onLearnText: (LiveHints.CorrectionLearningState, String, String) -> LiveTextLearning
     /// Stop and Save…, Pause, Resume (the app delegate checks them against the meeting's state again).
     private let onRecordingCommand: (MeetingRecordingCommand) -> Void
+    /// The people in People, for Name Speaker…'s list. It reads their store, so it runs off the main actor
+    /// (`loadPeople`).
+    private let knownNames: @Sendable () -> [String]
+    /// What `knownNames` returned when the view last came on screen.
+    private var people: [String] = []
     let contentState: MeetingContentState
     private var reader: LiveTranscriptReader {
         get { contentState.reader }
@@ -60,7 +68,9 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     private var reading = false
     /// The text is being replaced or scrolled by the view itself, not by the user.
     private var updating = false
-    private var targets: [TargetRange] = []
+    /// Words that arrived during a drag; the next refresh after it shows them (the reader has moved past them).
+    private var heldDuringDrag: [LiveParagraph]?
+    private var targets: [LiveEditTarget] = []
 
     let backButton = NSButton()
     let titleLabel = NSTextField(labelWithString: "")
@@ -83,12 +93,14 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
          onLearnText: @escaping (LiveHints.CorrectionLearningState, String, String) -> LiveTextLearning = {
              _, _, _ in .init()
          },
-         onRecordingCommand: @escaping (MeetingRecordingCommand) -> Void = { _ in }) {
+         onRecordingCommand: @escaping (MeetingRecordingCommand) -> Void = { _ in },
+         knownNames: @escaping @Sendable () -> [String] = { VoiceProfileService.knownPeople().map(\.displayName) }) {
         self.sessionID = sessionID
         self.onBack = onBack
         self.onOpenFinished = onOpenFinished
         self.onLearnText = onLearnText
         self.onRecordingCommand = onRecordingCommand
+        self.knownNames = knownNames
         contentState = MeetingContentState(directory: directory)
         super.init(nibName: nil, bundle: nil)
     }
@@ -210,11 +222,12 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         correctTextButton.title = "Correct Text…"
         correctTextButton.target = self
         correctTextButton.action = #selector(correctText)
-        correctTextButton.toolTip = "Correct the selected finalized phrase and learn safe word corrections"
+        correctTextButton.toolTip = "Correct the selected words of a finalized phrase and learn safe word corrections "
+            + "(also on the phrase's right-click menu)"
         nameSpeakerButton.title = "Name Speaker…"
         nameSpeakerButton.target = self
         nameSpeakerButton.action = #selector(nameSpeaker)
-        nameSpeakerButton.toolTip = "Attach a speaker name to the selected finalized phrase"
+        nameSpeakerButton.toolTip = "Attach a speaker name to the selected finalized phrase (also on its right-click menu)"
         editStatus.textColor = .secondaryLabelColor
         editStatus.font = .systemFont(ofSize: 11)
         editStatus.lineBreakMode = .byTruncatingTail
@@ -257,6 +270,9 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
 
     /// The transcript text shown now (tests).
     var shownText: String { textView.string }
+    /// Whether Correct Text… and Name Speaker… can be used, and whether the view follows the newest words (tests).
+    var canEditSelection: Bool { correctTextButton.isEnabled && nameSpeakerButton.isEnabled }
+    var followsNewWords: Bool { follow.scrollsToNewWords }
 
     // MARK: - Updates
 
@@ -319,6 +335,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     func start() {
         guard embeddedReview == nil else { return }
         refresh()
+        loadPeople()
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -334,8 +351,24 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         refreshTask = nil
     }
 
+    /// Reads People's names off the main actor for Name Speaker… (the store can be large).
+    private func loadPeople() {
+        let read = knownNames
+        Task { [weak self] in
+            let names = await Task.detached { read() }.value
+            self?.people = names
+        }
+    }
+
+    /// What Name Speaker… offers now (tests).
+    var speakerChoices: [String] {
+        SpeakerNameChoices.choices(inMeeting: LiveSpeakerNames.given(in: reader.hints)
+            + paragraphs.compactMap(\.speakerName), known: people)
+    }
+
     /// Reads what changed, off the main actor, and shows it.
     private func refresh() {
+        showHeldWords()
         guard !reading, embeddedReview == nil else { return }
         reading = true
         let current = reader
@@ -364,12 +397,27 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     func show(_ paragraphs: [LiveParagraph]) {
         _ = view
         placeholder.isHidden = !paragraphs.isEmpty
-        guard paragraphs != self.paragraphs else { return }
+        guard paragraphs != self.paragraphs else {
+            heldDuringDrag = nil  // the newest read is what is shown
+            return
+        }
+        // A drag selecting words reports its selection only at mouse-up; new words now would move the text under the
+        // pointer. The next read shows them.
+        if userIsDragging {
+            follow.hold()
+            updateJump()
+            heldDuringDrag = paragraphs
+            return
+        }
+        heldDuringDrag = nil
         self.paragraphs = paragraphs
         updating = true
+        let anchor = LiveSelectionAnchor(selected: textView.selectedRange(), targets: targets)
         let rendered = Self.render(paragraphs)
         targets = rendered.targets
         textView.textStorage?.setAttributedString(rendered.text)
+        // Invariant 4: replacing the text moved the selection to its end.
+        if let range = anchor?.range(in: targets) { textView.setSelectedRange(range) }
         if follow.scrollsToNewWords { textView.scrollToEndOfDocument(nil) }
         updating = false
         updateJump()
@@ -423,6 +471,8 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     @objc private func jumpToLive() {
         follow.jumpToLive()
         updating = true
+        // The selected phrase scrolls out of view: the edits no longer act on it.
+        textView.setSelectedRange(NSRange(location: (textView.string as NSString).length, length: 0))
         textView.scrollToEndOfDocument(nil)
         updating = false
         updateJump()
@@ -449,23 +499,80 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
 
     // MARK: - Live corrections
 
-    func textViewDidChangeSelection(_ notification: Notification) { updateEditButtons() }
-
-    private struct TargetRange {
-        var range: NSRange
-        var hint: LiveHint
-        var speakerName: String?
+    func textViewDidChangeSelection(_ notification: Notification) {
+        // Invariant 4: the user chose a phrase; the view's own re-rendering does not count.
+        if !updating, header.phase.capturing, selectedTarget() != nil {
+            follow.hold()
+            updateJump()
+        }
+        updateEditButtons()
     }
 
-    private func selectedTarget() -> TargetRange? {
-        let selected = textView.selectedRange()
-        let matches = targets.filter { target in
-            if selected.length == 0 {
-                return selected.location >= target.range.location && selected.location < NSMaxRange(target.range)
-            }
-            return NSIntersectionRange(selected, target.range).length > 0
+    /// A right-click on a finalized phrase offers its edits first, for the phrase under the pointer.
+    func textView(_ view: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int) -> NSMenu? {
+        guard header.phase.capturing,
+              let target = targets.first(where: { NSLocationInRange(charIndex, $0.range) }) else { return menu }
+        if LiveEditTarget.only(in: view.selectedRange(), among: targets)?.key != target.key {
+            let word = view.selectionRange(forProposedRange: NSRange(location: charIndex, length: 0),
+                                           granularity: .selectByWord)
+            let inside = NSIntersectionRange(word, target.range)
+            view.setSelectedRange(inside.length > 0 ? inside : NSRange(location: charIndex, length: 0))
         }
-        return matches.count == 1 ? matches[0] : nil
+        let items = [NSMenuItem(title: "Correct Text…", action: #selector(correctText), keyEquivalent: ""),
+                     NSMenuItem(title: "Name Speaker…", action: #selector(nameSpeaker), keyEquivalent: ""),
+                     .separator()]
+        for (index, item) in items.enumerated() {
+            item.target = self
+            menu.insertItem(item, at: index)
+        }
+        return menu
+    }
+
+    /// Shows the words that arrived during a drag, once it ended.
+    func showHeldWords() {
+        if let held = heldDuringDrag, embeddedReview == nil { show(held) }
+    }
+
+    /// Replaces the mouse check (tests).
+    var draggingProbe: (() -> Bool)?
+
+    /// The primary mouse button is down over the words.
+    private var userIsDragging: Bool {
+        if let draggingProbe { return draggingProbe() }
+        if NSEvent.pressedMouseButtons & 1 == 0 { selectingWithMouse = false }
+        return selectingWithMouse
+    }
+
+    /// The user started changing the selection with the mouse button down: a click or a drag, which may leave the
+    /// view to extend the selection. It ends when the button is up.
+    private var selectingWithMouse = false
+
+    /// Called at each step of a drag too (the change itself is reported only at mouse-up).
+    func textView(_ textView: NSTextView, willChangeSelectionFromCharacterRanges old: [NSValue],
+                  toCharacterRanges new: [NSValue]) -> [NSValue] {
+        if !updating, NSEvent.pressedMouseButtons & 1 != 0 { selectingWithMouse = true }
+        return new
+    }
+
+    /// The edits in the right-click menu are on while their phrase is still selected and the meeting records.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        guard item.action == #selector(correctText) || item.action == #selector(nameSpeaker) else { return true }
+        return header.phase.capturing && selectedTarget() != nil
+    }
+
+    private func selectedTarget() -> LiveEditTarget? {
+        LiveEditTarget.only(in: textView.selectedRange(), among: targets)
+    }
+
+    /// The selected words of `target`, in its own text: the selection, or the word at the insertion point.
+    private func selectedWords(of target: LiveEditTarget) -> NSRange {
+        var selected = textView.selectedRange()
+        if selected.length == 0 {
+            selected = textView.selectionRange(forProposedRange: selected, granularity: .selectByWord)
+        }
+        let inside = NSIntersectionRange(selected, target.range)
+        guard inside.length > 0 else { return NSRange(location: 0, length: target.range.length) }
+        return NSRange(location: inside.location - target.range.location, length: inside.length)
     }
 
     private func updateEditButtons() {
@@ -476,8 +583,10 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     }
 
     @objc private func correctText() {
-        guard let target = selectedTarget() else { return }
-        let field = NSTextField(string: target.hint.heard)
+        guard let target = selectedTarget() else { return noPhraseSelected() }
+        let field = PreselectingTextField(string: target.hint.heard)
+        // The selected words are highlighted, so typing replaces only them.
+        field.initialSelection = selectedWords(of: target)
         field.frame.size = NSSize(width: 360, height: 24)
         let alert = NSAlert()
         alert.messageText = "Correct this phrase"
@@ -521,13 +630,19 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     }
 
     @objc private func nameSpeaker() {
-        guard let target = selectedTarget() else { return }
-        let field = NSTextField(string: target.speakerName ?? "")
-        field.placeholderString = "Speaker name"
-        field.frame.size = NSSize(width: 280, height: 24)
+        guard let target = selectedTarget() else { return noPhraseSelected() }
+        let field = NSComboBox()
+        let names = speakerChoices
+        field.addItems(withObjectValues: names)
+        // No completion: it would turn a new name typed as "Sam" into a known "Samantha" on Return.
+        field.numberOfVisibleItems = 10
+        field.stringValue = target.speakerName ?? ""
+        field.placeholderString = names.isEmpty ? "Speaker name" : "Choose or type a name"
+        field.frame.size = NSSize(width: 280, height: 26)
         let alert = NSAlert()
         alert.messageText = "Name the speaker of this phrase"
-        alert.informativeText = "After speaker labelling, the speaker at this time will use this name."
+        alert.informativeText = "Choose someone from this meeting or People, or type a new name. After speaker "
+            + "labelling, the speaker at this time will use this name."
         alert.accessoryView = field
         alert.addButton(withTitle: "Save Name")
         alert.addButton(withTitle: "Cancel")
@@ -539,6 +654,10 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         hint.at = Date()
         hint.action = .nameSpeaker(name)
         _ = save(hint, success: "Speaker name saved")
+    }
+
+    private func noPhraseSelected() {
+        showEditStatus("Select a finalized phrase first; it may have scrolled out of the live transcript.")
     }
 
     /// The edit bar's status, whole in its tooltip when a narrow window cuts it short.
@@ -578,9 +697,9 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         render(paragraphs).text
     }
 
-    private static func render(_ paragraphs: [LiveParagraph]) -> (text: NSAttributedString, targets: [TargetRange]) {
+    private static func render(_ paragraphs: [LiveParagraph]) -> (text: NSAttributedString, targets: [LiveEditTarget]) {
         let result = NSMutableAttributedString()
-        var targets: [TargetRange] = []
+        var targets: [LiveEditTarget] = []
         let body = NSFont.systemFont(ofSize: 14)
         let small = NSFont.systemFont(ofSize: 11, weight: .semibold)
         for (index, paragraph) in paragraphs.enumerated() {
@@ -608,7 +727,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
                 ]))
                 if run.isFinal, let segmentID = run.segmentID, let firstWord = run.firstWord,
                    let endWord = run.endWord, let start = run.start, let end = run.end {
-                    targets.append(TargetRange(
+                    targets.append(LiveEditTarget(
                         range: NSRange(location: location, length: run.text.utf16.count),
                         hint: LiveHint(segmentID: segmentID, track: paragraph.track, firstWord: firstWord,
                                        endWord: endWord, start: start, end: end, heard: run.text,

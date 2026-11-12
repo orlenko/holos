@@ -195,6 +195,8 @@ private func texts(_ paragraphs: [LiveParagraph]) -> [String] {
     follow.moved(distanceFromBottom: 400)
     follow.jumpToLive()
     #expect(follow.following && !follow.showsJumpToLive)
+    follow.hold()
+    #expect(!follow.scrollsToNewWords && follow.showsJumpToLive, "A selected phrase stays in view.")
 }
 
 // MARK: - Opening a meeting

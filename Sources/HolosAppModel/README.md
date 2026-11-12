@@ -16,6 +16,7 @@ executable.
 - `DictationLanguageState`: the app's language snapshot, derived picker groups and coalesced asset checks;
   the app injects the readers, and enable and Settings share a request for the same configuration.
 - `MeetingProgressPresentation`: the current processing step and its bounded percentage, without a remaining-time estimate.
+- `SpeakerNameChoices`: the names Name Speaker… offers while a meeting records.
 - `LicenseNotice` (the About panel's license notice and source links).
 
 **Must not own:** AppKit views or windows (`HolosApp`), controllers (`HolosMeeting`, `HolosDictation`), anything
