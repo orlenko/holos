@@ -54,6 +54,14 @@ struct LiveSelectionAnchor: Equatable {
 }
 
 enum LiveSpeakerNames {
+    /// The names given in this meeting's saved hints, newest first. The shown words are only the newest 1,000 phrases
+    /// of a long meeting, so they can miss a name given early.
+    static func given(in hints: [LiveHint]) -> [String] {
+        hints.reversed().compactMap { hint in
+            if case .nameSpeaker(let name) = hint.action { name } else { nil }
+        }
+    }
+
     /// What Name Speaker… offers: the names given in this meeting first, then the people in People, each once
     /// (letter case ignored), in that order.
     static func choices(inMeeting: [String], known: [String]) -> [String] {

@@ -67,6 +67,12 @@ struct LiveMeetingEditsTests {
         dragging = false
         live.showHeldWords()
         #expect(live.shownText.contains("and then"), "Shown once the drag ends, with no newer read.")
+        dragging = true
+        live.show(Self.later("and then some"))
+        live.show(Self.later("and then"))
+        dragging = false
+        live.showHeldWords()
+        #expect(!live.shownText.contains("some"), "A newer read that matches the text drops the held words.")
     }
 
     @Test func rightClickingAPhraseOffersItsEdits() throws {
@@ -121,6 +127,15 @@ struct LiveMeetingEditsTests {
         // Polls with a budget, never a wall-clock bound: the read runs off the main actor.
         for _ in 0..<2_000 where live.speakerChoices.count < 3 { try await Task.sleep(for: .milliseconds(10)) }
         #expect(live.speakerChoices == ["Sam", "Robin", "Alex"], "This meeting's names first, then People.")
+    }
+
+    @Test func namesGivenEarlierInTheMeetingComeFromItsSavedHintsNewestFirst() {
+        func hint(_ action: LiveHint.Action) -> LiveHint {
+            LiveHint(segmentID: "A", track: "mic", firstWord: 0, endWord: 1, start: 0, end: 1, heard: "hello",
+                     action: action)
+        }
+        #expect(LiveSpeakerNames.given(in: [hint(.nameSpeaker("Kim")), hint(.replaceText("hullo")),
+                                            hint(.nameSpeaker("Lee"))]) == ["Lee", "Kim"])
     }
 
     @Test func nameChoicesPutThisMeetingFirstAndNameEachPersonOnce() {

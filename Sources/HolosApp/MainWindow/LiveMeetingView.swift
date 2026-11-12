@@ -361,7 +361,8 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate, NSM
 
     /// What Name Speaker… offers now (tests).
     var speakerChoices: [String] {
-        LiveSpeakerNames.choices(inMeeting: paragraphs.compactMap(\.speakerName), known: people)
+        LiveSpeakerNames.choices(inMeeting: LiveSpeakerNames.given(in: reader.hints)
+            + paragraphs.compactMap(\.speakerName), known: people)
     }
 
     /// Reads what changed, off the main actor, and shows it.
@@ -395,7 +396,10 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate, NSM
     func show(_ paragraphs: [LiveParagraph]) {
         _ = view
         placeholder.isHidden = !paragraphs.isEmpty
-        guard paragraphs != self.paragraphs else { return }
+        guard paragraphs != self.paragraphs else {
+            heldDuringDrag = nil  // the newest read is what is shown
+            return
+        }
         // A drag selecting words reports its selection only at mouse-up; new words now would move the text under the
         // pointer. The next read shows them.
         if userIsDragging {
@@ -534,8 +538,19 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate, NSM
     /// The primary mouse button is down over the words.
     private var userIsDragging: Bool {
         if let draggingProbe { return draggingProbe() }
-        guard NSEvent.pressedMouseButtons & 1 != 0, let window = scroll.window else { return false }
-        return scroll.bounds.contains(scroll.convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        if NSEvent.pressedMouseButtons & 1 == 0 { selectingWithMouse = false }
+        return selectingWithMouse
+    }
+
+    /// The user started changing the selection with the mouse button down: a click or a drag, which may leave the
+    /// view to extend the selection. It ends when the button is up.
+    private var selectingWithMouse = false
+
+    /// Called at each step of a drag too (the change itself is reported only at mouse-up).
+    func textView(_ textView: NSTextView, willChangeSelectionFromCharacterRanges old: [NSValue],
+                  toCharacterRanges new: [NSValue]) -> [NSValue] {
+        if !updating, NSEvent.pressedMouseButtons & 1 != 0 { selectingWithMouse = true }
+        return new
     }
 
     /// The edits in the right-click menu are on while their phrase is still selected and the meeting records.
