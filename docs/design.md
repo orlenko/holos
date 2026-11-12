@@ -515,10 +515,12 @@ shows a "Jump to Live" pill at the bottom, which (like scrolling back down, or E
 Selecting one finalized phrase while recording enables **Correct Text…** and **Name
 Speaker…**, which are also the first items of the phrase's right-click menu (a right-click
 selects the word under the pointer). The selection stays on its phrase while new words
-arrive (`LiveSelectionAnchor`). Correct Text… opens with the selected words highlighted
+arrive (`LiveSelectionAnchor`), new words wait while a drag selects, and Jump to Live ends
+the selection. Correct Text… opens with the selected words highlighted
 (the word at the insertion point when nothing is selected), so typing replaces only them.
 Name Speaker… offers the names already given in this meeting, then the people in People
-(`LiveSpeakerNames`), and still takes a new name. Text corrections appear in the live view at once; safe small mishearing pairs
+(`LiveSpeakerNames`, read off the main actor when the view comes on screen), and still takes
+a new name: the field does not complete a typed name into a known one. Text corrections appear in the live view at once; safe small mishearing pairs
 are also learned in `corrections.json` for later dictations and meetings. Re-editing a
 phrase reconciles the rules learned by all live edits: a shared rule remains while any
 latest phrase still confirms it, and a matching rule that predated live editing is never

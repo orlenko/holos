@@ -65,6 +65,10 @@ struct LiveMeetingEditsTests {
         #expect(menu.items.prefix(2).map(\.title) == ["Correct Text…", "Name Speaker…"])
         #expect(text.selectedRange() == agenda, "The word under the pointer is selected.")
         #expect(live.canEditSelection)
+        let correct = try #require(menu.items.first)
+        #expect(live.validateMenuItem(correct))
+        text.setSelectedRange(NSRange(location: (text.string as NSString).length, length: 0))
+        #expect(!live.validateMenuItem(correct), "Off once the phrase is no longer selected.")
         let volatile = (text.string as NSString).range(of: "and", options: .backwards)
         let plain = try #require(live.textView(text, menu: NSMenu(), for: event, at: volatile.location))
         #expect(plain.items.isEmpty, "Words not yet final have no edits.")
@@ -82,7 +86,26 @@ struct LiveMeetingEditsTests {
                 "An insertion point past a shortened phrase stays on it.")
         let words = try #require(LiveSelectionAnchor(selected: NSRange(location: 38, length: 8), targets: [long]))
         #expect(words.range(in: [long]) == NSRange(location: 40, length: 6), "Only the part in the phrase.")
+        let end = try #require(LiveSelectionAnchor(selected: NSRange(location: 47, length: 5), targets: [long]))
+        #expect(end.range(in: [short]) == NSRange(location: 13, length: 1),
+                "Words past a shortened phrase's end keep its last letter selected.")
+        var split = long
+        split.hint.endWord = 1
+        #expect(anchor.range(in: [split]) == nil, "A phrase with other words is not the same phrase.")
         #expect(LiveSelectionAnchor(selected: NSRange(location: 0, length: 5), targets: [long]) == nil)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func peopleAreReadOffTheMainActorWhenTheViewStarts() async throws {
+        let (live, _) = try Self.recording()
+        var named = Self.first
+        named.speakerName = "Sam"
+        live.show([named])
+        #expect(live.speakerChoices == ["Sam"])
+        live.start()
+        defer { live.stop() }
+        // Polls with a budget, never a wall-clock bound: the read runs off the main actor.
+        for _ in 0..<2_000 where live.speakerChoices.count < 3 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(live.speakerChoices == ["Sam", "Robin", "Alex"], "This meeting's names first, then People.")
     }
 
     @Test func nameChoicesPutThisMeetingFirstAndNameEachPersonOnce() {

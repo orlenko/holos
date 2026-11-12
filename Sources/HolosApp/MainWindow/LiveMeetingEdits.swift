@@ -8,8 +8,9 @@ struct LiveEditTarget {
     var hint: LiveHint
     var speakerName: String?
 
-    /// The same phrase in the next rendering of the text: its segment and its first word.
-    var key: String { "\(hint.segmentID)#\(hint.firstWord)" }
+    /// The same phrase in the next rendering of the text: its segment and its words, which a correction keeps (an
+    /// echo that splits a segment makes new phrases, and the selection is dropped rather than moved to other words).
+    var key: String { "\(hint.segmentID)#\(hint.firstWord)-\(hint.endWord)" }
 
     /// The one phrase `selected` is in: the phrase around the insertion point, or the only phrase a selection
     /// touches. Nil for none or several.
@@ -42,12 +43,12 @@ struct LiveSelectionAnchor: Equatable {
         length = inside.length
     }
 
-    /// The same place in `targets`, cut to the phrase when its text got shorter (a correction); nil when the phrase
-    /// is no longer shown.
+    /// The same place in `targets`, cut to the phrase and starting inside it when its text got shorter (a correction);
+    /// nil when the phrase is no longer shown.
     func range(in targets: [LiveEditTarget]) -> NSRange? {
         guard let target = targets.first(where: { $0.key == key }), target.range.length > 0 else { return nil }
-        // An insertion point stays inside the phrase, so the phrase stays selected.
-        let start = min(offset, target.range.length - (length == 0 ? 1 : 0))
+        // The selection starts inside the phrase, so the phrase stays selected.
+        let start = min(offset, target.range.length - 1)
         return NSRange(location: target.range.location + start, length: min(length, target.range.length - start))
     }
 }

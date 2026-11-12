@@ -37,7 +37,7 @@ struct LiveTextLearning {
 /// 4. Re-rendering the words keeps a selection inside one finalized phrase on that phrase (`LiveSelectionAnchor`),
 ///    and selecting a phrase stops following (`LiveFollow.hold`), so the phrase stays put while the user edits it.
 @MainActor
-final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
+final class LiveMeetingViewController: NSViewController, NSTextViewDelegate, NSMenuItemValidation {
     static let refreshInterval: Duration = .milliseconds(250)
     /// The meeting's name keeps this much of the header before the status gives way.
     static let titleMinimumWidth: CGFloat = 80
@@ -50,8 +50,11 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     private let onLearnText: (LiveHints.CorrectionLearningState, String, String) -> LiveTextLearning
     /// Stop and Save…, Pause, Resume (the app delegate checks them against the meeting's state again).
     private let onRecordingCommand: (MeetingRecordingCommand) -> Void
-    /// The people in People, for Name Speaker…'s list; read when it opens.
-    private let knownNames: () -> [String]
+    /// The people in People, for Name Speaker…'s list. It reads their store, so it runs off the main actor
+    /// (`loadPeople`).
+    private let knownNames: @Sendable () -> [String]
+    /// What `knownNames` returned when the view last came on screen.
+    private var people: [String] = []
     let contentState: MeetingContentState
     private var reader: LiveTranscriptReader {
         get { contentState.reader }
@@ -88,7 +91,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
              _, _, _ in .init()
          },
          onRecordingCommand: @escaping (MeetingRecordingCommand) -> Void = { _ in },
-         knownNames: @escaping () -> [String] = { VoiceProfileService.knownPeople().map(\.displayName) }) {
+         knownNames: @escaping @Sendable () -> [String] = { VoiceProfileService.knownPeople().map(\.displayName) }) {
         self.sessionID = sessionID
         self.onBack = onBack
         self.onOpenFinished = onOpenFinished
@@ -329,6 +332,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     func start() {
         guard embeddedReview == nil else { return }
         refresh()
+        loadPeople()
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -342,6 +346,20 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     func stop() {
         refreshTask?.cancel()
         refreshTask = nil
+    }
+
+    /// Reads People's names off the main actor for Name Speaker… (the store can be large).
+    private func loadPeople() {
+        let read = knownNames
+        Task { [weak self] in
+            let names = await Task.detached { read() }.value
+            self?.people = names
+        }
+    }
+
+    /// What Name Speaker… offers now (tests).
+    var speakerChoices: [String] {
+        LiveSpeakerNames.choices(inMeeting: paragraphs.compactMap(\.speakerName), known: people)
     }
 
     /// Reads what changed, off the main actor, and shows it.
@@ -375,6 +393,13 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         _ = view
         placeholder.isHidden = !paragraphs.isEmpty
         guard paragraphs != self.paragraphs else { return }
+        // A drag selecting words reports its selection only at mouse-up; new words now would move the text under the
+        // pointer. The next read shows them.
+        if userIsDragging {
+            follow.hold()
+            updateJump()
+            return
+        }
         self.paragraphs = paragraphs
         updating = true
         let anchor = LiveSelectionAnchor(selected: textView.selectedRange(), targets: targets)
@@ -436,6 +461,8 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     @objc private func jumpToLive() {
         follow.jumpToLive()
         updating = true
+        // The selected phrase scrolls out of view: the edits no longer act on it.
+        textView.setSelectedRange(NSRange(location: (textView.string as NSString).length, length: 0))
         textView.scrollToEndOfDocument(nil)
         updating = false
         updateJump()
@@ -491,6 +518,18 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         return menu
     }
 
+    /// The primary mouse button is down over the words.
+    private var userIsDragging: Bool {
+        guard NSEvent.pressedMouseButtons & 1 != 0, let window = scroll.window else { return false }
+        return scroll.bounds.contains(scroll.convert(window.mouseLocationOutsideOfEventStream, from: nil))
+    }
+
+    /// The edits in the right-click menu are on while their phrase is still selected and the meeting records.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        guard item.action == #selector(correctText) || item.action == #selector(nameSpeaker) else { return true }
+        return header.phase.capturing && selectedTarget() != nil
+    }
+
     private func selectedTarget() -> LiveEditTarget? {
         LiveEditTarget.only(in: textView.selectedRange(), among: targets)
     }
@@ -514,7 +553,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     }
 
     @objc private func correctText() {
-        guard let target = selectedTarget() else { return }
+        guard let target = selectedTarget() else { return noPhraseSelected() }
         let field = PreselectingTextField(string: target.hint.heard)
         // The selected words are highlighted, so typing replaces only them.
         field.initialSelection = selectedWords(of: target)
@@ -561,11 +600,11 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     }
 
     @objc private func nameSpeaker() {
-        guard let target = selectedTarget() else { return }
+        guard let target = selectedTarget() else { return noPhraseSelected() }
         let field = NSComboBox()
-        let names = LiveSpeakerNames.choices(inMeeting: paragraphs.compactMap(\.speakerName), known: knownNames())
+        let names = speakerChoices
         field.addItems(withObjectValues: names)
-        field.completes = true
+        // No completion: it would turn a new name typed as "Sam" into a known "Samantha" on Return.
         field.numberOfVisibleItems = 10
         field.stringValue = target.speakerName ?? ""
         field.placeholderString = names.isEmpty ? "Speaker name" : "Choose or type a name"
@@ -585,6 +624,10 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         hint.at = Date()
         hint.action = .nameSpeaker(name)
         _ = save(hint, success: "Speaker name saved")
+    }
+
+    private func noPhraseSelected() {
+        showEditStatus("Select a finalized phrase first; it may have scrolled out of the live transcript.")
     }
 
     /// The edit bar's status, whole in its tooltip when a narrow window cuts it short.
