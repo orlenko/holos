@@ -1,4 +1,5 @@
 import AppKit
+import HolosAppModel
 import HolosCore
 import HolosMeeting
 
@@ -361,7 +362,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate, NSM
 
     /// What Name Speaker… offers now (tests).
     var speakerChoices: [String] {
-        LiveSpeakerNames.choices(inMeeting: LiveSpeakerNames.given(in: reader.hints)
+        SpeakerNameChoices.choices(inMeeting: LiveSpeakerNames.given(in: reader.hints)
             + paragraphs.compactMap(\.speakerName), known: people)
     }
 

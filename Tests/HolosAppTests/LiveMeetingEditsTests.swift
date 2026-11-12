@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import HolosMeeting
+import HolosTestSupport
 import Testing
 @testable import HolosApp
 
@@ -124,8 +125,8 @@ struct LiveMeetingEditsTests {
         #expect(live.speakerChoices == ["Sam"])
         live.start()
         defer { live.stop() }
-        // Polls with a budget, never a wall-clock bound: the read runs off the main actor.
-        for _ in 0..<2_000 where live.speakerChoices.count < 3 { try await Task.sleep(for: .milliseconds(10)) }
+        // The read runs off the main actor.
+        #expect(await eventually { live.speakerChoices.count == 3 })
         #expect(live.speakerChoices == ["Sam", "Robin", "Alex"], "This meeting's names first, then People.")
     }
 
@@ -136,11 +137,6 @@ struct LiveMeetingEditsTests {
         }
         #expect(LiveSpeakerNames.given(in: [hint(.nameSpeaker("Kim")), hint(.replaceText("hullo")),
                                             hint(.nameSpeaker("Lee"))]) == ["Lee", "Kim"])
-    }
-
-    @Test func nameChoicesPutThisMeetingFirstAndNameEachPersonOnce() {
-        #expect(LiveSpeakerNames.choices(inMeeting: ["Sam", "sam", " Kim "], known: ["Robin", "SAM", ""])
-            == ["Sam", "Kim", "Robin"])
     }
 
     @Test func theCorrectionFieldOpensWithTheSelectedWordsHighlighted() throws {

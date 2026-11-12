@@ -61,17 +61,6 @@ enum LiveSpeakerNames {
             if case .nameSpeaker(let name) = hint.action { name } else { nil }
         }
     }
-
-    /// What Name Speaker… offers: the names given in this meeting first, then the people in People, each once
-    /// (letter case ignored), in that order.
-    static func choices(inMeeting: [String], known: [String]) -> [String] {
-        var seen = Set<String>()
-        return (inMeeting + known).compactMap { name in
-            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, seen.insert(trimmed.lowercased()).inserted else { return nil }
-            return trimmed
-        }
-    }
 }
 
 /// A text field that selects `initialSelection` when it takes the keyboard, not all of its text: Correct Text…
