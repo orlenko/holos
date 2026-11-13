@@ -257,7 +257,8 @@ Source [M]: 242 Codex inline findings on PRs #85–#118, classified by hand, plu
 **Process remedies** [J]:
 - Settle the design before opening the PR.
 - When two findings fall in the same class, fix the primitive instead of patching the site.
-- Require two consecutive clean reviews; one clean sample is not enough.
+- The audit also proposed requiring two consecutive clean reviews. That was not adopted; the review rules are in
+  AGENTS.md "Review and tests".
 
 ---
 
@@ -413,7 +414,7 @@ parallel. Serialize changes to `Package.swift` with each other and with test-sup
 | Mass-rename test files | Every in-flight worktree would conflict. Rename tests when their source file is split |
 | Rewrite all docs in one pass | Split mechanically first, keeping the anchors, then rewrite each section alongside the code that changes |
 | Add a protocol per type "for testability" | The existing seams work. Consolidate them instead |
-| Gate refactor PRs on one clean Codex verdict | #104 got 5 clean verdicts before new findings appeared. For moves-only PRs, gate on `--color-moved` evidence and an unchanged test suite |
+| Treat a clean Codex verdict as proof that a refactor changed no behaviour | #104 got 5 clean verdicts before new findings appeared. For moves-only PRs, the proof is `--color-moved` evidence and an unchanged test suite |
 
 ---
 
