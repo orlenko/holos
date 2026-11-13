@@ -96,7 +96,8 @@ update is refused while the check fails or while any file in the baseline has gr
 (`--update-baseline --allow-growth <path>`) and explain it in the PR description. `--allow-growth` only covers
 growth that ends at or below 1,000 lines; growth past 1,000 lines and a new file over 1,000 lines are never
 accepted. A file moved whole (`git mv`) keeps its entry, so rename the path in `scripts/size-baseline.txt` in
-the same PR. The type and function caps are review rules; nothing checks them yet.
+the same PR. Nothing checks the type and function caps yet; authors keep them, and reviewers do not report them
+("Review guidelines").
 
 ## Invariants at type level
 
@@ -248,13 +249,91 @@ Planned, see the [architecture roadmap](docs/architecture-roadmap.md) (`docs/arc
   redesign, or a refactor with an on-disk format or lock-name change (formats need a version bump, an old-version
   reader and their own PR; lock renames need an alias).
 - When two review findings fall in the same class, fix the shared mechanism, not each site.
-- Gates before merge, all on the head commit: `./scripts/test.sh --no-parallel` passes, `scripts/check-size.sh`
-  passes, the GitHub Codex review is clean, and a local astra review is clean. For a moves-only refactor, the
-  `--color-moved` evidence and an unchanged test suite are also required.
-- `.quality/` and `docs/quality-adoption.md` record these gates for the shared quality runner, with execution disabled.
-  They change no gate above; passing or failing that runner does not decide a merge.
-- Substantial features also follow the manual review procedure in `docs/quality-adoption.md` "Review procedure for
-  features": design review before code, then separate reviews, adjudicated. It adds to these gates and replaces none.
+- Scope freezes when review starts. A new feature found during review goes to a new PR. Do not merge while a
+  requested review is still running.
+- Before merge, on the final head: `./scripts/test.sh --no-parallel` and `scripts/check-size.sh` pass, and the
+  review has no open blocker ("Review and tests"). For a moves-only refactor, the `--color-moved` evidence and an
+  unchanged test suite are also required.
+- `.quality/` and `docs/quality-adoption.md` record a pilot setup of the shared quality runner, with execution
+  disabled. Passing or failing that runner does not decide a merge.
+
+## Review and tests
+
+This repository follows the shared
+[review and test process v0.3](https://github.com/orlenko/software-quality/blob/main/docs/process.md). This section
+supplies what that text asks each repository for.
+
+**Sensitive paths.** A change to one of these files is tier B. Until a tier script exists, match the changed files
+against this list. A `README.md` under these folders does not count.
+
+- Capture and storage: `Sources/HolosAudio/**`, `Sources/HolosStorage/**`,
+  `Sources/HolosCLI/{Record,RecordControl}.swift`,
+  `Sources/HolosMeeting/{Recorder*,Recording*,MeetingCapture,IndependentMeetingCapture}.swift`
+- Text insertion and keystrokes: `Sources/HolosDesktop/**`
+- Deletion: `Sources/HolosCLI/{SessionDelete,SessionCleanAudio}.swift`,
+  `Sources/HolosMeeting/BackgroundJobs/*{Cleanup,AudioCleanup}*.swift`,
+  `Sources/HolosContent/ReadingLibrary+Deletion.swift`, `Sources/HolosAppModel/ResultRetention.swift`,
+  `Sources/HolosWhisper/WhisperModels.swift`, `Sources/HolosDiarization/{FluidModels,ModelPaths,PinnedModels}.swift`,
+  `Sources/HolosSynthesis/{NaturalVoiceModels,NaturalVoicePackFiles}.swift`
+- Updates: `Sources/HolosApp/HolosApp+Updates.swift`, `Sources/HolosAppModel/UpdateCheckConsent.swift`
+- Signing, release, dependency pins: `scripts/{release,release-app,build-app,build,stamp-build-info}.sh`,
+  `Resources/*.entitlements`, `Package.resolved`
+- Network: `Sources/HolosEvaluation/{Cloud*,EvalCloudCommand}.swift`,
+  `Sources/HolosApp/Reading/NaturalVoiceDownload.swift`
+
+**Triggers.** A change is also tier B when it adds or changes work that runs on a timer, by polling or while the app
+is idle, or when it changes behaviour across sleep, wake, restart or update.
+
+**Round-1 question** for B: "What fails only in the signed build, or only in another app?"
+
+**Reviewers.** C: the GitHub Codex review that starts when the PR opens; do not request another. B: that review plus
+one local astra review (a local Codex review on the `gpt-6-astra` model). When one reviewer is out of quota, use the
+other. A fix re-review is never a `@codex review` comment, which reviews the whole head: use a fresh local reviewer,
+astra or hostile-eyes, given `git diff <reviewed commit>..HEAD` and the "Review guidelines" below. A Codex review
+that starts by itself on a later head is read once for blockers; it opens no new round and does not reset the cap.
+Codex severity labels are not blocker marks: a Codex finding is a blocker claim when it describes a consequence in a
+blocker class, and an author who rejects such a claim on a B change takes it to the owner.
+
+**Tests.** While working and after each fix: `./scripts/test-target.sh <Target>Tests` for each touched target.
+Once, on the final head: `./scripts/test.sh --no-parallel` and `scripts/check-size.sh`.
+
+**Smoke checklist.** Automated items, for B changes, once on the final build. They need `scripts/build-app.sh`,
+which runs only when the owner asks ("Hard don'ts"), in a worktree the owner's app does not run from. Never launch
+the build: it shares its bundle ID and preferences with the owner's app. When no build was requested, the record
+reads `Smoke: not run, no build requested` and the merge does not wait; the owner-run items below cover each release.
+
+1. `build/VoiceIsLocal.app/Contents/MacOS/HolosApp --check` passes (read-only; `docs/dictation-validation.md`
+   "Build and set up"). About 1 minute.
+2. Copy the new build over a copy of the previous release in a temporary folder; `codesign --verify --deep --strict`
+   and `--check` pass on it. About 5 minutes. To be confirmed when first run.
+
+Owner-run items, once per release, on the signed build under the owner's login (steps in
+`docs/dictation-validation.md` "Manual acceptance matrix"):
+
+1. Dictate into a terminal and into a browser rich editor. About 5 minutes.
+2. Through Screen Sharing, dictate into a terminal on another Mac with Right Option, capitals and shifted
+   punctuation. About 5 minutes.
+3. Sleep and wake the Mac, then dictate. About 3 minutes.
+4. Leave the app idle for 10 minutes, then record its CPU use from Activity Monitor. About 12 minutes.
+
+**Owner decisions about process.** Add new ones here, dated (shared stop rule 14). These lines are the one exception
+to the no-dates rule in "Docs and comments".
+
+- 2026-11-13: the owner approved process v0.3 for this repository. It replaces the earlier review procedure and
+  every earlier process waiver.
+
+## Review guidelines
+
+Report only what can cause a blocker in ordinary use or from an untrusted input: a privacy leak, a security defect,
+data loss or corruption, a crash or hang, or a change that does not do what it was asked to do or gives a wrong
+result the person relies on.
+
+Do not report these rules from this file. Authors keep them; no script checks them yet:
+
+- the size caps `scripts/check-size.sh` does not check (test files, types, functions, embedded scripts);
+- `Invariants:` blocks on stateful types;
+- use of the shared test helpers instead of local copies;
+- dates, PR numbers and history in docs and comments.
 
 ## Privacy
 
