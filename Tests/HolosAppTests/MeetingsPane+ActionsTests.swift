@@ -125,4 +125,32 @@ struct MeetingsPaneActionsTests {
         #expect(opens == 1)
     }
 
+    @Test func rowTooltipOffersRenameByTheRenameRuleWithoutTheMeetingsFiles() throws {
+        let temp = try TemporaryDirectory("meeting-tooltip-absent")
+        defer { temp.remove() }
+        let (_, pane) = try LiveMeetingViewTests.meetings(size: .init(width: 1000, height: 700), root: temp.url)
+        let absent = temp.url.appendingPathComponent("absent.holos")
+        let summary = SessionSummary(id: "generated-id", directory: absent, name: "Generated meeting",
+                                     createdAt: .now, source: .system, state: .complete,
+                                     manifestStatus: "complete", liveness: .exited)
+        let hint = "Press ⌘R to rename."
+        #expect(pane.toolTip(summary, isLive: false).contains(hint))
+
+        pane.show([summary], people: [:], freeBytes: nil)
+        pane.update(running: [summary.id: "Transcribing…"])
+        #expect(pane.toolTip(summary, isLive: false).contains(hint))
+        #expect(pane.enabledActions(summary).contains(.rename))
+
+        var damaged = summary
+        damaged.state = .damaged
+        #expect(!pane.toolTip(damaged, isLive: false).contains(hint))
+        #expect(!pane.enabledActions(damaged).contains(.rename))
+
+        var metadataProblem = summary
+        metadataProblem.metadataProblem = "Generated read error"
+        #expect(!pane.toolTip(metadataProblem, isLive: false).contains(hint))
+        #expect(!pane.enabledActions(metadataProblem).contains(.rename))
+
+        #expect(!pane.toolTip(summary, isLive: true).contains(hint))
+    }
 }
