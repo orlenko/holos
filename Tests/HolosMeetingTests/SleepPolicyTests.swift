@@ -262,17 +262,20 @@ private func waitingMachine(at: Double) -> RecorderMachine {
     monitor.stop()
 }
 
-/// Events carry their arrival time: drained late, they still tell how long ago they happened.
+/// Events carry their arrival time: drained late, they still tell how long ago they happened. The age stays under
+/// the Mac's uptime, so the event's arrival never falls before boot.
 @Test func monitorTimesEventsByArrival() {
     let monitor = SystemPowerMonitor(acknowledge: { _ in })
     monitor.attach()
-    monitor.deliver(SystemPowerMonitor.systemWillSleep, argument: 3, nanosecondsAgo: 1_200_000_000_000)
+    let age = min(1_200_000_000_000, PowerEventCore.continuousNanoseconds() / 2)
+    monitor.deliver(SystemPowerMonitor.systemWillSleep, argument: 3, nanosecondsAgo: age)
     monitor.deliver(SystemPowerMonitor.systemHasPoweredOn, argument: 0)
     let events = monitor.pendingTimedEvents()
     #expect(events.map(\.event) == [.willSleep(token: 3), .didWake])
     #expect(events.count == 2)
     if events.count == 2 {
-        #expect(events[0].secondsAgo >= 1_200 && events[0].secondsAgo < 1_210)
+        let ageSeconds = Double(age) / 1e9
+        #expect(events[0].secondsAgo >= ageSeconds && events[0].secondsAgo < ageSeconds + 10)
         #expect(events[1].secondsAgo >= 0 && events[1].secondsAgo < 10)
     }
     #expect(monitor.pendingTimedEvents().isEmpty)
