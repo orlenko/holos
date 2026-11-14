@@ -139,8 +139,9 @@ struct MainWindowNarrowTests {
         SettingsEmbeddingTests.render(controller.window, name: "live-stop-\(Int(width))")
     }
 
-    /// A finished reading's row in the Reading list at the window's narrowest: Show Text, Share… and Show in Finder
-    /// become symbols (still named for VoiceOver), every button fits, and the title keeps some room; wide, they have titles.
+    /// A finished reading's row in the Reading list at the window's narrowest: Show Text and Share… become symbols
+    /// (still named for VoiceOver), every button fits, and the title keeps some room; wide, they have titles. Show in
+    /// Finder and Delete… are under ··· at any width.
     @Test(arguments: [CGFloat(316), 700])
     func aReadingRowFitsTheNarrowestWindow(width: CGFloat) throws {
         var entry = ReadingEntry(source: .web(try #require(URL(string: "https://example.com/story"))),
@@ -155,7 +156,7 @@ struct MainWindowNarrowTests {
         row.layoutSubtreeIfNeeded()
         row.layoutSubtreeIfNeeded()  // the compact titles change on the first pass
         let buttons = Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
-        #expect(buttons.count == 5)
+        #expect(buttons.count == 4, "Pause on the seek bar's line, then Show Text, Share… and ···")
         for button in buttons {
             let frame = try #require(button.superview).convert(button.frame, to: row)
             #expect(frame.minX >= 0 && frame.maxX <= row.bounds.width, "\(button.title) is cut off")
@@ -170,9 +171,9 @@ struct MainWindowNarrowTests {
         let compact = width < ReadingRowView.compactWidth
         #expect(buttons.contains { $0.title == "Show Text" } == !compact)
         #expect(buttons.contains { $0.title == "Share…" } == !compact)
-        #expect(buttons.contains { $0.title == "Show in Finder" } == !compact)
-        #expect(buttons.contains { $0.title == "Delete…" } == !compact)
-        #expect(buttons.contains { $0.accessibilityLabel() == "Show in Finder — \(entry.title)" })
+        #expect(buttons.contains { $0.accessibilityLabel() == "Share… — \(entry.title)" })
+        #expect(buttons.contains { $0.accessibilityLabel() == "More actions — \(entry.title)" })
+        #expect(row.moreMenu().items.map(\.title) == ["Show in Finder", "Delete…"])
         #expect(Self.brokenConstraints(in: row).isEmpty)
     }
 
@@ -191,7 +192,7 @@ struct MainWindowNarrowTests {
         row.layoutSubtreeIfNeeded()
         row.layoutSubtreeIfNeeded()
         let buttons = Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
-        #expect(Set(buttons.map(\.title)) == ["❚❚ Pause", "Stop Converting"])
+        #expect(Set(buttons.map(\.title)) == ["❚❚ Pause", "Stop"])
         for button in buttons {
             let frame = try #require(button.superview).convert(button.frame, to: row)
             #expect(frame.minX >= 0 && frame.maxX <= row.bounds.width, "\(button.title) is cut off")
@@ -201,7 +202,7 @@ struct MainWindowNarrowTests {
         // Its place is shown at any width, on a bar that moves through what is made.
         #expect(labels.contains { $0.stringValue == "0:12" } && labels.contains { $0.stringValue == "0:40…" })
         #expect(Self.allViews(row).compactMap { $0 as? NSSlider }.first?.isEnabled == true)
-        // Pause stands with the bar, and Stop Converting apart from it.
+        // Pause stands with the bar, and the conversion's Stop apart from it.
         let bar = try #require(Self.allViews(row).compactMap { $0 as? ReadingSeekBar }.first)
         let pause = try #require(buttons.first { $0.title == "❚❚ Pause" })
         #expect(bar.superview === pause.superview)
@@ -221,12 +222,14 @@ struct MainWindowNarrowTests {
         #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.title).contains("❚❚ Pause"))
         #expect(Self.allViews(row).compactMap { $0 as? ReadingSeekBar }.first?.isHiddenOrHasHiddenAncestor == false)
 
-        // Not played yet, its first part made: Play beside Stop Converting; none made: that alone.
+        // Not played yet, its first part made: Play and Stop; none made: Stop alone.
         row.show(entry, activity: .rendering(part: 2, of: 5), fileProblem: nil, size: nil, playback: nil, playable: true)
         #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.title)
-            == ["▶ Play", "Stop Converting"])
+            == ["▶ Play", "Stop"])
+        #expect(Self.allViews(row).compactMap { $0 as? NSTextField }.contains {
+            $0.stringValue == "Making · part 2 of 5 · playable from the start" })
         row.show(entry, activity: .rendering(part: 1, of: 5), fileProblem: nil, size: nil, playback: nil)
-        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.title) == ["Stop Converting"])
+        #expect(Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.title) == ["Stop"])
 
         // Making failed while it plays what was made: Pause until that stops, then Try Again.
         entry.state = .failed
@@ -239,7 +242,7 @@ struct MainWindowNarrowTests {
             == "Try Again")
     }
 
-    /// A reading with chapters also offers Chapter Files…, and everything still fits at the window's narrowest.
+    /// A reading with chapters also offers Chapter Files… under ···, and everything still fits at the window's narrowest.
     @Test(arguments: [CGFloat(316), 700])
     func aReadingWithChaptersOffersChapterFiles(width: CGFloat) throws {
         var entry = ReadingEntry(source: .web(try #require(URL(string: "https://example.com/story"))),
@@ -254,7 +257,7 @@ struct MainWindowNarrowTests {
         row.layoutSubtreeIfNeeded()
         row.layoutSubtreeIfNeeded()
         let buttons = Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
-        #expect(buttons.contains { $0.accessibilityLabel() == "Chapter Files… — \(entry.title)" })
+        #expect(row.moreMenu().items.map(\.title) == ["Show in Finder", "Chapter Files…", "Delete…"])
         for button in buttons {
             let frame = try #require(button.superview).convert(button.frame, to: row)
             #expect(frame.minX >= 0 && frame.maxX <= row.bounds.width, "\(button.title) is cut off")
@@ -262,8 +265,7 @@ struct MainWindowNarrowTests {
         #expect(Self.brokenConstraints(in: row).isEmpty)
         entry.chapters = 1
         row.show(entry, activity: nil, fileProblem: nil, size: 1_200_000, playback: nil)
-        #expect(!Self.allViews(row).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
-            .contains { $0.accessibilityLabel()?.hasPrefix("Chapter Files") == true })
+        #expect(!row.moreMenu().items.map(\.title).contains("Chapter Files…"))
     }
 
     /// People with a person selected whose (made-up) name is long: the name goes into the suggestion checkbox,

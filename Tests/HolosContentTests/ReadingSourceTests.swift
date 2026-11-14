@@ -109,6 +109,18 @@ import Testing
         #expect(ReadingSource.selection(app: "Notes").fieldText.isEmpty)
     }
 
+    @Test func kindsNameTheSiteTheDocumentTypeOrTheApp() {
+        func file(_ name: String) -> ReadingSource { .file(URL(fileURLWithPath: "/Users/me/\(name)")) }
+        #expect(file("Paper.pdf").kind == "PDF")
+        #expect(file("Notes.DOCX").kind == "Word")
+        #expect(file("Old.doc").kind == "Word")
+        #expect(file("Plan.md").kind == "Markdown")
+        #expect(file("Plain").kind == "Text")
+        #expect(file("Data.csv").kind == "CSV")
+        #expect(ReadingSource.web(URL(string: "https://www.example.com/a")!).kind == "example.com")
+        #expect(ReadingSource.selection(app: "Notes").kind == "Selected in Notes")
+    }
+
     @Test func sourcesRoundTripThroughJSON() throws {
         for source in [ReadingSource.web(URL(string: "https://example.com/a")!),
                        .file(URL(fileURLWithPath: "/Users/me/Café notes.md")), .selection(app: "Notes"),

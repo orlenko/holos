@@ -558,9 +558,10 @@ timeline and a larger local-model benchmark are follow-ups.
   estimated mapping onto the speech rate that has not been checked by ear). Readings are made
   one at a time in this process, each into `~/Music/Voice is Local/Readings/<Title>.m4a`
   (Settings › Reading changes the folder, default voice, and speed), and listed with their
-  progress ("Rendering part N of M", Stop) or, once made, length, chapters, size, and voice,
-  with Play (in the app, Space), Share… (⇧⌘S), Show in Finder, and Delete… (⌫; the file goes
-  to the Trash, the render cache is removed). Failed and stopped readings offer Try Again or
+  progress ("Making · part N of M", Stop) or, once made, length, chapters, and voice,
+  with Play (in the app, Space), Show Text and Share… (⇧⌘S), and under ··· (or a right-click)
+  Show in Finder, Chapter Files… and Delete… (⌫; the file goes to the Trash, the render cache
+  is removed). Failed and stopped readings offer Try Again or
   Resume, which reuse the rendered parts and the saved text. The list is an index in
   `Application Support/Holos/ReadingLibrary`, so it survives relaunching; a file moved away
   shows as missing. Quitting while a reading is made asks Keep Rendering (continues at the
