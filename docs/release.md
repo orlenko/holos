@@ -118,9 +118,14 @@ On the Mac that holds the Developer ID key, in its own session (not over SSH, so
 ```sh
 ./scripts/release.sh            # the next patch version, 1.0.2 → 1.0.3: opens its pull request
 ./scripts/release.sh minor      # 1.0.2 → 1.1.0; also major, or an exact version such as 1.2.0
-./scripts/release.sh 1.0.3      # after that pull request is merged: tag 1.0.3 and build it
-./scripts/release.sh 1.0.2      # a version already tagged: build that tag again
+./scripts/release.sh 1.0.3 --notes notes.md   # after that pull request is merged: tag, build, and publish 1.0.3
+./scripts/release.sh 1.0.3      # after a failure: resume (build again only if the build did not finish)
+./scripts/release.sh 1.0.3 --no-publish       # tag and build without publishing
 ```
+
+The notes file holds the release's `## What's new` section: Markdown bullets, which the website shows too, so they keep to
+what its publisher accepts (bold, italic, `code`, and `[text](https://…)` links; no headings inside, nested or
+numbered lists, HTML, bare URLs, images, or code blocks).
 
 `scripts/release.sh` stops before changing anything when the signing identity is not in the keychain, the Sparkle
 key in the keychain is missing or is not `SUPublicEDKey` (see "Updates"), or the working tree is not clean.
@@ -136,6 +141,26 @@ the version line `vX`, pushes the tag, and runs `scripts/release-app.sh` with th
 `DEVELOPER_ID`, `NOTARY_PROFILE`, and `BUILD` override those defaults. If the build or notarization fails after the
 tag is pushed, fix the cause and run it again with the same version: the tag exists, so it builds that tag without a
 new commit.
+
+Then it publishes, each step skipped when it is already done, so a run that stopped can be run again with the same
+version (a finished build, stapled with an appcast offering it, is not built again: the website refuses a different
+file under a published name, so a rebuilt release needs a new version number):
+
+1. **GitHub release** `v<version>`: the notes, then the install steps and the SHA-256, with the DMG attached. Before
+   it, the website's publisher checks everything in a dry run, the notes included, so a release it would refuse is not
+   published anywhere.
+2. **voiceislocal.com**: `scripts/publish-release.sh` from a clone of
+   [orlenko/voiceislocal.com](https://github.com/orlenko/voiceislocal.com) next to this one (`SITE_PUBLISHER`
+   overrides the path). It checks the DMG (notarized, stapled, signed by Bjola Software Inc., GitHub's asset digest)
+   and the appcast (both EdDSA signatures, a build above the live feed's), uploads the DMG, updates and deploys the
+   pages, then publishes the appcast, each checked over HTTPS. It needs the tailnet (`ssh root@simple-sites-tor2`),
+   `gh` with push access to the site's repository, `jq`, and Python 3.11+ with `cryptography`; see that
+   repository's README, "Releases".
+3. **Homebrew cask**: `version` and `sha256` of `Casks/voiceislocal.rb` in
+   [orlenko/homebrew-tap](https://github.com/orlenko/homebrew-tap), through a pull request it merges.
+
+`--no-publish` stops after the build. Without `--notes`, publishing needs the GitHub release to exist already; the
+script checks this, the `gh` CLI and the publisher before it tags or builds anything.
 
 ### By hand
 
@@ -253,7 +278,9 @@ attribution. The app includes Sparkle (MIT, with the licenses of the code it bun
 notices reproduce too. Apple's speech assets are downloaded by macOS. When a dependency or model changes, update
 `THIRD_PARTY_NOTICES.md` before the release.
 
-## Publishing on the website
+## Publishing by hand
+
+`scripts/release.sh` does all of this. By hand, in this order:
 
 1. Upload `build/release/VoiceIsLocal-<version>.dmg` to the download page (keep the file name; it carries the
    version).
