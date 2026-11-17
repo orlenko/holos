@@ -473,10 +473,12 @@ The menu bar menu is for when a call starts and the window is not at hand, so it
   The microphone and live transcription are in the state line's tooltip; a transcription falling behind and the
   recorder's warnings get their own lines.
 - Dictation's state only when it is not simply ready (off, starting, dictating), Cancel Dictation while one runs, and
-  **Copy Result** for a dictation that could not be written.
+  **Copy Result** while a result is kept, with **Copy Original (As Heard)** when a fix changed it (a cancelled dictation, or any
+  with History off, has no History record to copy it from).
 - **Open Voice is Local** (⌘0), Stop Reading Aloud while the shortcut's reading plays, and **Quit**.
 
-Everything else is in the window: dictation's switch in Settings, correcting a dictation and Copy As Heard in History,
+Everything else is in the window: dictation's switch in Settings, correcting a dictation in History or Corrections
+(which shows the newest dictation each time it opens, unless it holds edits not learned yet or a History dictation),
 the live transcript, markers and naming speakers in Meetings, About and **Check for Updates…** in the app's Voice is
 Local menu. A meeting waiting for names still shows a dot beside the menu bar icon.
 

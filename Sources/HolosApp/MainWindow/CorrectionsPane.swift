@@ -42,6 +42,11 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
     private var baseline = ""
     /// The ID of the dictation in the text box (the last one's, or a History dictation's).
     private var dictation: UUID?
+    /// Whether the text box holds the last dictation, which a newer one replaces when Corrections shows again.
+    private var followsLast = false
+    /// The text as loaded or last learned from; anything else in the box is an edit not learned yet, which a newer
+    /// dictation does not replace.
+    private var settled = ""
     private var shown: [Correction] = []
     private var declined = DeclinedCorrectionQueue()
     /// The feedback lines shown above the declined-swap suggestion, so a refill can redraw them.
@@ -172,10 +177,16 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
 
     private let transcriptHeading = NSTextField(labelWithString: "")
 
+    static let lastDictationTitle = "Last dictation — fix any misheard words, then Learn"
+
     /// Puts a dictation in the text box: `transcript` as written, compared on Learn with `recognized` (the text as
-    /// recognized, before corrections). `dictation` is its ID and `title` says which dictation it is.
-    func load(transcript: String, recognized: String, dictation: UUID?, title: String, corrections: [Correction]) {
+    /// recognized, before corrections). `dictation` is its ID and `title` says which dictation it is; `followsLast`,
+    /// that it is the last dictation, for `showLast`.
+    func load(transcript: String, recognized: String, dictation: UUID?, title: String, corrections: [Correction],
+              followsLast: Bool = false) {
         transcriptView.string = transcript
+        settled = transcript
+        self.followsLast = followsLast
         baseline = recognized
         self.dictation = dictation
         transcriptHeading.stringValue = title
@@ -186,6 +197,15 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
         report(hasTranscript ? [] : ["No dictation yet. You can still add corrections below."])
         update(corrections: corrections)
         if hasTranscript, let window = view.window { window.makeFirstResponder(transcriptView) }
+    }
+
+    /// Corrections showing again: a newer last dictation replaces the one in the box, unless the box holds a History
+    /// dictation the user chose or edits not learned yet.
+    func showLast(transcript: String, recognized: String, dictation: UUID?, corrections: [Correction]) {
+        guard followsLast, !transcript.isEmpty, dictation != self.dictation, transcriptView.string == settled
+        else { return }
+        load(transcript: transcript, recognized: recognized, dictation: dictation, title: Self.lastDictationTitle,
+             corrections: corrections, followsLast: true)
     }
 
     var preferredFirstResponder: NSView? { transcriptView.isEditable ? transcriptView : heardField }
@@ -237,7 +257,10 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
             return
         }
         // Learned rules were saved: the edited text is now what later edits are compared with.
-        if !result.learned.isEmpty { baseline = edited }
+        if !result.learned.isEmpty {
+            baseline = edited
+            settled = edited
+        }
         declined.receive(result.declined, edit: result.edit)
         var lines: [String] = []
         if !result.learned.isEmpty {

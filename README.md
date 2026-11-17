@@ -191,7 +191,7 @@ follows macOS (System, the default).
 
 The menu bar menu is short, for when a call starts: **Start Meeting Recording…** (or,
 while recording, **Stop and Save…** and Pause), dictation's state when it is not ready,
-Copy Result for a dictation that could not be written, **Open Voice is Local**, and Quit.
+Copy Result (and Copy Original) while a result is kept, **Open Voice is Local**, and Quit.
 Everything else is in the window; Check for Updates… is in its Voice is Local menu.
 
 ### Reading

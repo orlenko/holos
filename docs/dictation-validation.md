@@ -130,7 +130,8 @@ recording), then:
    `ls -l ~/Library/Application\ Support/Holos/History` shows `dictations.jsonl` as
    `-rw-------`.
 9. **Menu**: the menu bar menu shows **Start Meeting Recording…** first (red symbol, bold),
-   dictation's state only when it is not ready, Copy Result only while a result is kept,
+   dictation's state only when it is not ready, Copy Result (and Copy Original when a fix
+   changed it) only while a result is kept,
    Open Voice is Local ⌘0, and Quit. While a meeting records, **Stop and Save…** (red,
    bold) comes right after its state, then Pause. Check for Updates… is in the app's
    Voice is Local menu.
@@ -362,10 +363,12 @@ unless Settings says otherwise ([Main window and history](#main-window-and-histo
 
 ## Corrections
 
-History's **Correct…** on the last dictation opens the main window's Corrections section
-with the transcript as Voice is Local wrote it (on an older dictation, with that one).
+Corrections opens with the last dictation as Voice is Local wrote it, and shows a newer one
+each time it opens unless you have edits not learned yet; History's **Correct…** opens it
+with the chosen dictation instead.
 With **Fix misheard words with Apple Intelligence** on, that is the fixed text, so
-learning picks up only your own edits; History's **Copy As Heard** still has the
+learning picks up only your own edits; **Copy Original (As Heard)** in the menu while the
+result is kept, or Copy As Heard in History, still has the
 text as recognized.
 Fix misheard words there and choose **Learn Corrections**; Voice is Local compares the two
 versions and keeps short word swaps (up to a few words; insertions, deletions, and

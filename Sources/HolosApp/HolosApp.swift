@@ -333,8 +333,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     /// The menu bar menu, for when a call starts and the window is not at hand (docs/design.md "Menu bar menu"): the
     /// meeting's Start or Stop and Save first, set apart; dictation's state only when it is not simply ready, with
-    /// Cancel Dictation while it runs and Copy Result for a dictation that could not be written; then Open Voice is
-    /// Local and Quit. Everything else is in the window.
+    /// Cancel Dictation while it runs, and Copy Result (and Copy Original) while a result is kept; then Open Voice
+    /// is Local and Quit. Everything else is in the window.
     func rebuildMenu() {
         guard statusItem != nil else { return }
         let menu = NSMenu()
@@ -348,6 +348,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         if isBusy { menu.addItem(item("Cancel Dictation", #selector(cancelDictation))) }
         if !retention.kept.text.isEmpty { menu.addItem(item("Copy Result", #selector(copyResult))) }
+        // The text as heard when a fix changed it; a cancelled dictation, or any with History off, has no record.
+        if !retention.kept.original.isEmpty { menu.addItem(item("Copy Original (As Heard)", #selector(copyOriginal))) }
         addWindowItems(to: menu)
         menu.addItem(.separator())
         menu.addItem(item("Quit Voice is Local", #selector(quit)))
@@ -1121,11 +1123,19 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self?.replaceCorrection(old, with: new, resolving: edit) ?? false
             },
             wordList: makeWordListView(),
-            onShow: { [weak self] in self?.refreshWordList() })
+            onShow: { [weak self] in self?.correctionsShown() })
         pane.wordListView.update(entries: wordList.entries, problem: wordListProblem)
         pane.load(transcript: lastTranscript, recognized: lastRecognized, dictation: lastTranscriptID,
-                  title: "Last dictation — fix any misheard words, then Learn", corrections: corrections.entries)
+                  title: CorrectionsPane.lastDictationTitle, corrections: corrections.entries, followsLast: true)
         return pane
+    }
+
+    /// Corrections shown, or its window back in front: the word list, and a newer last dictation in the box.
+    private func correctionsShown() {
+        refreshWordList()
+        (mainWindow?.existingController(for: .corrections) as? CorrectionsPane)?.showLast(
+            transcript: lastTranscript, recognized: lastRecognized, dictation: lastTranscriptID,
+            corrections: corrections.entries)
     }
 
     /// Learns from `edited` against `original`, the text it was edited from as recognized (the last dictation's
@@ -1344,6 +1354,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         guard !retention.kept.text.isEmpty else { return }
         let copied = copyToClipboard(retention.kept.text)
         show(copied ? "Copied — paste where you choose" : "Clipboard write failed; result is still available")
+    }
+
+    @objc private func copyOriginal() {
+        guard !retention.kept.original.isEmpty else { return }
+        let copied = copyToClipboard(retention.kept.original)
+        show(copied ? "Copied the text as heard, before any fixes" : "Clipboard write failed; the original is still available")
     }
 
     @objc private func discardResult() {
