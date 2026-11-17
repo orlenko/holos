@@ -206,8 +206,7 @@ release_dir=$PWD/build/release
 dmg=$release_dir/VoiceIsLocal-$version.dmg
 # A plain assignment, so a gh failure stops the script under set -e.
 # With --no-publish too: a rebuild would delete a published DMG and its signed appcast.
-published_digest=
-! command -v gh >/dev/null || published_digest=$(github_dmg_digest)
+published_digest=$(github_dmg_digest)
 if built; then
     step "VoiceIsLocal-$version.dmg is built, notarized and stapled; not building it again"
 elif [ -n "$published_digest" ]; then
@@ -231,8 +230,9 @@ site_publisher=${SITE_PUBLISHER:-$(cd .. && pwd)/voiceislocal.com/scripts/publis
 
 # Before tagging or building: what publishing needs is here.
 check_publishing() {
+    # Also without publishing: gh tells whether the DMG is already on GitHub, which must never be rebuilt.
+    command -v gh >/dev/null || fail "The GitHub CLI (gh) is needed to build and publish a release; install it first."
     [ "$publish" = yes ] || return 0
-    command -v gh >/dev/null || fail "The GitHub CLI (gh) publishes the release; install it, or pass --no-publish."
     [ -x "$site_publisher" ] \
         || fail "No website publisher at $site_publisher; clone orlenko/voiceislocal.com next to this clone, set SITE_PUBLISHER, or pass --no-publish."
     if [ -n "$notes" ]; then
@@ -370,7 +370,7 @@ publish_cask() {
         || printf 'release: merging the cask pull request failed (above); checking the cask anyway.\n' >&2
     live=$(gh api repos/orlenko/homebrew-tap/contents/Casks/voiceislocal.rb --jq .content) \
         || fail "Reading the cask back from orlenko/homebrew-tap failed; run this again."
-    live=$(printf '%s' "$live" | base64 -d)
+    live=$(printf '%s' "$live" | base64 -d) || fail "The cask read back from orlenko/homebrew-tap is not valid base64."
     printf '%s\n' "$live" | grep -Fq "  sha256 \"$sha\"" \
         || fail "The cask pull request for $version is not merged; merge it on orlenko/homebrew-tap and run this again."
     printf '    merged: version %s, sha256 %s\n' "$version" "$sha"
