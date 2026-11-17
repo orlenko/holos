@@ -223,11 +223,11 @@ list`. Only voices whose recordings allow commercial use are offered; credits ar
 and THIRD_PARTY_NOTICES.md.
 
 Readings are made one at a time, Apple's voices in the app itself and natural voices in its
-bundled `voiceislocal` helper; the list shows each one's title and
-source, then "Rendering part N of M" with a progress bar and **Stop**, or, once made, its
-length, chapters, size and voice with **▶ Play** (Space; shows the position), **Share…**
-(⇧⌘S: AirDrop, Messages, Mail…), **Show in Finder**, and **Delete…** (⌫, asks first; the
-file goes to the Trash). A stopped or failed reading keeps what it rendered and offers
+bundled `voiceislocal` helper; the list shows each one's title and where it came from, then
+"Making · part N of M" with a progress bar and **Stop**, or, once made, its length, chapters
+and voice with **▶ Play** (Space; shows the position), **Show Text** and **Share…** (⇧⌘S:
+AirDrop, Messages, Mail…); **Show in Finder**, **Chapter Files…** and **Delete…** (⌫, asks
+first; the file goes to the Trash) are under **···** and on a right-click. A stopped or failed reading keeps what it rendered and offers
 **Resume** or **Try Again**. The list survives relaunching (an index in Application
 Support/Holos/ReadingLibrary); a file moved or deleted in Finder shows as such. Quitting
 while a reading is made asks: **Keep Rendering** quits and continues it at the next launch,

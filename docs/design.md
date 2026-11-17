@@ -362,7 +362,7 @@ its width goes down to 400 points with the sidebar hidden (the section's minimum
 601 with it shown (the sidebar's 200, the divider, and the section's 400). Every section
 fits 400 points: rows of buttons wrap (History), labels truncate or wrap,
 checkbox titles in Settings wrap, People's tables scroll sideways, the live transcript's
-‹ Meetings and Stop and Save… and a reading's Share… and Show in Finder show only their
+‹ Meetings and Stop and Save… and a reading's Show Text and Share… show only their
 symbols. The window
 remembers its frame and sidebar width, and opens from the menu's
 **Open Voice is Local** (⌘0), from History / Meetings / Settings… there, from the main
@@ -656,7 +656,7 @@ rendered, and kept until the reading is deleted, so Resume and Try Again read th
 without fetching the page again, and **Show Text** shows it; a document that cannot be saved,
 or a saved one that cannot be read back, fails the reading rather than loading the source again.
 
-**Chapter Files…**, on a made reading with chapters, asks for a folder (the last one chosen is offered again, such as one
+**Chapter Files…** (under ··· on a made reading with chapters) asks for a folder (the last one chosen is offered again, such as one
 that syncs to a phone) and makes a folder there named after the reading: one `.m4a` per chapter, `01 Chapter Name.m4a`,
 tagged with the chapter and the reading's title, and `Playlist.m3u8` (`ReadingChapterFiles`; `voiceislocal read
 --chapter-files`, beside the finished file). The audio is copied from the finished file without encoding it again. It is
@@ -718,19 +718,24 @@ the other readings' outputs through their folders' links resolved, and a name wh
 cache another reading holds (the same text and settings reach the same cache through the
 same file) is never used, so two readings never share, or delete, one file.
 
-Rows show the title and the source (the site without "www.", or the file's name), then:
-waiting (Stop); loading or "Rendering part N of M" with a bar (Stop); joining; made
-(length · chapters · size · voice, and the speed when not 1×) with **▶ Play** (an
+Rows show the title and one detail line, and keep their actions in fixed columns, so they line up down the list
+whichever a row offers: the main action, Show Text, Share… (Stop or Resume for the conversion), and **···** with what
+is seldom needed (Show in Finder, Chapter Files…, Delete…), which a right-click on the row offers too, after the row's
+own actions. The detail line starts with where the reading came from: the site without "www.", the kind of document
+("PDF", "Word", "Markdown"), or the app of a selection; the file's name and size are in its tooltip. Then: waiting
+(Stop); loading, or "Making · part N of M" with a bar, adding "playable from the start" once its first part is made
+(Stop); joining; made (length · chapters · voice, and the speed when not 1×) with **▶ Play** (an
 `AVAudioPlayer` in the app, Space or double-click, one reading at a time; stopped when the
 window closes). The reading loaded in the player has a taller row with a seek bar
-(`ReadingSeekBar`): elapsed time, the bar, the length. Play or Pause stands on that line too, apart from the conversion's Stop Converting
-above it, which leaves what is ready playing; Resume Converting then stops that, and Play is offered again once the
+(`ReadingSeekBar`): elapsed time, the bar, the length. Play or Pause stands on that line too, apart from the conversion's Stop
+above it, which leaves what is ready playing; the conversion's Resume then stops that, and Play is offered again once the
 resumed run has checked its parts. While it plays from its parts the bar moves through what is made ("4:10…" for the
 length so far). The release of a drag seeks, the player does
 not move the knob meanwhile, and ← and → with the row selected (and VoiceOver) move 15 seconds, since a pixel of a long
-book's bar can be nearly a minute. **Show Text** opens the text window (see below); **Share…** (`NSSharingServicePicker`, ⇧⌘S), **Show in Finder**,
-**Delete…**; in a row narrower than 600 points Show Text, Share…, Show in Finder and Delete…
-show only their symbols; failed (the error, **Try Again**); stopped (where, **Resume**). A
+book's bar can be nearly a minute. **Show Text** opens the text window (see below); **Share…** (`NSSharingServicePicker`, ⇧⌘S);
+**Show in Finder** and **Delete…** (⌫) under ···; in a row narrower than 600 points Show Text and Share…
+show only their symbols and the columns take only what they need; failed (the error, **Try Again**); stopped (where,
+**Resume**). A
 made reading whose file is no longer there, or was replaced by another file (its file
 identity, saved when it was made, differs), says so and offers only Delete; Play, Share…,
 and Show in Finder use only that same file (Play reads the file opened and checked, through /dev/fd; Share… hands over a clone or copy made from it). A file's identity is its

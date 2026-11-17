@@ -21,6 +21,22 @@ public enum ReadingSource: Codable, Sendable, Equatable {
         }
     }
 
+    /// Where a reading came from, as the start of its row's detail line: the site, the kind of document ("PDF",
+    /// "Word"), or the app a selection came from. `label` keeps the file's name for the tooltip and VoiceOver.
+    public var kind: String {
+        guard case .file(let url) = self else { return label }
+        switch url.pathExtension.lowercased() {
+        case "pdf": return "PDF"
+        case "doc", "docx": return "Word"
+        case "rtf", "rtfd": return "Rich text"
+        case "odt": return "OpenDocument"
+        case "md", "markdown": return "Markdown"
+        case "html", "htm": return "Web page"
+        case "txt", "text", "": return "Text"
+        case let other: return other.uppercased()
+        }
+    }
+
     /// The name the file gets when the document has no title: the site, or the file's name without its extension.
     public var fallbackName: String {
         switch self {
