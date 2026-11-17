@@ -67,7 +67,8 @@ security find-identity -v -p codesigning | grep -Fq "\"$developer_id\"" \
 # The tag must carry the public key of this Mac's Sparkle key, or no build of it could ever update an installed app.
 public_ed_key=$(plutil -extract SUPublicEDKey raw -o - "$app_plist" 2>/dev/null) \
     || fail "$app_plist has no SUPublicEDKey; create the Sparkle key as docs/release.md \"Updates\" says."
-generate_keys=.build/artifacts/sparkle/Sparkle/bin/generate_keys
+sparkle_bin=$PWD/.build/artifacts/sparkle/Sparkle/bin
+generate_keys=$sparkle_bin/generate_keys
 [ -x "$generate_keys" ] || fail "$generate_keys is missing; run swift build once to fetch the Sparkle package."
 keychain_ed_key=$("$generate_keys" -p) \
     || fail "No Sparkle signing key in this Mac's keychain; create it (or import its backup) as docs/release.md \"Updates\" says."
@@ -223,23 +224,38 @@ check_publishing() {
 }
 
 # This version's finished build: the DMG with its notarization ticket stapled, and the appcast release-app.sh writes
-# last, offering this DMG at its length.
+# last, offering this DMG at its length and signed with the Sparkle key (a run that stopped before signing it is not
+# finished).
 built() {
     [ -f "$dmg" ] && [ -f "$release_dir/appcast.xml" ] || return 1
     grep -Fq "/VoiceIsLocal-$version.dmg\"" "$release_dir/appcast.xml" || return 1
     grep -Fq "length=\"$(stat -f %z "$dmg")\"" "$release_dir/appcast.xml" || return 1
-    xcrun stapler validate -q "$dmg" >/dev/null 2>&1
+    xcrun stapler validate -q "$dmg" >/dev/null 2>&1 || return 1
+    "$sparkle_bin/sign_update" --verify "$release_dir/appcast.xml" >/dev/null 2>&1
 }
 
 dmg_sha() {
     shasum -a 256 "$dmg" | awk '{print $1}'
 }
 
-# The GitHub release: the notes' "What's new", then how to install, with the DMG attached.
+# The GitHub release: the notes' "What's new", then how to install, with the DMG attached. A release an earlier run
+# left as a draft, or without the DMG, is finished here.
 publish_github() {
     step "GitHub release v$version"
-    if gh release view "v$version" >/dev/null 2>&1; then
-        printf '    already published\n'
+    if state=$(gh release view "v$version" --json isDraft,assets \
+        --jq "[.isDraft, ([.assets[] | select(.name == \"VoiceIsLocal-$version.dmg\") | .digest] | first // \"\")] | @tsv" \
+        2>/dev/null); then
+        draft=$(printf '%s' "$state" | cut -f1)
+        digest=$(printf '%s' "$state" | cut -f2)
+        if [ -z "$digest" ]; then
+            gh release upload "v$version" "$dmg" || fail "Uploading the DMG to the GitHub release failed; run this again."
+        elif [ "$digest" != "sha256:$(dmg_sha)" ]; then
+            fail "The GitHub release v$version has a different VoiceIsLocal-$version.dmg ($digest)."
+        fi
+        if [ "$draft" = true ]; then
+            gh release edit "v$version" --draft=false >/dev/null || fail "Publishing the draft release failed; run this again."
+        fi
+        printf '    published\n'
         return 0
     fi
     # The site's checks first, the notes' Markdown included, so a release it would refuse is not published anywhere.
