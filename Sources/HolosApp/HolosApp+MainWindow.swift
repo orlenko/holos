@@ -157,7 +157,6 @@ extension HolosAppDelegate {
 
     @objc func showSettingsFromMenu(_ sender: Any?) { showSetup() }
 
-
     /// ⌘F: the section's search field, while the main window is key.
     @objc func focusSearch(_ sender: Any?) {
         guard let mainWindow, mainWindow.isKey, mainWindow.focusSearch() else {

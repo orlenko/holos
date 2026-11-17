@@ -25,7 +25,7 @@ clipboard. Launch with `open` only when ready for an interactive test.
 On first launch, the Setup Assistant opens (run it again with **Run Setup Assistant…**
 in Settings); its checks are under [Setup Assistant](#setup-assistant) below. Later
 launches, and **Skip — Show All Settings**, open the main window on **Settings**
-(**Settings…** ⌘, in the menu). Use its Permissions card to grant Microphone and
+(**Settings…** ⌘, in the app's Voice is Local menu, or the window's sidebar). Use its Permissions card to grant Microphone and
 Accessibility access explicitly (Input Monitoring is not needed; its row appears only if
 macOS refuses the hold-to-talk key with Accessibility on); in the Dictation card pick the
 **Dictation language** (English (Canada) by default; Russian, Ukrainian and the other
@@ -33,7 +33,7 @@ languages only Apple's dictation recognizer has are listed too) and the hold-to-
 install Apple's speech model for the language; each row updates live, and its button
 opens the matching System Settings pane. A new language applies from the next dictation;
 when its model is missing, dictation turns off until it is installed. The asset action
-may download Apple's model. Then turn dictation on in Settings or the menu. The default user-selectable shortcut is **Right Option**;
+may download Apple's model. Then turn dictation on in Settings. The default user-selectable shortcut is **Right Option**;
 **Control–Option–Space** is the alternate. Once enabled, hold the chosen shortcut,
 wait for “Listening” in the non-activating preview, speak, then release. Releasing
 during startup produces a retry message instead of a partial insertion. Esc or
@@ -352,8 +352,8 @@ History audio is encoded to disk as it arrives; transcript text and History audi
 still grow with the dictation. Removing the cutoff does not guarantee recovery
 from every missed key-release event: use Escape or Cancel Dictation if needed.
 The overlay hides eight seconds after a result, but its text remains
-in app memory and the menu's Copy/Discard actions for up to ten minutes (unless
-replaced, discarded, or the app quits). Only a later dictation that produces a
+in app memory and the menu's Copy actions for up to ten minutes (unless
+replaced or the app quits). Only a later dictation that produces a
 result replaces it: recognized text, or text left unwritten. A press that is
 cancelled, released before Listening, or recognizes nothing leaves the earlier
 result, its menu items and its ten-minute expiry as they were. The system clipboard is overwritten only when

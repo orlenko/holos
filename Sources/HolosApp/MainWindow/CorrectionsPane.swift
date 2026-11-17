@@ -193,8 +193,6 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
     /// recognized, before corrections). `dictation` is its ID and `title` says which dictation it is.
     func load(transcript: String, recognized: String, dictation: UUID?, title: String, corrections: [Correction]) {
         transcriptView.string = transcript
-        // Swaps declined for the text the box held were offered against it; they would misread the new one.
-        declined = DeclinedCorrectionQueue()
         baseline = recognized
         self.dictation = dictation
         transcriptHeading.stringValue = title

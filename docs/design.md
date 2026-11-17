@@ -475,7 +475,7 @@ The menu bar menu is for when a call starts and the window is not at hand, so it
 - Dictation's state only when it is not simply ready (off, starting, dictating), Cancel Dictation while one runs, and
   **Copy Result** while a result is kept, with **Copy Original (As Heard)** when a fix changed it (a cancelled dictation, or any
   with History off, has no History record to copy it from).
-- **Open Voice is Local** (⌘0), Stop Reading Aloud while the shortcut's reading plays, and **Quit**.
+- Stop Reading Aloud while the shortcut's reading plays, **Open Voice is Local** (⌘0), and **Quit**.
 
 Everything else is in the window: dictation's switch in Settings, correcting a dictation in History or Corrections
 (its **Last Dictation** button puts the newest dictation since launch in the box, History off or on),

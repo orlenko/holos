@@ -184,7 +184,7 @@ timeline and a larger local-model benchmark are follow-ups.
   can no longer be recomputed is removed, with a note on stderr; one from an earlier
   labelling of the meeting is kept until new labels replace it). `people list [--json]`,
   `rename`, `merge`, `forget` (a person, one sample, a meeting's samples, or `--all`), and
-  `export [--include-voiceprints]` manage them; People… in the menu does the same.
+  `export [--include-voiceprints]` manage them; People in the main window does the same.
   Forgetting cleans the meetings in the sessions folder, not sessions kept elsewhere with
   `--directory`. A forget is journalled first and finished at the next app launch or
   `people`, `speakers`, or `session` command if Voice is Local stops midway. Known people's names
@@ -523,8 +523,9 @@ timeline and a larger local-model benchmark are follow-ups.
   former windows' contents hosted as sections; Settings replaces the Setup window
   (Permissions, Dictation, Meetings, Reading, Dictation history, Run Setup Assistant…), and every
   "Setup…" path opens it. The menu bar menu holds only Start Meeting Recording… (or Stop and
-  Save…, Pause and Add Marker…), dictation's state when it is not ready, Copy Result, Open Voice is Local
-  and Quit; everything else is in the window. The Setup Assistant, the
+  Save…, Pause and Add Marker…), dictation's state when it is not ready, Cancel Dictation,
+  Copy Result and Copy Original, Stop Reading Aloud, Open Voice is Local and Quit; everything
+  else is in the window. The Setup Assistant, the
   meeting start panel, Review, and the dictation preview stay separate windows. Built and
   compiled only: nothing of the main window has been seen on screen yet.
 - Settings chapters and search (docs/design.md "Main window"): the sidebar lists Settings'
