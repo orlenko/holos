@@ -353,7 +353,7 @@ still grow with the dictation. Removing the cutoff does not guarantee recovery
 from every missed key-release event: use Escape or Cancel Dictation if needed.
 The overlay hides eight seconds after a result, but its text remains
 in app memory and the menu's Copy actions for up to ten minutes (unless
-replaced or the app quits). Only a later dictation that produces a
+replaced, cleared when the Mac sleeps or the session changes, or the app quits). Only a later dictation that produces a
 result replaces it: recognized text, or text left unwritten. A press that is
 cancelled, released before Listening, or recognizes nothing leaves the earlier
 result, its menu items and its ten-minute expiry as they were. The system clipboard is overwritten only when

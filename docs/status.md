@@ -386,7 +386,7 @@ timeline and a larger local-model benchmark are follow-ups.
   checked by hand on a signed build on 2026-11-01.
   It never synthesizes Return and never pastes. Text it could not write (target
   changed, safety check failed, unverified write, forced stop) is kept for Copy Result
-  or Discard in the menu; it is never put on the clipboard automatically, since
+  in the menu; it is never put on the clipboard automatically, since
   dictation can be sensitive. The kept result is replaced only by a later dictation that
   produces text; a press that is cancelled, released before listening, or recognizes
   nothing leaves it and its ten-minute expiry in place. See

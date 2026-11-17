@@ -567,7 +567,7 @@ CLI and the in-process app run the same lifecycle.
 
 **Concurrent dictation (decision 6, revised).** A meeting never cancels, disables,
 re-enables, or restores dictation. Its hotkey, enable toggle, shortcut settings,
-Copy/Discard and corrections remain available throughout the meeting lifecycle,
+Copy Result and corrections remain available throughout the meeting lifecycle,
 including when following a recorder started elsewhere. No dictation markers are
 written. Sleep/session changes still cancel the utterance and disable the hotkey
 monitor without changing the saved enable preference. Meeting resume/save does
