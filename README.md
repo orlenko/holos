@@ -88,7 +88,7 @@ See the [dictation validation guide](docs/dictation-validation.md) before relyin
 on insertion into other apps.
 
 The app also records meetings from the menu bar: **Start Meeting Recording…**, then
-Pause, Add Marker, Show Live Transcript, and **Stop and Save…**. Every meeting records
+**Stop and Save…** or Pause. Every meeting records
 the system default microphone and everything the Mac plays (the other side of a call, a
 video), and labels speakers on both. There is no meeting type to choose. The System
 audio row in Settings › Permissions grants the permission for the computer's audio;
@@ -146,8 +146,7 @@ They are never added automatically. Nearby OCR can support an existing word-list
 question, but is not proof that a term was spoken. Delete Audio removes both snapshots
 and their OCR. A thumbnail timeline is not implemented yet.
 
-**Review…** in Meetings (or double-clicking a labelled meeting, or the
-**Name Speakers — <name>…** line the menu shows after a meeting) opens the review window:
+**Review…** in Meetings (or double-clicking a labelled meeting) opens the review window:
 speakers on the left (a name field that suggests known people, talk time, the start of
 their longest turns, Play samples, This is me, Merge into…, and "Maybe Maria" suggestions to
 confirm or reject, or Confirm All at once), turns on the right (a time button that plays
@@ -190,10 +189,10 @@ icon brings the window back. Settings › General › **Appearance** keeps every
 Local window, the dictation preview included, light or dark whatever macOS uses, or
 follows macOS (System, the default).
 
-The menu bar menu is short: the status line, the dictation toggle, Copy Result / Copy
-Original / Discard Result while a result is kept, Correct Last Dictation…, the meeting
-lines, then Open Voice is Local, History, Meetings, Settings…, About, and Quit. The
-dictation language and shortcut are chosen in Settings.
+The menu bar menu is short, for when a call starts: **Start Meeting Recording…** (or,
+while recording, **Stop and Save…** and Pause), dictation's state when it is not ready,
+Copy Result for a dictation that could not be written, **Open Voice is Local**, and Quit.
+Everything else is in the window; Check for Updates… is in its Voice is Local menu.
 
 ### Reading
 

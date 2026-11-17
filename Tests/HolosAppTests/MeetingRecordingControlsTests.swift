@@ -36,23 +36,22 @@ struct MeetingRecordingControlsTests {
 
     /// Each recorder phase while the meeting is active, as the menu bar always offered them.
     @Test(arguments: [
-        // phase, pause, pause enabled, marker enabled, stop enabled
-        (RecorderPhase.recording, MeetingRecordingControls.Pause.pause, true, true, true),
-        (.waiting, .pause, true, true, true),
-        (.paused, .resume, true, true, true),
-        (.sleeping, .pause, false, true, true),
-        (.unknown, .pause, false, true, true),
-        (.starting, .pause, false, false, true),
-        (.stopping, .pause, false, false, false),
+        // phase, pause, pause enabled, stop enabled
+        (RecorderPhase.recording, MeetingRecordingControls.Pause.pause, true, true),
+        (.waiting, .pause, true, true),
+        (.paused, .resume, true, true),
+        (.sleeping, .pause, false, true),
+        (.unknown, .pause, false, true),
+        (.starting, .pause, false, true),
+        (.stopping, .pause, false, false),
     ])
     func anActiveMeetingFollowsTheMenuBarRules(phase: RecorderPhase, pause: MeetingRecordingControls.Pause,
-                                               pauseEnabled: Bool, markerEnabled: Bool, stopEnabled: Bool) {
+                                               pauseEnabled: Bool, stopEnabled: Bool) {
         let controls = MeetingRecordingControls(state: Self.active(phase), stopRequested: false,
                                                 stoppedWhileStarting: false)
         #expect(controls.sessionID == Self.id)
         #expect(controls.pause == pause)
         #expect(controls.pauseEnabled == pauseEnabled)
-        #expect(controls.markerEnabled == markerEnabled)
         #expect(controls.stop == .stopAndSave)
         #expect(controls.stop?.title == "Stop and Save…")
         #expect(controls.stopEnabled == stopEnabled)

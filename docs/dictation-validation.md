@@ -129,11 +129,11 @@ recording), then:
    empties the list; `voiceislocal history list` prints "No dictations in the history."
    `ls -l ~/Library/Application\ Support/Holos/History` shows `dictations.jsonl` as
    `-rw-------`.
-9. **Menu**: the menu bar menu shows the status line, the dictation toggle, Copy Result /
-   Copy Original / Discard Result only while a result is kept, Correct Last Dictation…
-   (opens Corrections with the last dictation), the meeting lines, Open Voice is Local
-   ⌘0, History, Meetings, Settings… ⌘,, About, and Quit. The language and shortcut are
-   changed in Settings, not the menu.
+9. **Menu**: the menu bar menu shows **Start Meeting Recording…** first (red symbol, bold),
+   dictation's state only when it is not ready, Copy Result only while a result is kept,
+   Open Voice is Local ⌘0, and Quit. While a meeting records, **Stop and Save…** (red,
+   bold) comes right after its state, then Pause. Check for Updates… is in the app's
+   Voice is Local menu.
 10. **Hosted sections**: Meetings (Review…, Recover…, Quick Look of a transcript, Save
     Transcript As… as a sheet, Delete Meeting… with ⌫) and People (Rename…, Merge,
     Forget…) behave as their windows did. While a meeting records or is processed (by
@@ -330,8 +330,8 @@ units and abbreviations. French dictation removes "euh", "heu", "hum", "hmm", an
 "tsé", which carry meaning. Other languages keep every word.
 
 The first refusal stops writing for the rest of that utterance. Text already
-written stays in place, and the unwritten remainder is kept for **Copy Result** or
-**Discard Result** in the menu. Voice is Local never puts dictated text on the
+written stays in place, and the unwritten remainder is kept for **Copy Result** in the
+menu until it expires or the next dictation replaces it. Voice is Local never puts dictated text on the
 clipboard by itself (dictation can be sensitive, even a password) and never pastes;
 only choosing Copy Result or Copy Original writes the clipboard. The same applies to committed words
 left unwritten when an utterance fails. If the
@@ -362,11 +362,10 @@ unless Settings says otherwise ([Main window and history](#main-window-and-histo
 
 ## Corrections
 
-**Correct Last Dictation…** in the menu opens the main window's Corrections section with
-the last transcript as Voice is Local wrote it (History's **Correct…** opens it with the
-chosen dictation instead).
+History's **Correct…** on the last dictation opens the main window's Corrections section
+with the transcript as Voice is Local wrote it (on an older dictation, with that one).
 With **Fix misheard words with Apple Intelligence** on, that is the fixed text, so
-learning picks up only your own edits; **Copy Original (As Heard)** still has the
+learning picks up only your own edits; History's **Copy As Heard** still has the
 text as recognized.
 Fix misheard words there and choose **Learn Corrections**; Voice is Local compares the two
 versions and keeps short word swaps (up to a few words; insertions, deletions, and

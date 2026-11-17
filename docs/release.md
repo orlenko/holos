@@ -286,7 +286,7 @@ The app updates itself with [Sparkle](https://sparkle-project.org) 2.10.0 (`Holo
   second asks once, "Check for updates automatically?" (`UpdateCheckConsent`). With a yes, Sparkle downloads
   `SUFeedURL` (`https://voiceislocal.com/downloads/appcast.xml`) about once a day, with a User-Agent that names the
   app and its version. Sparkle's system profile is off (`SUEnableSystemProfiling`). The DMG downloads only when the
-  user chooses to install the update it offers. Check for Updates… in the menu bar menu works whatever the answer;
+  user chooses to install the update it offers. Check for Updates… in the app's Voice is Local menu works whatever the answer;
   Settings › General › "Check for updates automatically" changes it.
 - **What it trusts.** The app accepts an appcast only with a valid signature (`SURequireSignedFeed`), and an update
   only when the DMG's EdDSA signature matches `SUPublicEDKey` (checked before the DMG is opened,

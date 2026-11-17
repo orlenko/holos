@@ -464,11 +464,21 @@ selected. Escape keeps `AppKeyboard`'s rule
 are standard AppKit controls with semantic colours, so light and dark mode, Full
 Keyboard Access, and VoiceOver work without custom handling.
 
-The menu bar menu keeps what is needed without the window: the status line, the
-dictation toggle (and Cancel Dictation while one runs), Copy Result / Copy Original /
-Discard Result while a result is kept, Correct Last Dictation…, the meeting block, then
-Open Voice is Local, History, Meetings, Settings…, About, and Quit. The language and
-shortcut submenus moved to Settings.
+### Menu bar menu
+
+The menu bar menu is for when a call starts and the window is not at hand, so it keeps only what is needed then:
+
+- **Start Meeting Recording…** first, with a red record symbol and bold type so it is found at a glance. While a meeting
+  records: its state and clock, then **Stop and Save…** (a red stop symbol, bold), then Pause or Resume Recording.
+  The microphone and live transcription are in the state line's tooltip; a transcription falling behind and the
+  recorder's warnings get their own lines.
+- Dictation's state only when it is not simply ready (off, starting, dictating), Cancel Dictation while one runs, and
+  **Copy Result** for a dictation that could not be written.
+- **Open Voice is Local** (⌘0), Stop Reading Aloud while the shortcut's reading plays, and **Quit**.
+
+Everything else is in the window: dictation's switch in Settings, correcting a dictation and Copy As Heard in History,
+the live transcript, markers and naming speakers in Meetings, About and **Check for Updates…** in the app's Voice is
+Local menu. A meeting waiting for names still shows a dot beside the menu bar icon.
 
 ### Live transcript
 
@@ -479,7 +489,7 @@ phases; `MeetingOpenPolicy.ordered`, `LiveMeetingPhase`). A meeting recorded by 
 the Open button) opens the meeting inside the main window. Recording, processing, and saved
 meetings share that entry point and the same Back to Meetings button. A meeting with usable
 speaker labels shows the editable review there; other meetings show their transcript and
-processing status. The menu bar's Show Live Transcript… opens the same meeting screen.
+processing status.
 
 The live transcript (`LiveMeetingViewController`) replaces the list inside Meetings: a
 header with ‹ Meetings (also Escape) back to the list (the meeting stays selected), the
@@ -1127,7 +1137,7 @@ touched only by the user's Copy or Copy As Heard (History) and Copy Result / Cop
 Original (menu). History's Correct… opens Corrections with that dictation: the last one
 is compared with its text as recognized, as before; an older one with its text as
 written, the only form History keeps. Corrections knows which dictation it holds by ID,
-so learning from an older one never replaces what Correct Last Dictation opens, even
+so learning from an older one never replaces what Correct… on the last dictation opens, even
 when the two have the same text.
 
 The History section (`HistoryPane`) shows the list (a search field, "Search dictations",

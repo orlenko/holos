@@ -37,12 +37,11 @@ struct MeetingRecordingControls: Equatable {
     var stopEnabled = false
     var pause: Pause?
     var pauseEnabled = false
-    var markerEnabled = false
 
     static let none = MeetingRecordingControls()
 
     /// The controls of `state`. Starting: Stop Recording until it was asked for. Recording: Pause (while recording or
-    /// waiting for audio) or Resume (paused), Add Marker… once the recorder started, and Stop and Save… until the
+    /// waiting for audio) or Resume (paused), and Stop and Save… until the
     /// recorder stops or a stop was asked for (`MeetingReducer.stopRequested`). Saving, failed, idle: none.
     init(state: MeetingState, stopRequested: Bool, stoppedWhileStarting: Bool) {
         switch state {
@@ -60,7 +59,6 @@ struct MeetingRecordingControls: Equatable {
                 pause = .pause
                 pauseEnabled = status.phase == .recording || status.phase == .waiting
             }
-            markerEnabled = !stopping && status.phase != .starting
             stop = .stopAndSave
             stopEnabled = !stopping && !stopRequested
         case .idle, .finishing, .failed:
