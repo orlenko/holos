@@ -22,7 +22,7 @@ public enum MeetingActionPolicy {
         guard let summary else { return [] }
         var actions: Set<Action> = [.showInFinder]
         if hasExport { actions.insert(.openTranscript) }
-        if renameRefusal(summary) == nil { actions.insert(.rename) }
+        if renames(summary) { actions.insert(.rename) }
         guard !inUse else { return actions }
         if summary.transcriptID != nil { actions.insert(.saveTranscript) }
         guard !isLive(summary) else { return actions }
@@ -34,7 +34,8 @@ public enum MeetingActionPolicy {
         return actions
     }
 
-    /// Naming is independent of recording and processing; it needs a readable meeting and naming metadata.
+    /// Naming is independent of recording and processing; it needs a readable meeting and naming metadata. `enabled`
+    /// and the Meetings list's row tooltip both use it; it reads only the summary.
     public static func renames(_ summary: SessionSummary) -> Bool {
         renameRefusal(summary) == nil
     }
