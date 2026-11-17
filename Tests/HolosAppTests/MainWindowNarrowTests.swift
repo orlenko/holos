@@ -762,6 +762,7 @@ struct MainWindowNarrowTests {
                                      onSetHeardAs: { _, _ in "" })
             let pane = CorrectionsPane(onLearn: { _, _, _ in nil }, onAdd: { _, _ in true }, onRemove: { _ in true },
                                        onReplace: { _, _, _ in true }, wordList: words, onShow: {})
+            pane.onLoadLast = { true }  // Last Dictation shown, so its row is checked at every width
             pane.load(transcript: "the budget looks fine", recognized: "the budget looks fine", dictation: nil,
                       title: "Last dictation — fix any misheard words, then Learn", corrections: [])
             return pane

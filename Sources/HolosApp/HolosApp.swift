@@ -251,7 +251,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Voice is Local")
         statusItem.button?.toolTip = "Voice is Local — local push-to-talk"
         rebuildMenu()
-        AppKeyboard.install { [weak self] in self?.isBusy ?? false }
+        AppKeyboard.install(checkForUpdates: updates.available) { [weak self] in self?.isBusy ?? false }
         let center = NSWorkspace.shared.notificationCenter
         observers += DictationSessionNotifications.observe(center) { [weak self] reason, suspending in
             self?.dictationSessionChanged(reason, suspending: suspending)
@@ -331,42 +331,27 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     var shortcutTitle: String { shortcut == .rightOption ? "Right Option" : "Control–Option–Space" }
 
-    /// Copy Result, Copy Original and Discard Result for the last dictation that produced a result.
-    private func addResultItems(to menu: NSMenu) {
-        let copy = item("Copy Result", #selector(copyResult))
-        copy.isEnabled = !retention.kept.text.isEmpty
-        menu.addItem(copy)
-        if !retention.kept.original.isEmpty {
-            menu.addItem(item("Copy Original (As Heard)", #selector(copyOriginal)))
-        }
-        let discard = item("Discard Result", #selector(discardResult))
-        discard.isEnabled = !retention.kept.isEmpty && !isBusy
-        menu.addItem(discard)
-    }
-
-    /// The menu bar menu: the dictation status and toggle, the kept result's Copy items, the meeting block, then the
-    /// main window's items (docs/design.md "Main window"). The language and shortcut are chosen in Settings.
+    /// The menu bar menu, for when a call starts and the window is not at hand (docs/design.md "Menu bar menu"): the
+    /// meeting's Start or Stop and Save first, set apart; dictation's state only when it is not simply ready, with
+    /// Cancel Dictation while it runs, and Copy Result (and Copy Original) while a result is kept; then Open Voice
+    /// is Local and Quit. Everything else is in the window.
     func rebuildMenu() {
         guard statusItem != nil else { return }
         let menu = NSMenu()
         menu.autoenablesItems = false
         menu.delegate = self
-        let status = NSMenuItem(title: message, action: nil, keyEquivalent: "")
-        status.isEnabled = false
-        menu.addItem(status)
-        let toggle = item("\(enabled ? "Disable" : "Enable") \(shortcutTitle) Dictation", #selector(toggleEnabled))
-        toggle.state = enabled ? .on : .off
-        toggle.isEnabled = !enabling && !installingAssets
-        menu.addItem(toggle)
-        if isBusy { menu.addItem(item("Cancel Dictation", #selector(cancelDictation))) }
-        if !retention.kept.isEmpty { addResultItems(to: menu) }
-        menu.addItem(item("Correct Last Dictation…", #selector(showCorrections)))
-        menu.addItem(.separator())
         addMeetingItems(to: menu)
+        if !enabled || enabling || installingAssets || isBusy {
+            let status = NSMenuItem(title: message, action: nil, keyEquivalent: "")
+            status.isEnabled = false
+            menu.addItem(status)
+        }
+        if isBusy { menu.addItem(item("Cancel Dictation", #selector(cancelDictation))) }
+        if !retention.kept.text.isEmpty { menu.addItem(item("Copy Result", #selector(copyResult))) }
+        // The text as heard when a fix changed it; a cancelled dictation, or any with History off, has no record.
+        if !retention.kept.original.isEmpty { menu.addItem(item("Copy Original (As Heard)", #selector(copyOriginal))) }
         addWindowItems(to: menu)
         menu.addItem(.separator())
-        addAboutItem(to: menu)
-        addUpdateItem(to: menu)
         menu.addItem(item("Quit Voice is Local", #selector(quit)))
         statusItem.menu = menu
         statusItem.button?.toolTip = meetingToolTip() ?? "Voice is Local — \(message)"
@@ -381,7 +366,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
-    @objc private func toggleEnabled() {
+    /// Settings' dictation switch.
+    private func toggleEnabled() {
         if enabled {
             enableWhenSpeechModelInstalled = false  // the user turned it off: a pending install must not turn it on
             disable()
@@ -848,7 +834,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             // What Holos wrote or tried to write: the fixed chunks, then the fix of the rest.
             let fixed = pipeline.written + (attempted ?? "")
             if let final = AIFixTranscript.final(written: pipeline.written, rest: attempted) {
-                // Correct Last Dictation opens exactly what was written and learns only the speaker's own edits
+                // Correct… on the last dictation opens exactly what was written and learns only the speaker's own edits
                 // from it, not Apple Intelligence's. Copy Original keeps the text as heard.
                 lastTranscript = final
                 lastRecognized = final
@@ -1113,14 +1099,6 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         historyAudio = nil
     }
 
-    /// "Correct Last Dictation…": the main window's Corrections section with the last dictation.
-    @objc private func showCorrections() {
-        showMainWindow(.corrections)
-        (mainWindow?.existingController(for: .corrections) as? CorrectionsPane)?.load(
-            transcript: lastTranscript, recognized: lastRecognized, dictation: lastTranscriptID,
-            title: "Last dictation — fix any misheard words, then Learn", corrections: corrections.entries)
-    }
-
     /// History's Correct…: Corrections with that dictation. The last dictation is compared with its text as
     /// recognized; an older one with its text as written, the only form History keeps of it.
     func correct(_ record: DictationRecord) {
@@ -1147,14 +1125,24 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             wordList: makeWordListView(),
             onShow: { [weak self] in self?.refreshWordList() })
         pane.wordListView.update(entries: wordList.entries, problem: wordListProblem)
-        pane.load(transcript: lastTranscript, recognized: lastRecognized, dictation: lastTranscriptID,
-                  title: "Last dictation — fix any misheard words, then Learn", corrections: corrections.entries)
+        pane.onLoadLast = { [weak self, weak pane] in
+            guard let self, let pane, !lastTranscript.isEmpty else { return false }
+            loadLastDictation(into: pane)
+            return true
+        }
+        loadLastDictation(into: pane)
         return pane
+    }
+
+    /// The last dictation as written, compared on Learn with its text as recognized; History off or on.
+    private func loadLastDictation(into pane: CorrectionsPane) {
+        pane.load(transcript: lastTranscript, recognized: lastRecognized, dictation: lastTranscriptID,
+                  title: CorrectionsPane.lastDictationTitle, corrections: corrections.entries)
     }
 
     /// Learns from `edited` against `original`, the text it was edited from as recognized (the last dictation's
     /// `lastRecognized`, or a History dictation's text). `dictation` is the ID of the dictation edited: only the last
-    /// one's edit replaces what Correct Last Dictation opens, even when an older one has the same text.
+    /// one's edit replaces what Correct… on the last dictation opens, even when an older one has the same text.
     private func learnCorrections(from edited: String, original: String,
                                   dictation: UUID?) -> CorrectionsPane.LearnResult? {
         // Diff against the recognizer's words, so fixing text an existing rule produced replaces that rule.

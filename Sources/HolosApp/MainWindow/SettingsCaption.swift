@@ -15,7 +15,7 @@ struct SettingsCaption: Equatable {
     static let updateChecks = SettingsCaption(
         short: "Asks voiceislocal.com about once a day, sending only the app's name and version.",
         more: "It downloads one small file that names the latest version. An update downloads only when you choose to "
-            + "install it. Check for Updates… in the menu works either way.")
+            + "install it. Check for Updates… in the Voice is Local menu works either way.")
     static let permissions = SettingsCaption(
         short: "This updates on its own while you change System Settings.",
         more: "After rebuilding Voice is Local, macOS can keep an old entry that looks switched on but no longer matches "

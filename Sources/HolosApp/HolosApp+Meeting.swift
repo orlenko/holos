@@ -44,8 +44,6 @@ final class MeetingAppState {
     }
     /// The case of the last meeting state seen ("idle", "starting", …).
     var lastStep = "idle"
-    /// How the last meeting ended, until the next one starts.
-    var lastSummary: (sessionID: String, text: String)?
     var startPanel: MeetingStartPanel?
     var meetingsPane: MeetingsPane?
     /// Open review windows by session ID (one per meeting), and reviews being opened (the window once shown, nil when
@@ -183,8 +181,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         switch effect {
         case .announce(let text):
             meeting.notice = text
-        case .finished(let sessionID, let summary, _):
-            meeting.lastSummary = (sessionID, summary)
+        case .finished(let sessionID, _, _):
             meeting.notice = nil
             meeting.meetingsPane?.refresh()
             // The meeting's own post-processing ran in the recorder: the final transcript can follow (§4.16), and its
@@ -203,7 +200,8 @@ extension HolosAppDelegate: NSMenuDelegate {
 
     // MARK: - Menu
 
-    /// The meeting lines at the top of the menu, followed by a separator.
+    /// The meeting lines at the top of the menu, followed by a separator: Start Meeting Recording…, or the recording's
+    /// state with Stop and Save… first.
     func addMeetingItems(to menu: NSMenu) {
         guard let controller = meeting.controller else { return }
         meeting.headlineItem = nil
@@ -211,16 +209,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         meeting.menuLayout = MeetingMenuLayout(controller.state)
         switch controller.state {
         case .idle:
-            if let offer = controller.namingOffer {
-                menu.addItem(item("Name Speakers — \(Self.short(offer.name))…", #selector(nameSpeakers)))
-            }
-            if let notice = meeting.notice { menu.addItem(disabledLine(notice)) }
-            if let summary = meeting.lastSummary {
-                let line = item(Self.short(summary.text, limit: 90), #selector(showLastMeeting))
-                line.toolTip = summary.text
-                menu.addItem(line)
-            }
-            menu.addItem(item("Start Meeting Recording…", #selector(startMeetingRecording)))
+            menu.addItem(startItem())
+            if let notice = meeting.notice { menu.addItem(disabledLine(notice, indent: 1)) }
         case .starting:
             // The recorder notices a stop only once its start returns (after a permission prompt is answered), so
             // the item says Stop, and the menu says so once it was asked.
@@ -235,9 +225,6 @@ extension HolosAppDelegate: NSMenuDelegate {
         case .active(_, let status):
             addRecordingItems(status, to: menu)
         case .finishing(_, let status):
-            if let offer = controller.namingOffer {
-                menu.addItem(item("Name Speakers — \(Self.short(offer.name))…", #selector(nameSpeakers)))
-            }
             let headline = disabledLine(Self.savingText(status, name: controller.reducer.meetingName))
             menu.addItem(headline)
             meeting.headlineItem = headline
@@ -246,7 +233,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             line.toolTip = message
             menu.addItem(line)
             menu.addItem(item("Dismiss", #selector(dismissMeetingFailure)))
-            menu.addItem(item("Start Meeting Recording…", #selector(startMeetingRecording)))
+            menu.addItem(startItem())
         }
         menu.addItem(.separator())
     }
@@ -258,8 +245,9 @@ extension HolosAppDelegate: NSMenuDelegate {
         let detail = disabledLine(Self.detailLine(status), indent: 1)
         menu.addItem(detail)
         meeting.detailItem = detail
-        if let microphone = status.microphoneLine { menu.addItem(disabledLine(microphone, indent: 1)) }
-        if let transcription = Self.transcriptionLine(status) {
+        // The microphone and live transcription, a hover away; a transcription falling behind gets its own line.
+        headline.toolTip = [status.microphoneLine, Self.transcriptionLine(status)].compactMap { $0 }.joined(separator: "\n")
+        if let transcription = Self.transcriptionLine(status), transcription.contains("behind") {
             menu.addItem(disabledLine(transcription, indent: 1))
         }
         for warning in Self.shownWarnings(status) {
@@ -272,10 +260,14 @@ extension HolosAppDelegate: NSMenuDelegate {
         addRecordingControls(MeetingRecordingControls(meeting.controller), to: menu)
     }
 
-    /// Pause or Resume Recording, Add Marker…, Show Live Transcript…, and Stop and Save… while a meeting records;
-    /// Stop Recording while it starts (`MeetingRecordingControls`, the rules the live transcript's header and the
-    /// meeting's menu in Meetings follow too).
+    /// Stop and Save… first, set apart, then Pause or Resume Recording and Add Marker… (the app has no other way to
+    /// add one) while a meeting records; Stop Recording while it starts (`MeetingRecordingControls`, the rules the
+    /// live transcript's header and the meeting's menu in Meetings follow too). The live transcript is in the app.
     private func addRecordingControls(_ controls: MeetingRecordingControls, to menu: NSMenu) {
+        if let stop = controls.stop {
+            menu.addItem(MenuBarItem.prominent(stop.title, symbol: "stop.circle.fill", target: self,
+                                               action: #selector(stopMeetingRecording), enabled: controls.stopEnabled))
+        }
         if let pause = controls.pause {
             let entry = item(pause.title, pause == .pause ? #selector(pauseMeetingRecording)
                                                           : #selector(resumeMeetingRecording))
@@ -284,17 +276,12 @@ extension HolosAppDelegate: NSMenuDelegate {
             let marker = item("Add Marker…", #selector(addMeetingMarker))
             marker.isEnabled = controls.markerEnabled
             menu.addItem(marker)
-            menu.addItem(item("Show Live Transcript…", #selector(showLiveTranscript)))
-        }
-        if let stop = controls.stop {
-            let entry = item(stop.title, #selector(stopMeetingRecording))
-            entry.isEnabled = controls.stopEnabled
-            menu.addItem(entry)
         }
     }
 
-    func addAboutItem(to menu: NSMenu) {
-        menu.addItem(item("About Voice is Local", #selector(showAbout)))
+    private func startItem() -> NSMenuItem {
+        MenuBarItem.prominent("Start Meeting Recording…", symbol: "record.circle.fill", target: self,
+                              action: #selector(startMeetingRecording))
     }
 
     private func disabledLine(_ title: String, indent: Int = 0) -> NSMenuItem {
@@ -528,7 +515,6 @@ extension HolosAppDelegate: NSMenuDelegate {
             UserDefaults.standard.set(data, forKey: MeetingAppState.lastSettingsKey)
         }
         if hideConsentReminder { UserDefaults.standard.set(true, forKey: MeetingAppState.consentKey) }
-        meeting.lastSummary = nil
         rebuildMenu()
         return nil
     }
@@ -574,29 +560,6 @@ extension HolosAppDelegate: NSMenuDelegate {
         answer(alert.runModal() == .alertFirstButtonReturn)
     }
 
-    @objc func addMeetingMarker() {
-        guard let controller = meeting.controller, case .active = controller.state else { return }
-        let alert = NSAlert()
-        alert.messageText = "Add a marker"
-        alert.informativeText = "The marker notes this moment in the recording. A label is optional."
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-        field.placeholderString = "Label (optional)"
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Add Marker")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
-        NSApplication.shared.activate()
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        controller.addMarker(label: String(field.stringValue.prefix(200)))
-    }
-
-    /// "Show Live Transcript…": the main window's Meetings section with the meeting's live transcript.
-    @objc func showLiveTranscript() {
-        guard let controller = meeting.controller, let id = controller.state.sessionID else { return }
-        showMainWindow(.meetings)
-        meeting.meetingsPane?.showLive(sessionID: id, directory: controller.sessionURL(id))
-    }
-
     /// The live transcript's header for meeting `sessionID`: its name, phase, and what it is doing.
     func liveMeetingHeader(sessionID: String, summary: SessionSummary?) -> LiveMeetingHeader {
         let state = meeting.controller?.state ?? .idle
@@ -638,23 +601,20 @@ extension HolosAppDelegate: NSMenuDelegate {
         return LiveMeetingHeader(name: name, phase: phase, detail: detail, controls: controls)
     }
 
-    @objc func showMeetings() {
-        showMeetingsWindow(selecting: nil)
-    }
-
-    /// "Name Speakers — <name>…": opens Review for the meeting (Meetings, with the meeting selected, when it cannot
-    /// be reviewed) and reports `reviewOpened`, which ends the offer.
-    @objc func nameSpeakers() {
-        guard let controller = meeting.controller, let offer = controller.namingOffer else { return }
-        openReview(sessionID: offer.sessionID, directory: controller.sessionURL(offer.sessionID), name: offer.name,
-                   fallBackToMeetings: true)
-    }
-
-    @objc func showLastMeeting() {
-        guard let summary = meeting.lastSummary else { return }
-        meeting.lastSummary = nil
-        rebuildMenu()
-        showMeetingsWindow(selecting: summary.sessionID)
+    @objc func addMeetingMarker() {
+        guard let controller = meeting.controller, case .active = controller.state else { return }
+        let alert = NSAlert()
+        alert.messageText = "Add a marker"
+        alert.informativeText = "The marker notes this moment in the recording. A label is optional."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.placeholderString = "Label (optional)"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Add Marker")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        NSApplication.shared.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        controller.addMarker(label: String(field.stringValue.prefix(200)))
     }
 
     @objc func dismissMeetingFailure() {
@@ -1043,7 +1003,6 @@ extension HolosAppDelegate: NSMenuDelegate {
             PendingVoiceSamples().clear(summary.id)
             if action == .deleteMeeting {
                 PendingExports().clear(summary.id)
-                if meeting.lastSummary?.sessionID == summary.id { meeting.lastSummary = nil }
                 rebuildMenu()
             }
             completion?(nil)

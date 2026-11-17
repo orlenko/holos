@@ -7,8 +7,9 @@ import AppKit
 enum AppKeyboard {
     private static var escapeMonitor: Any?
 
-    static func install(isDictating: @escaping @MainActor () -> Bool) {
-        NSApp.mainMenu = mainMenu()
+    /// `checkForUpdates`: the build can update itself, so the app's menu offers Check for Updates….
+    static func install(checkForUpdates: Bool, isDictating: @escaping @MainActor () -> Bool) {
+        NSApp.mainMenu = mainMenu(checkForUpdates: checkForUpdates)
         guard escapeMonitor == nil else { return }
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             // Local monitors run on the main thread.
@@ -40,7 +41,7 @@ enum AppKeyboard {
     }
 
     /// Internal so tests can check its key equivalents.
-    static func mainMenu() -> NSMenu {
+    static func mainMenu(checkForUpdates: Bool = false) -> NSMenu {
         let main = NSMenu()
         func submenu(_ title: String, _ items: [NSMenuItem]) {
             let menu = NSMenu(title: title)
@@ -58,6 +59,7 @@ enum AppKeyboard {
         // The app delegate answers the main window's items through the responder chain (HolosApp+MainWindow.swift).
         submenu("Voice is Local", [
             item("About Voice is Local", Selector(("showAbout")), ""),
+        ] + (checkForUpdates ? [item("Check for Updates…", Selector(("checkForUpdates")), "")] : []) + [
             .separator(),
             item("Settings…", Selector(("showSettingsFromMenu:")), ","),
             .separator(),

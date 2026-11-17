@@ -25,7 +25,7 @@ clipboard. Launch with `open` only when ready for an interactive test.
 On first launch, the Setup Assistant opens (run it again with **Run Setup Assistant…**
 in Settings); its checks are under [Setup Assistant](#setup-assistant) below. Later
 launches, and **Skip — Show All Settings**, open the main window on **Settings**
-(**Settings…** ⌘, in the menu). Use its Permissions card to grant Microphone and
+(**Settings…** ⌘, in the app's Voice is Local menu, or the window's sidebar). Use its Permissions card to grant Microphone and
 Accessibility access explicitly (Input Monitoring is not needed; its row appears only if
 macOS refuses the hold-to-talk key with Accessibility on); in the Dictation card pick the
 **Dictation language** (English (Canada) by default; Russian, Ukrainian and the other
@@ -33,7 +33,7 @@ languages only Apple's dictation recognizer has are listed too) and the hold-to-
 install Apple's speech model for the language; each row updates live, and its button
 opens the matching System Settings pane. A new language applies from the next dictation;
 when its model is missing, dictation turns off until it is installed. The asset action
-may download Apple's model. Then turn dictation on in Settings or the menu. The default user-selectable shortcut is **Right Option**;
+may download Apple's model. Then turn dictation on in Settings. The default user-selectable shortcut is **Right Option**;
 **Control–Option–Space** is the alternate. Once enabled, hold the chosen shortcut,
 wait for “Listening” in the non-activating preview, speak, then release. Releasing
 during startup produces a retry message instead of a partial insertion. Esc or
@@ -129,11 +129,12 @@ recording), then:
    empties the list; `voiceislocal history list` prints "No dictations in the history."
    `ls -l ~/Library/Application\ Support/Holos/History` shows `dictations.jsonl` as
    `-rw-------`.
-9. **Menu**: the menu bar menu shows the status line, the dictation toggle, Copy Result /
-   Copy Original / Discard Result only while a result is kept, Correct Last Dictation…
-   (opens Corrections with the last dictation), the meeting lines, Open Voice is Local
-   ⌘0, History, Meetings, Settings… ⌘,, About, and Quit. The language and shortcut are
-   changed in Settings, not the menu.
+9. **Menu**: the menu bar menu shows **Start Meeting Recording…** first (red symbol, bold),
+   dictation's state only when it is not ready, Copy Result (and Copy Original when a fix
+   changed it) only while a result is kept,
+   Open Voice is Local ⌘0, and Quit. While a meeting records, **Stop and Save…** (red,
+   bold) comes right after its state, then Pause and Add Marker…. Check for Updates… is in the app's
+   Voice is Local menu.
 10. **Hosted sections**: Meetings (Review…, Recover…, Quick Look of a transcript, Save
     Transcript As… as a sheet, Delete Meeting… with ⌫) and People (Rename…, Merge,
     Forget…) behave as their windows did. While a meeting records or is processed (by
@@ -330,8 +331,8 @@ units and abbreviations. French dictation removes "euh", "heu", "hum", "hmm", an
 "tsé", which carry meaning. Other languages keep every word.
 
 The first refusal stops writing for the rest of that utterance. Text already
-written stays in place, and the unwritten remainder is kept for **Copy Result** or
-**Discard Result** in the menu. Voice is Local never puts dictated text on the
+written stays in place, and the unwritten remainder is kept for **Copy Result** in the
+menu until it expires or the next dictation replaces it. Voice is Local never puts dictated text on the
 clipboard by itself (dictation can be sensitive, even a password) and never pastes;
 only choosing Copy Result or Copy Original writes the clipboard. The same applies to committed words
 left unwritten when an utterance fails. If the
@@ -351,8 +352,8 @@ History audio is encoded to disk as it arrives; transcript text and History audi
 still grow with the dictation. Removing the cutoff does not guarantee recovery
 from every missed key-release event: use Escape or Cancel Dictation if needed.
 The overlay hides eight seconds after a result, but its text remains
-in app memory and the menu's Copy/Discard actions for up to ten minutes (unless
-replaced, discarded, or the app quits). Only a later dictation that produces a
+in app memory and the menu's Copy actions for up to ten minutes (unless
+replaced, cleared when the Mac sleeps or the session changes, or the app quits). Only a later dictation that produces a
 result replaces it: recognized text, or text left unwritten. A press that is
 cancelled, released before Listening, or recognizes nothing leaves the earlier
 result, its menu items and its ten-minute expiry as they were. The system clipboard is overwritten only when
@@ -362,11 +363,14 @@ unless Settings says otherwise ([Main window and history](#main-window-and-histo
 
 ## Corrections
 
-**Correct Last Dictation…** in the menu opens the main window's Corrections section with
-the last transcript as Voice is Local wrote it (History's **Correct…** opens it with the
-chosen dictation instead).
+Corrections opens with the last dictation as Voice is Local wrote it (an empty box takes one
+made since when Corrections is shown again). **Last Dictation** puts the newest one since
+Voice is Local started in the box, replacing what it holds (History off or on; a failed or
+cancelled dictation does not count, and with none since launch the box is kept). History's
+**Correct…** opens it with the chosen dictation instead.
 With **Fix misheard words with Apple Intelligence** on, that is the fixed text, so
-learning picks up only your own edits; **Copy Original (As Heard)** still has the
+learning picks up only your own edits; **Copy Original (As Heard)** in the menu while the
+result is kept, or Copy As Heard in History, still has the
 text as recognized.
 Fix misheard words there and choose **Learn Corrections**; Voice is Local compares the two
 versions and keeps short word swaps (up to a few words; insertions, deletions, and
@@ -452,7 +456,7 @@ behavior, and permission owner for each row.
 | Browser text field and rich editor (e.g. ChatGPT in Chrome) | Phrases are typed as you pause while that field keeps focus; moving focus stops typing and keeps the rest for Copy Result. |
 | Native field without direct Accessibility writes | Typed into while it keeps focus; a field that fails a safety check (large selection, unreadable range) is not typed into and its text is kept for Copy Result. |
 | Terminal input (shell prompt and a TUI such as Claude Code) | Phrases are typed as you pause; never a Return; Secure Keyboard Entry refuses. Switching tab, split pane or window while speaking stops typing; nothing lands in the new session, and the rest is kept for Copy Result. Check Terminal and iTerm2 (tabs and split panes), and one of Ghostty, WezTerm, kitty, Alacritty, Warp or Rex (the log line "focus tracked by session/window/app" shows which level that terminal supports). |
-| Accidental press after a dictation that left text for Copy Result | Tap the shortcut and release before Listening, press and Esc, or hold without speaking: Copy Result, Copy Original and Discard still offer the earlier text, which still expires ten minutes after its own dictation. A later dictation that recognizes words replaces it. |
+| Accidental press after a dictation that left text for Copy Result | Tap the shortcut and release before Listening, press and Esc, or hold without speaking: Copy Result and Copy Original still offer the earlier text, which still expires ten minutes after its own dictation. A later dictation that recognizes words replaces it. |
 | Learn "bull request" → "pull request", then dictate it | Corrected in preview and in the field; "bull market" unchanged. |
 | Long utterance with pauses in TextEdit | Finalized phrases appear while speaking, the tail on release, no duplicates or missing spaces. |
 | Password or secure field | Refuse dictation/insertion; no text lands in the field. |

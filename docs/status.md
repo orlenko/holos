@@ -149,7 +149,7 @@ timeline and a larger local-model benchmark are follow-ups.
   [--output FILE]` renders the labelled transcript (`--output` creates a new 0600 file
   and never replaces one), and `--all` rewrites `exports/`.
 - Menu bar meetings (wave 4): VoiceIsLocal.app records meetings from the menu bar (Start
-  Meeting Recording…, then Pause, Add Marker, Show Live Transcript, and Stop and Save).
+  Meeting Recording…, then Stop and Save…, Pause and Add Marker…).
   The recorder is the bundled `voiceislocal` tool running as a child of the app; it keeps
   recording if the app quits or crashes, and the app finds it again on relaunch, as it
   does a meeting started from a terminal. Its log is
@@ -184,7 +184,7 @@ timeline and a larger local-model benchmark are follow-ups.
   can no longer be recomputed is removed, with a note on stderr; one from an earlier
   labelling of the meeting is kept until new labels replace it). `people list [--json]`,
   `rename`, `merge`, `forget` (a person, one sample, a meeting's samples, or `--all`), and
-  `export [--include-voiceprints]` manage them; People… in the menu does the same.
+  `export [--include-voiceprints]` manage them; People in the main window does the same.
   Forgetting cleans the meetings in the sessions folder, not sessions kept elsewhere with
   `--directory`. A forget is journalled first and finished at the next app launch or
   `people`, `speakers`, or `session` command if Voice is Local stops midway. Known people's names
@@ -293,8 +293,7 @@ timeline and a larger local-model benchmark are follow-ups.
   over edited labels; a run that leaves the transcript as it was keeps the labels). The
   Markdown export lists the languages in its header and the JSON export each turn's.
   Dictation stays in one language.
-- Review window (wave 5): Review… in Meetings (or double-click, or the "Name Speakers —
-  …" menu line after a meeting, which then goes away) opens a window to name a labelled
+- Review window (wave 5): Review… in Meetings (or double-click) opens a window to name a labelled
   meeting's speakers: a name field per speaker that links or creates a person (a known
   name links that person), talk time, the start of the speaker's two longest turns, Play
   samples (three clips from the longest turns without overlap), This is me, Merge into…,
@@ -387,7 +386,7 @@ timeline and a larger local-model benchmark are follow-ups.
   checked by hand on a signed build on 2026-11-01.
   It never synthesizes Return and never pastes. Text it could not write (target
   changed, safety check failed, unverified write, forced stop) is kept for Copy Result
-  or Discard in the menu; it is never put on the clipboard automatically, since
+  in the menu; it is never put on the clipboard automatically, since
   dictation can be sensitive. The kept result is replaced only by a later dictation that
   produces text; a press that is cancelled, released before listening, or recognizes
   nothing leaves it and its ten-minute expiry in place. See
@@ -523,9 +522,10 @@ timeline and a larger local-model benchmark are follow-ups.
   dictation status card at the sidebar's bottom. Corrections, Meetings, and People are the
   former windows' contents hosted as sections; Settings replaces the Setup window
   (Permissions, Dictation, Meetings, Reading, Dictation history, Run Setup Assistant…), and every
-  "Setup…" path opens it. The menu bar menu is slimmed to the dictation status and toggle,
-  the kept result's Copy items, Correct Last Dictation…, the meeting block, and the window's
-  items; the language and shortcut submenus moved to Settings. The Setup Assistant, the
+  "Setup…" path opens it. The menu bar menu holds only Start Meeting Recording… (or Stop and
+  Save…, Pause and Add Marker…), dictation's state when it is not ready, Cancel Dictation,
+  Copy Result and Copy Original, Stop Reading Aloud, Open Voice is Local and Quit; everything
+  else is in the window. The Setup Assistant, the
   meeting start panel, Review, and the dictation preview stay separate windows. Built and
   compiled only: nothing of the main window has been seen on screen yet.
 - Settings chapters and search (docs/design.md "Main window"): the sidebar lists Settings'

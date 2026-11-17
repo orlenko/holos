@@ -88,7 +88,7 @@ See the [dictation validation guide](docs/dictation-validation.md) before relyin
 on insertion into other apps.
 
 The app also records meetings from the menu bar: **Start Meeting Recording…**, then
-Pause, Add Marker, Show Live Transcript, and **Stop and Save…**. Every meeting records
+**Stop and Save…**, Pause, or Add Marker… (notes a moment, with an optional label). Every meeting records
 the system default microphone and everything the Mac plays (the other side of a call, a
 video), and labels speakers on both. There is no meeting type to choose. The System
 audio row in Settings › Permissions grants the permission for the computer's audio;
@@ -146,8 +146,7 @@ They are never added automatically. Nearby OCR can support an existing word-list
 question, but is not proof that a term was spoken. Delete Audio removes both snapshots
 and their OCR. A thumbnail timeline is not implemented yet.
 
-**Review…** in Meetings (or double-clicking a labelled meeting, or the
-**Name Speakers — <name>…** line the menu shows after a meeting) opens the review window:
+**Review…** in Meetings (or double-clicking a labelled meeting) opens the review window:
 speakers on the left (a name field that suggests known people, talk time, the start of
 their longest turns, Play samples, This is me, Merge into…, and "Maybe Maria" suggestions to
 confirm or reject, or Confirm All at once), turns on the right (a time button that plays
@@ -170,7 +169,7 @@ Meeting can also forget the voice samples learned from that meeting. See the
 | Section | Key | What it does |
 | --- | --- | --- |
 | History | ⌘1 | Dictations kept on this Mac, grouped by day, with search (⌘F). The selected one shows its text, the text as heard before fixes (changed words marked), where it went, its language, what was fixed, and its length. Copy (⌘C; for a partly written dictation, only the part that was not written, as Copy Result had it), Copy As Heard (⇧⌘C), Correct… (⌘E), Delete (⌫, asks first); its audio plays (▶, Space in the list) and Run Again (⌘R) recognizes it again with today's settings and compares; Clear History… in the footer. |
-| Corrections | ⌘2 | Fix a dictation and learn the word swaps, and edit the learned list (was the Corrections window). **Correct Last Dictation…** in the menu opens it with the last dictation, History's Correct… with the chosen one. Below, the **Word list** (see below). |
+| Corrections | ⌘2 | Fix a dictation and learn the word swaps, and edit the learned list (was the Corrections window). It opens with the last dictation; **Last Dictation** loads the newest one since launch, History's Correct… the chosen one. Below, the **Word list** (see below). |
 | Meetings | ⌘3 | The saved meetings (was the Meetings window). Return opens Review, ⌫ is Delete Meeting…. |
 | People | ⌘4 | People you have named and their voice samples (was the People window). |
 | Reading | ⌘5 | Articles and documents made into one audio file each (see below). |
@@ -190,10 +189,10 @@ icon brings the window back. Settings › General › **Appearance** keeps every
 Local window, the dictation preview included, light or dark whatever macOS uses, or
 follows macOS (System, the default).
 
-The menu bar menu is short: the status line, the dictation toggle, Copy Result / Copy
-Original / Discard Result while a result is kept, Correct Last Dictation…, the meeting
-lines, then Open Voice is Local, History, Meetings, Settings…, About, and Quit. The
-dictation language and shortcut are chosen in Settings.
+The menu bar menu is short, for when a call starts: **Start Meeting Recording…** (or,
+while recording, **Stop and Save…**, Pause and Add Marker…), dictation's state when it is not ready,
+Copy Result and Copy Original while there is text to copy, **Open Voice is Local**, and Quit.
+Everything else is in the window; Check for Updates… is in its Voice is Local menu.
 
 ### Reading
 

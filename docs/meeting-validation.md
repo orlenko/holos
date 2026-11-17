@@ -290,8 +290,8 @@ Result: Pending.
 ### H20: A real 3-hour council meeting
 
 1. Record a real council meeting of about 3 hours (tell the room first) and stop it; wait for
-   "Name Speakers — <name>…" in the menu.
-2. Choose it: the review window opens and the menu's naming line and dot go away.
+   the dot beside the menu bar icon.
+2. Open the meeting's Review from Meetings: the review window opens and the dot goes away.
 3. Name all speakers as in H14, timing only your own working time. While names save, keep
    typing and moving turns: the window must not freeze, and every change must still be there
    after closing and reopening the window.

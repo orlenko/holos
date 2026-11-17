@@ -102,18 +102,14 @@ extension HolosAppDelegate {
         alert.informativeText = """
             Voice is Local can look for a new version about once a day. Each check downloads one small file from \
             voiceislocal.com and sends only the app's name and version. An update downloads only when you choose to \
-            install it. You can change this in Settings › General, and Check for Updates… in the menu works either way.
+            install it. You can change this in Settings › General, and Check for Updates… in the Voice is Local \
+            menu works either way.
             """
         alert.addButton(withTitle: "Check Automatically")
         alert.addButton(withTitle: "Don't Check")
         NSApp.activate()
         updates.setChecksAutomatically(alert.runModal() == .alertFirstButtonReturn)
         updateSettings()
-    }
-
-    func addUpdateItem(to menu: NSMenu) {
-        guard updates.available else { return }
-        menu.addItem(item("Check for Updates…", #selector(checkForUpdates)))
     }
 
     @objc func checkForUpdates() {
