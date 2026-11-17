@@ -157,7 +157,6 @@ extension HolosAppDelegate {
 
     @objc func showSettingsFromMenu(_ sender: Any?) { showSetup() }
 
-    @objc func showHistoryFromMenu(_ sender: Any?) { showMainWindow(.history) }
 
     /// ⌘F: the section's search field, while the main window is key.
     @objc func focusSearch(_ sender: Any?) {
@@ -167,19 +166,14 @@ extension HolosAppDelegate {
         }
     }
 
-    /// The status menu's window items: Open Voice is Local ⌘0, History, Meetings, Settings… ⌘,.
+    /// The status menu's window items: Stop Reading Aloud while the shortcut's reading plays, and Open Voice is Local
+    /// ⌘0. History, Meetings and Settings are the window's sidebar.
     func addWindowItems(to menu: NSMenu) {
         addReadAloudItem(to: menu)
         let open = item("Open Voice is Local", #selector(showMainWindowFromMenu(_:)))
         open.keyEquivalent = "0"
         open.keyEquivalentModifierMask = .command
         menu.addItem(open)
-        menu.addItem(item("History", #selector(showHistoryFromMenu(_:))))
-        menu.addItem(item("Meetings", #selector(showMeetings)))
-        let settings = item("Settings…", #selector(showSettingsFromMenu(_:)))
-        settings.keyEquivalent = ","
-        settings.keyEquivalentModifierMask = .command
-        menu.addItem(settings)
     }
 
     /// A click on the Dock icon (the app is regular while one of its windows is open, the live transcript or Review

@@ -469,7 +469,7 @@ Keyboard Access, and VoiceOver work without custom handling.
 The menu bar menu is for when a call starts and the window is not at hand, so it keeps only what is needed then:
 
 - **Start Meeting Recording…** first, with a red record symbol and bold type so it is found at a glance. While a meeting
-  records: its state and clock, then **Stop and Save…** (a red stop symbol, bold), then Pause or Resume Recording.
+  records: its state and clock, then **Stop and Save…** (a red stop symbol, bold), then Pause or Resume Recording and Add Marker… (a moment, with an optional label, noted in the recording; the app has no other place for it).
   The microphone and live transcription are in the state line's tooltip; a transcription falling behind and the
   recorder's warnings get their own lines.
 - Dictation's state only when it is not simply ready (off, starting, dictating), Cancel Dictation while one runs, and
@@ -479,7 +479,7 @@ The menu bar menu is for when a call starts and the window is not at hand, so it
 
 Everything else is in the window: dictation's switch in Settings, correcting a dictation in History or Corrections
 (its **Last Dictation** button puts the newest dictation since launch in the box, History off or on),
-the live transcript, markers and naming speakers in Meetings, About and **Check for Updates…** in the app's Voice is
+the live transcript and naming speakers in Meetings, About and **Check for Updates…** in the app's Voice is
 Local menu. A meeting waiting for names still shows a dot beside the menu bar icon.
 
 ### Live transcript

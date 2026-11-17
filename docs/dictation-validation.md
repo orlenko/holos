@@ -133,7 +133,7 @@ recording), then:
    dictation's state only when it is not ready, Copy Result (and Copy Original when a fix
    changed it) only while a result is kept,
    Open Voice is Local ⌘0, and Quit. While a meeting records, **Stop and Save…** (red,
-   bold) comes right after its state, then Pause. Check for Updates… is in the app's
+   bold) comes right after its state, then Pause and Add Marker…. Check for Updates… is in the app's
    Voice is Local menu.
 10. **Hosted sections**: Meetings (Review…, Recover…, Quick Look of a transcript, Save
     Transcript As… as a sheet, Delete Meeting… with ⌫) and People (Rename…, Merge,

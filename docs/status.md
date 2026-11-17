@@ -149,7 +149,7 @@ timeline and a larger local-model benchmark are follow-ups.
   [--output FILE]` renders the labelled transcript (`--output` creates a new 0600 file
   and never replaces one), and `--all` rewrites `exports/`.
 - Menu bar meetings (wave 4): VoiceIsLocal.app records meetings from the menu bar (Start
-  Meeting Recording…, then Stop and Save… and Pause).
+  Meeting Recording…, then Stop and Save…, Pause and Add Marker…).
   The recorder is the bundled `voiceislocal` tool running as a child of the app; it keeps
   recording if the app quits or crashes, and the app finds it again on relaunch, as it
   does a meeting started from a terminal. Its log is
@@ -523,7 +523,7 @@ timeline and a larger local-model benchmark are follow-ups.
   former windows' contents hosted as sections; Settings replaces the Setup window
   (Permissions, Dictation, Meetings, Reading, Dictation history, Run Setup Assistant…), and every
   "Setup…" path opens it. The menu bar menu holds only Start Meeting Recording… (or Stop and
-  Save… and Pause), dictation's state when it is not ready, Copy Result, Open Voice is Local
+  Save…, Pause and Add Marker…), dictation's state when it is not ready, Copy Result, Open Voice is Local
   and Quit; everything else is in the window. The Setup Assistant, the
   meeting start panel, Review, and the dictation preview stay separate windows. Built and
   compiled only: nothing of the main window has been seen on screen yet.

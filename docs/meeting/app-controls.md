@@ -193,7 +193,7 @@ plus monospaced digits from `status.elapsedSeconds`), `⏸ 1:23:45` when paused,
 `◌ 1:23:45` while waiting for audio, with `⚠` appended while a warning is present.
 While finishing: `waveform` plus `…`.
 
-Menu while recording, as first built (the menu bar menu is now shorter: Stop and Save… first, then Pause; docs/design.md "Menu bar menu"):
+Menu while recording, as first built (the menu bar menu is now shorter: Stop and Save… first, then Pause and Add Marker…; docs/design.md "Menu bar menu"):
 
 ```
 ● Recording — Council meeting                      (disabled)

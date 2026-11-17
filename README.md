@@ -88,7 +88,7 @@ See the [dictation validation guide](docs/dictation-validation.md) before relyin
 on insertion into other apps.
 
 The app also records meetings from the menu bar: **Start Meeting Recording…**, then
-**Stop and Save…** or Pause. Every meeting records
+**Stop and Save…**, Pause, or Add Marker… (notes a moment, with an optional label). Every meeting records
 the system default microphone and everything the Mac plays (the other side of a call, a
 video), and labels speakers on both. There is no meeting type to choose. The System
 audio row in Settings › Permissions grants the permission for the computer's audio;
@@ -190,7 +190,7 @@ Local window, the dictation preview included, light or dark whatever macOS uses,
 follows macOS (System, the default).
 
 The menu bar menu is short, for when a call starts: **Start Meeting Recording…** (or,
-while recording, **Stop and Save…** and Pause), dictation's state when it is not ready,
+while recording, **Stop and Save…**, Pause and Add Marker…), dictation's state when it is not ready,
 Copy Result and Copy Original while there is text to copy, **Open Voice is Local**, and Quit.
 Everything else is in the window; Check for Updates… is in its Voice is Local menu.
 

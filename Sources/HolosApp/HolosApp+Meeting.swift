@@ -260,9 +260,9 @@ extension HolosAppDelegate: NSMenuDelegate {
         addRecordingControls(MeetingRecordingControls(meeting.controller), to: menu)
     }
 
-    /// Stop and Save… first, set apart, then Pause or Resume Recording while a meeting records; Stop Recording while
-    /// it starts (`MeetingRecordingControls`, the rules the live transcript's header and the meeting's menu in
-    /// Meetings follow too). Markers and the live transcript are in the app.
+    /// Stop and Save… first, set apart, then Pause or Resume Recording and Add Marker… (the app has no other way to
+    /// add one) while a meeting records; Stop Recording while it starts (`MeetingRecordingControls`, the rules the
+    /// live transcript's header and the meeting's menu in Meetings follow too). The live transcript is in the app.
     private func addRecordingControls(_ controls: MeetingRecordingControls, to menu: NSMenu) {
         if let stop = controls.stop {
             menu.addItem(MenuBarItem.prominent(stop.title, symbol: "stop.circle.fill", target: self,
@@ -273,6 +273,9 @@ extension HolosAppDelegate: NSMenuDelegate {
                                                           : #selector(resumeMeetingRecording))
             entry.isEnabled = controls.pauseEnabled
             menu.addItem(entry)
+            let marker = item("Add Marker…", #selector(addMeetingMarker))
+            marker.isEnabled = controls.markerEnabled
+            menu.addItem(marker)
         }
     }
 
@@ -598,8 +601,20 @@ extension HolosAppDelegate: NSMenuDelegate {
         return LiveMeetingHeader(name: name, phase: phase, detail: detail, controls: controls)
     }
 
-    @objc func showMeetings() {
-        showMeetingsWindow(selecting: nil)
+    @objc func addMeetingMarker() {
+        guard let controller = meeting.controller, case .active = controller.state else { return }
+        let alert = NSAlert()
+        alert.messageText = "Add a marker"
+        alert.informativeText = "The marker notes this moment in the recording. A label is optional."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.placeholderString = "Label (optional)"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Add Marker")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        NSApplication.shared.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        controller.addMarker(label: String(field.stringValue.prefix(200)))
     }
 
     @objc func dismissMeetingFailure() {
