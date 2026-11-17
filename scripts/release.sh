@@ -10,8 +10,8 @@
 # <version> opens it too, unless origin/main already has that version: then the commit that set it is tagged
 # v<version> and built. A version whose tag v<version> already exists (on origin, at the same commit) is built again
 # without a new commit: use it to resume after a failed build or notarization. A finished build of it (the DMG,
-# stapled, and an appcast offering it) is published without building again: a rebuilt DMG differs from one already
-# published, which the website refuses.
+# stapled, and an appcast offering it) is published without building again, and one whose DMG is already on GitHub
+# is never rebuilt: a rebuilt DMG differs from the published one, which the website refuses.
 #   DEVELOPER_ID    signing identity; default "Developer ID Application: Bjola Software Inc. (LC28ZF5453)".
 #   NOTARY_PROFILE  notarytool keychain profile; default voiceislocal-notary.
 #   BUILD           CFBundleVersion; default the number of v* release tags, this one included (1.0.0 was 1).
@@ -121,7 +121,7 @@ start_branch=$(git symbolic-ref --quiet --short HEAD || true)
 work=$(mktemp -d)
 switched=no
 # However the run ends: temporary files go, and a run that switched to the tag returns to the starting branch.
-trap 'rm -rf "$work"; [ "$switched" = no ] || [ -z "$start_branch" ] || git switch --quiet "$start_branch"' EXIT
+trap 'rm -rf "$work"; [ "$switched" = no ] || [ -z "$start_branch" ] || git switch --quiet "$start_branch" || true' EXIT
 merged_version=$(git show "origin/main:$app_plist" | plutil -extract CFBundleShortVersionString raw -o - - 2>/dev/null \
     || true)
 if is_version "$request" && git rev-parse --quiet --verify "refs/tags/v$request" >/dev/null; then
@@ -205,13 +205,14 @@ fi
 release_dir=$PWD/build/release
 dmg=$release_dir/VoiceIsLocal-$version.dmg
 # A plain assignment, so a gh failure stops the script under set -e.
+# With --no-publish too: a rebuild would delete a published DMG and its signed appcast.
 published_digest=
-[ "$publish" = no ] || published_digest=$(github_dmg_digest)
+! command -v gh >/dev/null || published_digest=$(github_dmg_digest)
 if built; then
     step "VoiceIsLocal-$version.dmg is built, notarized and stapled; not building it again"
 elif [ -n "$published_digest" ]; then
     # A rebuild would differ from the DMG already published, and release-app.sh deletes the files it replaces.
-    fail "GitHub release v$version already has VoiceIsLocal-$version.dmg, but $release_dir does not hold that finished build (missing, not stapled, or its appcast does not verify: sign_update --verify says why). Not rebuilding a published version: restore the build, or release a new version."
+    fail "GitHub release v$version already has VoiceIsLocal-$version.dmg (or an upload of it), but $release_dir does not hold that finished build (missing, not stapled, or its appcast does not verify: sign_update --verify says why). Not rebuilding a published version: restore the build, or release a new version."
 else
     build_number=${BUILD:-$(git tag --list 'v[0-9]*' --merged HEAD | wc -l | tr -d ' ')}
     step "Building Voice is Local $version (build $build_number)"
@@ -251,7 +252,7 @@ github_release_exists() {
     if gh release view "v$version" -R "$app_repo" --json tagName >/dev/null 2>"$work/gh.err"; then
         return 0
     fi
-    grep -qi 'not found' "$work/gh.err" && return 1
+    grep -q 'release not found' "$work/gh.err" && return 1
     fail "gh release view v$version failed: $(cat "$work/gh.err")"
 }
 
@@ -291,7 +292,9 @@ publish_github() {
         elif [ "$digest" != "sha256:$(dmg_sha)" ]; then
             fail "The GitHub release v$version has a different VoiceIsLocal-$version.dmg ($digest)."
         fi
-        if [ "$(gh release view "v$version" -R "$app_repo" --json isDraft --jq .isDraft)" = true ]; then
+        is_draft=$(gh release view "v$version" -R "$app_repo" --json isDraft --jq .isDraft) \
+            || fail "Reading whether GitHub release v$version is a draft failed; run this again."
+        if [ "$is_draft" = true ]; then
             gh release edit "v$version" -R "$app_repo" --draft=false >/dev/null \
                 || fail "Publishing the draft release failed; run this again."
         fi
@@ -365,7 +368,9 @@ publish_cask() {
         || fail "Opening the cask pull request failed; $branch is pushed."
     gh pr merge "$branch" -R orlenko/homebrew-tap --squash --delete-branch >/dev/null \
         || printf 'release: merging the cask pull request failed (above); checking the cask anyway.\n' >&2
-    live=$(gh api repos/orlenko/homebrew-tap/contents/Casks/voiceislocal.rb --jq .content | base64 -d)
+    live=$(gh api repos/orlenko/homebrew-tap/contents/Casks/voiceislocal.rb --jq .content) \
+        || fail "Reading the cask back from orlenko/homebrew-tap failed; run this again."
+    live=$(printf '%s' "$live" | base64 -d)
     printf '%s\n' "$live" | grep -Fq "  sha256 \"$sha\"" \
         || fail "The cask pull request for $version is not merged; merge it on orlenko/homebrew-tap and run this again."
     printf '    merged: version %s, sha256 %s\n' "$version" "$sha"

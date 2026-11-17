@@ -162,7 +162,7 @@ stops, run it again soon:
 3. **Homebrew cask**: `version` and `sha256` of `Casks/voiceislocal.rb` in
    [orlenko/homebrew-tap](https://github.com/orlenko/homebrew-tap), through a pull request it merges.
 
-`--no-publish` stops after the build. Without `--notes`, publishing needs the GitHub release to exist already; the
+`--no-publish` stops after the build (it still refuses to rebuild a version whose DMG is on GitHub). Without `--notes`, publishing needs the GitHub release to exist already; the
 script checks this, the `gh` CLI and the publisher before it tags or builds anything.
 
 ### By hand
