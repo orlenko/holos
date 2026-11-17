@@ -118,12 +118,12 @@ On the Mac that holds the Developer ID key, in its own session (not over SSH, so
 ```sh
 ./scripts/release.sh            # the next patch version, 1.0.2 → 1.0.3: opens its pull request
 ./scripts/release.sh minor      # 1.0.2 → 1.1.0; also major, or an exact version such as 1.2.0
-./scripts/release.sh 1.0.3 --notes notes.md   # after that pull request is merged: tag, build, and publish 1.0.3
+./scripts/release.sh 1.0.3 --notes ~/notes-1.0.3.md   # after that pull request is merged: tag, build, publish
 ./scripts/release.sh 1.0.3      # after a failure: resume (build again only if the build did not finish)
 ./scripts/release.sh 1.0.3 --no-publish       # tag and build without publishing
 ```
 
-The notes file holds the release's `## What's new` section: Markdown bullets, which the website shows too, so they keep to
+Keep the notes file outside the clone: the script needs a clean working tree. It holds the release's `## What's new` section: Markdown bullets, which the website shows too, so they keep to
 what its publisher accepts (bold, italic, `code`, and `[text](https://…)` links; no headings inside, nested or
 numbered lists, HTML, bare URLs, images, or code blocks).
 
@@ -143,8 +143,11 @@ tag is pushed, fix the cause and run it again with the same version: the tag exi
 new commit.
 
 Then it publishes, each step skipped when it is already done, so a run that stopped can be run again with the same
-version (a finished build, stapled with an appcast offering it, is not built again: the website refuses a different
-file under a published name, so a rebuilt release needs a new version number):
+version. A finished build (the DMG stapled, and an appcast offering it that verifies with the Sparkle key) is not built
+again: the website refuses a different file under a published name. If the GitHub release already has the DMG but
+`build/release` no longer holds that finished build, the script stops instead of rebuilding; a rebuilt release needs
+a new version number. The GitHub release is public before the site and the cask are updated, so if a later step
+stops, run it again soon:
 
 1. **GitHub release** `v<version>`: the notes, then the install steps and the SHA-256, with the DMG attached. Before
    it, the website's publisher checks everything in a dry run, the notes included, so a release it would refuse is not
@@ -280,15 +283,18 @@ notices reproduce too. Apple's speech assets are downloaded by macOS. When a dep
 
 ## Publishing by hand
 
-`scripts/release.sh` does all of this. By hand, in this order:
+`scripts/release.sh` does all of this. By hand, in this order (the site's publisher checks GitHub's digest for the
+DMG, so the GitHub release comes first):
 
-1. Upload `build/release/VoiceIsLocal-<version>.dmg` to the download page (keep the file name; it carries the
-   version).
-2. Publish its SHA-256 (printed at the end of the script; `shasum -a 256 <dmg>` repeats it) next to the link, with
-   the requirements: macOS 27 or later, Apple Silicon.
-3. Publish `build/release/appcast.xml` at `https://voiceislocal.com/downloads/appcast.xml`, byte for byte: its
-   signature covers the whole file. Publish it after the DMG, so the app never offers a file that is not there yet.
-4. Update the Homebrew cask, `Casks/voiceislocal.rb` in
+1. Write a short changelog, its `## What's new` section in the Markdown the website accepts (above), and publish a
+   GitHub release for the tag with the DMG, that changelog, its SHA-256, and the requirements:
+   `gh release create v<version> build/release/VoiceIsLocal-<version>.dmg --verify-tag --title "Voice is Local
+   <version>" --notes-file <notes>`. The appcast stays on the website only.
+2. Publish on voiceislocal.com: `../voiceislocal.com/scripts/publish-release.sh <version> build/release` uploads the
+   DMG, puts its SHA-256 and the requirements (macOS 27 or later, Apple Silicon) on the page, deploys it, then
+   publishes `build/release/appcast.xml` at `https://voiceislocal.com/downloads/appcast.xml` byte for byte (its
+   signature covers the whole file), after the DMG so the app never offers a file that is not there yet.
+3. Update the Homebrew cask, `Casks/voiceislocal.rb` in
    [orlenko/homebrew-tap](https://github.com/orlenko/homebrew-tap): its `version` and `sha256`. Homebrew loads casks
    from other taps only once you trust them, so users run both:
 
@@ -299,11 +305,6 @@ notices reproduce too. Apple's speech assets are downloaded by macOS. When a dep
 
    The website and the GitHub release notes give the same two commands. Trusting the cask, not the whole tap
    (`brew trust --tap`), keeps the trust to Voice is Local.
-5. Keep a short changelog per version.
-6. Publish a GitHub release for the tag with the DMG and that changelog, its SHA-256, and the requirements:
-   `gh release create v<version> build/release/VoiceIsLocal-<version>.dmg --verify-tag --title "Voice is Local
-   <version>" --notes-file <notes>`. GitHub's digest for the asset (`gh release view v<version> --json assets`) must
-   match the SHA-256 on the website. The appcast stays on the website only.
 
 ## Updates
 
