@@ -29,6 +29,12 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
     private let transcriptView: NSTextView
     private let learnButton = NSButton(title: "Learn Corrections", target: nil, action: nil)
     private let copyButton = NSButton(title: "Copy Text", target: nil, action: nil)
+    private let lastButton = NSButton(title: "Last Dictation", target: nil, action: nil)
+    /// Last Dictation: puts the newest dictation in the box, whatever it holds (what the menu bar's Correct Last
+    /// Dictation… did). Without it the button is hidden.
+    var onLoadLast: (() -> Void)? {
+        didSet { lastButton.isHidden = onLoadLast == nil }
+    }
     private let feedbackLabel = NSTextField(wrappingLabelWithString: "")
     private let listStack = NSStackView()
     private let heardField = NSTextField()
@@ -42,11 +48,6 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
     private var baseline = ""
     /// The ID of the dictation in the text box (the last one's, or a History dictation's).
     private var dictation: UUID?
-    /// Whether the text box holds the last dictation, which a newer one replaces when Corrections shows again.
-    private var followsLast = false
-    /// The text as loaded or last learned from; anything else in the box is an edit not learned yet, which a newer
-    /// dictation does not replace.
-    private var settled = ""
     private var shown: [Correction] = []
     private var declined = DeclinedCorrectionQueue()
     /// The feedback lines shown above the declined-swap suggestion, so a refill can redraw them.
@@ -84,7 +85,11 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
         learnButton.keyEquivalent = "\r"
         copyButton.target = self
         copyButton.action = #selector(copyText)
-        let actions = NSStackView(views: [learnButton, copyButton])
+        lastButton.target = self
+        lastButton.action = #selector(loadLast)
+        lastButton.toolTip = "Put the newest dictation in the box, replacing what is there"
+        lastButton.isHidden = true
+        let actions = NSStackView(views: [learnButton, copyButton, lastButton])
         actions.spacing = 8
         feedbackLabel.font = .systemFont(ofSize: 12)
         feedbackLabel.textColor = .secondaryLabelColor
@@ -179,14 +184,12 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
 
     static let lastDictationTitle = "Last dictation — fix any misheard words, then Learn"
 
+    @objc private func loadLast() { onLoadLast?() }
+
     /// Puts a dictation in the text box: `transcript` as written, compared on Learn with `recognized` (the text as
-    /// recognized, before corrections). `dictation` is its ID and `title` says which dictation it is; `followsLast`,
-    /// that it is the last dictation, for `showLast`.
-    func load(transcript: String, recognized: String, dictation: UUID?, title: String, corrections: [Correction],
-              followsLast: Bool = false) {
+    /// recognized, before corrections). `dictation` is its ID and `title` says which dictation it is.
+    func load(transcript: String, recognized: String, dictation: UUID?, title: String, corrections: [Correction]) {
         transcriptView.string = transcript
-        settled = transcript
-        self.followsLast = followsLast
         baseline = recognized
         self.dictation = dictation
         transcriptHeading.stringValue = title
@@ -197,15 +200,6 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
         report(hasTranscript ? [] : ["No dictation yet. You can still add corrections below."])
         update(corrections: corrections)
         if hasTranscript, let window = view.window { window.makeFirstResponder(transcriptView) }
-    }
-
-    /// Corrections showing again: a newer last dictation replaces the one in the box, unless the box holds a History
-    /// dictation the user chose or edits not learned yet.
-    func showLast(transcript: String, recognized: String, dictation: UUID?, corrections: [Correction]) {
-        guard followsLast, !transcript.isEmpty, dictation != self.dictation, transcriptView.string == settled
-        else { return }
-        load(transcript: transcript, recognized: recognized, dictation: dictation, title: Self.lastDictationTitle,
-             corrections: corrections, followsLast: true)
     }
 
     var preferredFirstResponder: NSView? { transcriptView.isEditable ? transcriptView : heardField }
@@ -257,10 +251,7 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
             return
         }
         // Learned rules were saved: the edited text is now what later edits are compared with.
-        if !result.learned.isEmpty {
-            baseline = edited
-            settled = edited
-        }
+        if !result.learned.isEmpty { baseline = edited }
         declined.receive(result.declined, edit: result.edit)
         var lines: [String] = []
         if !result.learned.isEmpty {

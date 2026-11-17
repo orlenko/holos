@@ -478,7 +478,7 @@ The menu bar menu is for when a call starts and the window is not at hand, so it
 - **Open Voice is Local** (⌘0), Stop Reading Aloud while the shortcut's reading plays, and **Quit**.
 
 Everything else is in the window: dictation's switch in Settings, correcting a dictation in History or Corrections
-(which shows the newest dictation each time it opens, unless it holds edits not learned yet or a History dictation),
+(its **Last Dictation** button puts the newest dictation in the box, History off or on),
 the live transcript, markers and naming speakers in Meetings, About and **Check for Updates…** in the app's Voice is
 Local menu. A meeting waiting for names still shows a dot beside the menu bar icon.
 

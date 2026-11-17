@@ -363,9 +363,9 @@ unless Settings says otherwise ([Main window and history](#main-window-and-histo
 
 ## Corrections
 
-Corrections opens with the last dictation as Voice is Local wrote it, and shows a newer one
-each time it opens unless you have edits not learned yet; History's **Correct…** opens it
-with the chosen dictation instead.
+Corrections opens with the last dictation as Voice is Local wrote it; its **Last Dictation**
+button puts the newest one in the box at any time (History off or on), and History's
+**Correct…** opens it with the chosen dictation instead.
 With **Fix misheard words with Apple Intelligence** on, that is the fixed text, so
 learning picks up only your own edits; **Copy Original (As Heard)** in the menu while the
 result is kept, or Copy As Heard in History, still has the

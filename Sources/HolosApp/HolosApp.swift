@@ -1123,19 +1123,17 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self?.replaceCorrection(old, with: new, resolving: edit) ?? false
             },
             wordList: makeWordListView(),
-            onShow: { [weak self] in self?.correctionsShown() })
+            onShow: { [weak self] in self?.refreshWordList() })
         pane.wordListView.update(entries: wordList.entries, problem: wordListProblem)
-        pane.load(transcript: lastTranscript, recognized: lastRecognized, dictation: lastTranscriptID,
-                  title: CorrectionsPane.lastDictationTitle, corrections: corrections.entries, followsLast: true)
+        pane.onLoadLast = { [weak self, weak pane] in if let pane { self?.loadLastDictation(into: pane) } }
+        loadLastDictation(into: pane)
         return pane
     }
 
-    /// Corrections shown, or its window back in front: the word list, and a newer last dictation in the box.
-    private func correctionsShown() {
-        refreshWordList()
-        (mainWindow?.existingController(for: .corrections) as? CorrectionsPane)?.showLast(
-            transcript: lastTranscript, recognized: lastRecognized, dictation: lastTranscriptID,
-            corrections: corrections.entries)
+    /// The last dictation as written, compared on Learn with its text as recognized; History off or on.
+    private func loadLastDictation(into pane: CorrectionsPane) {
+        pane.load(transcript: lastTranscript, recognized: lastRecognized, dictation: lastTranscriptID,
+                  title: CorrectionsPane.lastDictationTitle, corrections: corrections.entries)
     }
 
     /// Learns from `edited` against `original`, the text it was edited from as recognized (the last dictation's
