@@ -169,7 +169,7 @@ Meeting can also forget the voice samples learned from that meeting. See the
 | Section | Key | What it does |
 | --- | --- | --- |
 | History | ⌘1 | Dictations kept on this Mac, grouped by day, with search (⌘F). The selected one shows its text, the text as heard before fixes (changed words marked), where it went, its language, what was fixed, and its length. Copy (⌘C; for a partly written dictation, only the part that was not written, as Copy Result had it), Copy As Heard (⇧⌘C), Correct… (⌘E), Delete (⌫, asks first); its audio plays (▶, Space in the list) and Run Again (⌘R) recognizes it again with today's settings and compares; Clear History… in the footer. |
-| Corrections | ⌘2 | Fix a dictation and learn the word swaps, and edit the learned list (was the Corrections window). **Correct Last Dictation…** in the menu opens it with the last dictation, History's Correct… with the chosen one. Below, the **Word list** (see below). |
+| Corrections | ⌘2 | Fix a dictation and learn the word swaps, and edit the learned list (was the Corrections window). It opens with the last dictation; **Last Dictation** loads the newest one since launch, History's Correct… the chosen one. Below, the **Word list** (see below). |
 | Meetings | ⌘3 | The saved meetings (was the Meetings window). Return opens Review, ⌫ is Delete Meeting…. |
 | People | ⌘4 | People you have named and their voice samples (was the People window). |
 | Reading | ⌘5 | Articles and documents made into one audio file each (see below). |
@@ -191,7 +191,7 @@ follows macOS (System, the default).
 
 The menu bar menu is short, for when a call starts: **Start Meeting Recording…** (or,
 while recording, **Stop and Save…** and Pause), dictation's state when it is not ready,
-Copy Result (and Copy Original) while a result is kept, **Open Voice is Local**, and Quit.
+Copy Result and Copy Original while there is text to copy, **Open Voice is Local**, and Quit.
 Everything else is in the window; Check for Updates… is in its Voice is Local menu.
 
 ### Reading

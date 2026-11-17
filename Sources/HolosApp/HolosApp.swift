@@ -1125,7 +1125,11 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             wordList: makeWordListView(),
             onShow: { [weak self] in self?.refreshWordList() })
         pane.wordListView.update(entries: wordList.entries, problem: wordListProblem)
-        pane.onLoadLast = { [weak self, weak pane] in if let pane { self?.loadLastDictation(into: pane) } }
+        pane.onLoadLast = { [weak self, weak pane] in
+            guard let self, let pane, !lastTranscript.isEmpty else { return false }
+            loadLastDictation(into: pane)
+            return true
+        }
         loadLastDictation(into: pane)
         return pane
     }

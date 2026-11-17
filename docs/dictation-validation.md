@@ -363,8 +363,10 @@ unless Settings says otherwise ([Main window and history](#main-window-and-histo
 
 ## Corrections
 
-Corrections opens with the last dictation as Voice is Local wrote it; its **Last Dictation**
-button puts the newest one in the box at any time (History off or on), and History's
+Corrections opens with the last dictation as Voice is Local wrote it (an empty box takes one
+made since when Corrections is shown again). **Last Dictation** puts the newest one since
+Voice is Local started in the box, replacing what it holds (History off or on; a failed or
+cancelled dictation does not count, and with none since launch the box is kept). History's
 **Correct…** opens it with the chosen dictation instead.
 With **Fix misheard words with Apple Intelligence** on, that is the fixed text, so
 learning picks up only your own edits; **Copy Original (As Heard)** in the menu while the
@@ -454,7 +456,7 @@ behavior, and permission owner for each row.
 | Browser text field and rich editor (e.g. ChatGPT in Chrome) | Phrases are typed as you pause while that field keeps focus; moving focus stops typing and keeps the rest for Copy Result. |
 | Native field without direct Accessibility writes | Typed into while it keeps focus; a field that fails a safety check (large selection, unreadable range) is not typed into and its text is kept for Copy Result. |
 | Terminal input (shell prompt and a TUI such as Claude Code) | Phrases are typed as you pause; never a Return; Secure Keyboard Entry refuses. Switching tab, split pane or window while speaking stops typing; nothing lands in the new session, and the rest is kept for Copy Result. Check Terminal and iTerm2 (tabs and split panes), and one of Ghostty, WezTerm, kitty, Alacritty, Warp or Rex (the log line "focus tracked by session/window/app" shows which level that terminal supports). |
-| Accidental press after a dictation that left text for Copy Result | Tap the shortcut and release before Listening, press and Esc, or hold without speaking: Copy Result, Copy Original and Discard still offer the earlier text, which still expires ten minutes after its own dictation. A later dictation that recognizes words replaces it. |
+| Accidental press after a dictation that left text for Copy Result | Tap the shortcut and release before Listening, press and Esc, or hold without speaking: Copy Result and Copy Original still offer the earlier text, which still expires ten minutes after its own dictation. A later dictation that recognizes words replaces it. |
 | Learn "bull request" → "pull request", then dictate it | Corrected in preview and in the field; "bull market" unchanged. |
 | Long utterance with pauses in TextEdit | Finalized phrases appear while speaking, the tail on release, no duplicates or missing spaces. |
 | Password or secure field | Refuse dictation/insertion; no text lands in the field. |

@@ -30,9 +30,9 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
     private let learnButton = NSButton(title: "Learn Corrections", target: nil, action: nil)
     private let copyButton = NSButton(title: "Copy Text", target: nil, action: nil)
     private let lastButton = NSButton(title: "Last Dictation", target: nil, action: nil)
-    /// Last Dictation: puts the newest dictation in the box, whatever it holds (what the menu bar's Correct Last
-    /// Dictation… did). Without it the button is hidden.
-    var onLoadLast: (() -> Void)? {
+    /// Last Dictation: puts the newest dictation since launch in the box, whatever it holds (what the menu bar's
+    /// Correct Last Dictation… did); false, and the box untouched, when there is none. Without it the button is hidden.
+    var onLoadLast: (() -> Bool)? {
         didSet { lastButton.isHidden = onLoadLast == nil }
     }
     private let feedbackLabel = NSTextField(wrappingLabelWithString: "")
@@ -145,7 +145,7 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
         note.textColor = .secondaryLabelColor
 
         transcriptHeading.font = .systemFont(ofSize: 13, weight: .semibold)
-        transcriptHeading.stringValue = "Last dictation — fix any misheard words, then Learn"
+        transcriptHeading.stringValue = Self.lastDictationTitle
         let stack = NSStackView(views: [
             transcriptHeading, transcriptScroll, actions,
             feedbackLabel, heading("Corrections"), listScroll, addRow, note, wordList,
@@ -184,12 +184,17 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
 
     static let lastDictationTitle = "Last dictation — fix any misheard words, then Learn"
 
-    @objc private func loadLast() { onLoadLast?() }
+    @objc private func loadLast() {
+        guard onLoadLast?() == false else { return }
+        report(["No dictation since Voice is Local started. History's Correct… opens an earlier one."])
+    }
 
     /// Puts a dictation in the text box: `transcript` as written, compared on Learn with `recognized` (the text as
     /// recognized, before corrections). `dictation` is its ID and `title` says which dictation it is.
     func load(transcript: String, recognized: String, dictation: UUID?, title: String, corrections: [Correction]) {
         transcriptView.string = transcript
+        // Swaps declined for the text the box held were offered against it; they would misread the new one.
+        declined = DeclinedCorrectionQueue()
         baseline = recognized
         self.dictation = dictation
         transcriptHeading.stringValue = title
@@ -207,7 +212,11 @@ final class CorrectionsPane: NSViewController, NSTextFieldDelegate, MainSectionC
     /// ⌘F: the word list's search.
     var searchField: NSSearchField? { wordListView.searchField }
 
-    func sectionDidShow() { onShow() }
+    /// An empty box ("No dictation yet") takes a dictation made since; one with text keeps it.
+    func sectionDidShow() {
+        onShow()
+        if !transcriptView.isEditable { _ = onLoadLast?() }
+    }
 
     /// Back from Terminal, where `voiceislocal words` may have changed the list.
     func sectionWindowDidBecomeKey() { onShow() }
