@@ -53,8 +53,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// Internal (as `turnList`) for tests that drive the window.
     let surface: ReviewSurface
     var window: NSWindow { surface.window }
-    private let player = ReviewPlayer()
-    private let sidebar = SpeakerSidebarView()
+    let player = ReviewPlayer()
+    let sidebar = SpeakerSidebarView()
     let turnList = TurnListView()
     /// The speakers pane and the turn list; the speakers pane can be hidden (⌥⌘S).
     lazy var panes = ReviewPanes(speakers: sidebar, list: turnList)
@@ -89,7 +89,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     weak var contentStack: NSStackView?
     private var bannerWidth: NSLayoutConstraint?
     /// A name or term the last word edit may have taught, offered for the word list until the next action.
-    private var offeredTerm: (term: String, heardAs: String?)?
+    var offeredTerm: (term: String, heardAs: String?)?
     /// The word list, as the app keeps it: a term's "often heard as" phrases (nil when the list does not have it), and
     /// adding a term with what it is often heard as (returns what happened). Nil: no word list offers.
     var wordListHeardAs: ((String) -> [String]?)?
@@ -125,27 +125,27 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     private var resignedKeyAt: Date?
     private var closeTask: Task<Void, Never>?
     /// Word edits handed over by the field: their saves, the edits not saved, and the close by hand that saves them.
-    private lazy var wordEdits = ReviewWordEditCoordinator(host: self)
+    lazy var wordEdits = ReviewWordEditCoordinator(host: self)
 
     /// Words can be edited in the window now: the review allows it, and no close by hand is saving the edits before
     /// it closes (no field opens meanwhile, so nothing typed then can be left behind by the close).
-    private var canEditWordsNow: Bool { review.canEditWords && !wordEdits.savingForClose }
+    var canEditWordsNow: Bool { review.canEditWords && !wordEdits.savingForClose }
     private var splitSheet: SplitSheet?
-    private var assignSignature: [String] = []
+    var assignSignature: [String] = []
     private var refreshScheduled = false
-    private var shownNotices: [Notice] = []
+    var shownNotices: [Notice] = []
     /// The manifest chunks playback was last built from.
     private var loadedChunks: [AudioChunkRecord] = []
     /// The echo mask the microphone's volume was last read for: another one in the labels reads it again.
     private var echoMaskFollow = ReviewEchoMaskFollow()
-    private lazy var confirmAllItem = menuItem("Confirm All Suggestions", #selector(confirmAll))
-    private lazy var findMoreItem = menuItem("Find More Speakers…", #selector(findMoreSpeakers))
-    private lazy var microphoneItem = menuItem("Label Speakers on My Microphone…", #selector(labelMicrophoneSpeakers))
-    private lazy var undoItem = menuItem("Undo", #selector(undo))
-    private lazy var autoMergeItem = menuItem("Merge Matching Voices Automatically", #selector(toggleAutoMerge))
+    lazy var confirmAllItem = menuItem("Confirm All Suggestions", #selector(confirmAll))
+    lazy var findMoreItem = menuItem("Find More Speakers…", #selector(findMoreSpeakers))
+    lazy var microphoneItem = menuItem("Label Speakers on My Microphone…", #selector(labelMicrophoneSpeakers))
+    lazy var undoItem = menuItem("Undo", #selector(undo))
+    lazy var autoMergeItem = menuItem("Merge Matching Voices Automatically", #selector(toggleAutoMerge))
     /// "Merge Matching Voices Automatically" (off unless the user turned it on), kept across windows.
     static let autoMergeKey = "reviewAutoMergeVoices"
-    private let timeFormatter: DateFormatter = {
+    let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .none
         formatter.timeStyle = .short
@@ -562,181 +562,6 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         }
     }
 
-    func refreshToolbar() {
-        let editable = review.isEditable
-        let selected = turnList.selectedTurns
-        nextUncertainButton.isEnabled = review.shownTurns.contains(where: \.uncertain)
-
-        // Menus are replaced only when their items changed, so an update never swaps a menu that is open.
-        let assignItems = AssignMenu.items(speakers: review.projection.speakers, people: review.knownPeople(),
-                                           unknownTitle: "Unknown speaker")
-        let assignSignature = assignItems.map { item in
-            item.isSeparatorItem ? "-" : item.title + "\u{1f}" + String(describing: (item.representedObject as? AssignChoice)?.kind)
-        }
-        if assignSignature != self.assignSignature {
-            let assignMenu = NSMenu()
-            assignMenu.autoenablesItems = false
-            assignMenu.addItem(NSMenuItem(title: "Assign to…", action: nil, keyEquivalent: ""))
-            for item in assignItems {
-                if item.representedObject != nil {
-                    item.target = self
-                    item.action = #selector(assignChosen(_:))
-                }
-                assignMenu.addItem(item)
-            }
-            assignPopUp.menu = assignMenu
-            self.assignSignature = assignSignature
-        }
-        assignPopUp.isEnabled = editable && !selected.isEmpty
-        let paragraphs = turnList.selectedParagraphs
-        splitButton.isEnabled = editable && paragraphs.count == 1
-            && paragraphs[0].turns.reduce(0) { $0 + review.words(of: $1).count } > 1
-
-        let suggestions = review.suggestionCount
-        confirmAllItem.title = suggestions > 0 ? "Confirm All Suggestions (\(suggestions))" : "Confirm All Suggestions"
-        confirmAllItem.isEnabled = editable && suggestions > 0 && review.profiles != nil
-        autoMergeItem.state = review.autoMergeVoices ? .on : .off
-        autoMergeItem.isEnabled = review.profiles != nil
-        findMoreItem.isEnabled = editable && review.canFindMoreSpeakers
-        microphoneItem.isHidden = !review.canLabelMicrophoneSpeakers
-        microphoneItem.isEnabled = editable
-        undoItem.isEnabled = editable && review.canUndo
-        // Read-only (a command holds the review): edit mode can still be left, not entered.
-        editButton.isEnabled = canEditWordsNow || turnList.editingWords
-        // Why words cannot be edited (the transcript changed after labelling, or speaker changes cannot be read): the
-        // button's tooltip says so before edit mode is entered, and in edit mode (no field opens) the banner does.
-        editButton.toolTip = review.wordEditingBlocked ?? Self.editWordsHelp
-        turnList.canEditWords = canEditWordsNow
-        let blockedMessages = [ReviewSession.labelAgainFirst, ReviewSession.speakerChangesUnreadable,
-                               ReviewSession.baseUnreadable].map(\.localizedDescription)
-        if turnList.editingWords, let blocked = review.wordEditingBlocked {
-            editBanner.show(message: blocked)
-        } else if turnList.editingWords, blockedMessages.contains(editBanner.label.stringValue) {
-            editBanner.show(message: nil)
-        }
-
-        learnBox.isEnabled = review.profiles != nil && review.rememberVoices
-        learnBox.state = review.learnVoices && review.rememberVoices ? .on : .off
-        if !review.rememberVoices {
-            learnBox.toolTip = "Remember voices is off (People…), so no voice is learned. Names are kept either way."
-        }
-    }
-
-    private func menuItem(_ title: String, _ action: Selector) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-        item.target = self
-        return item
-    }
-
-    func refreshFooter() {
-        let projection = review.projection
-        let changes = review.changeCount
-        let shown = review.shownTurns.count
-        var parts = ["\(projection.speakers.count) \(projection.speakers.count == 1 ? "speaker" : "speakers")",
-                     "\(shown) \(shown == 1 ? "turn" : "turns")",
-                     "\(changes) \(changes == 1 ? "change" : "changes")"]
-        // Short interjections left out of the list (View ▸ Show Short Interjections lists them).
-        let hidden = review.showsShortInterjections ? 0 : projection.turns.count - projection.shownTurns.count
-        if hidden > 0 { parts.insert("\(hidden) short \(hidden == 1 ? "interjection" : "interjections") hidden", at: 2) }
-        if let activity = review.activity {
-            parts.append(activity)
-        } else if let saved = review.lastSavedAt {
-            parts.append("saved \(timeFormatter.string(from: saved))")
-        }
-        if let voices = review.voiceStatus { parts.append(voices) }
-        statusLabel.stringValue = parts.joined(separator: " · ")
-
-        var lines: [Notice] = []
-        if let reason = review.pauseReason {
-            lines.append(Notice(text: reason + " " + ReviewSession.pausedSuffix, color: .systemOrange))
-        }
-        if let reloadProblem = review.reloadProblem {
-            lines.append(Notice(text: "⚠ " + reloadProblem, color: .systemRed, button: "Reread",
-                                action: #selector(rereadLabels)))
-        }
-        if let problem, !wordEdits.unsaved.edits.contains(where: { $0.message == problem }) {
-            lines.append(Notice(text: "⚠ " + problem, color: .systemRed))
-        }
-        // Each edit not saved whose field could not open, with what was typed; the first can be edited again.
-        for (index, line) in wordEdits.unsaved.lines.enumerated() {
-            lines.append(index == 0
-                ? Notice(text: line, color: .systemRed, button: "Edit Again", action: #selector(editUnsavedAgain),
-                         secondButton: "Dismiss", secondAction: #selector(dismissUnsaved))
-                : Notice(text: line, color: .systemRed))
-        }
-        if let notice { lines.append(Notice(text: notice)) }
-        if let offered = offeredTerm {
-            let heard = offered.heardAs.map { ", often heard as “\($0)”" } ?? ""
-            lines.append(Notice(text: "Add “\(offered.term)” to the word list\(heard)? Voice is Local then expects it "
-                                + "in dictation and meetings.", button: "Add to Word List",
-                                action: #selector(addOfferedTerm), secondButton: "Not Now",
-                                secondAction: #selector(dismissOfferedTerm)))
-        }
-        if let runProblem = review.snapshot.runProblem { lines.append(Notice(text: "⚠ " + runProblem, color: .systemRed)) }
-        if review.snapshot.transcriptChanged {
-            lines.append(Notice(text: "The transcript changed after speakers were labelled.", button: "Label Again",
-                                action: #selector(labelAgain), enabled: review.isEditable))
-        }
-        let stale = review.staleEditCount
-        if stale > 0 {
-            lines.append(Notice(text: "\(stale) \(stale == 1 ? "change" : "changes") could not be applied.",
-                                button: "Show", action: #selector(showStaleEdits)))
-        }
-        for name in review.movedAsideExports.suffix(3) {
-            let original = "transcript." + (name as NSString).pathExtension
-            lines.append(Notice(text: "Your edited \(original) was kept as \(name)."))
-        }
-        if let exportProblem = review.exportProblem {
-            lines.append(Notice(text: "⚠ " + exportProblem, color: .systemOrange))
-        }
-        if let voiceProblem = review.voiceProblem {
-            lines.append(Notice(text: "⚠ " + voiceProblem, color: .systemOrange))
-        }
-        if case .failed(let reason) = review.voiceAnalysis {
-            lines.append(Notice(text: "Voices can't be compared in this meeting, so no matching speakers are "
-                                + "suggested: " + reason))
-        }
-        if case .unavailable(let reason) = player.state { lines.append(Notice(text: reason)) }
-        // Rebuilt only when they change, so a notice's button is never removed while it is being clicked.
-        guard lines != shownNotices else { return }
-        shownNotices = lines
-        for view in notices.arrangedSubviews {
-            notices.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-        for line in lines { addNotice(line) }
-    }
-
-    /// One line under the footer.
-    private struct Notice: Equatable {
-        var text: String
-        var color: NSColor = .secondaryLabelColor
-        var button: String?
-        var action: Selector?
-        var enabled = true
-        var secondButton: String?
-        var secondAction: Selector?
-    }
-
-    private func addNotice(_ notice: Notice) {
-        let label = NSTextField(wrappingLabelWithString: notice.text)
-        label.textColor = notice.color
-        label.font = .systemFont(ofSize: 12)
-        var views: [NSView] = [label]
-        for (button, action) in [(notice.button, notice.action), (notice.secondButton, notice.secondAction)] {
-            guard let button, let action else { continue }
-            let control = NSButton(title: button, target: self, action: action)
-            control.bezelStyle = .push
-            control.controlSize = .small
-            control.isEnabled = notice.enabled
-            views.append(control)
-        }
-        let row = NSStackView(views: views)
-        row.alignment = .centerY
-        row.spacing = 8
-        notices.addArrangedSubview(row)
-    }
-
     // MARK: - Actions
 
     /// Runs one change; its error shows in the footer until the next action.
@@ -768,7 +593,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
 
     /// Play/Pause (the bar's button, Space, K): pauses, or plays on from the play head (from the start once the
     /// audio ended). The selection does not move it: a timestamp or a word plays from elsewhere.
-    @objc private func togglePlay() {
+    @objc func togglePlay() {
         guard player.isReady else { return }
         if player.isPlaying {
             player.pause()
@@ -788,7 +613,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     }
 
     /// Moves the play head, playing on when playing (the scrubber, ←/→, ⌘←/⌘→).
-    private func seek(to seconds: Double) {
+    func seek(to seconds: Double) {
         guard player.isReady else { return }
         played = true
         follow.resume()
@@ -851,12 +676,12 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         }
     }
 
-    private func previousTurn() {
+    func previousTurn() {
         seek(to: ReviewTimeline.previousTurnStart(before: player.currentTime,
                                                   starts: review.shownTurns.map(\.start)))
     }
 
-    private func nextTurn() {
+    func nextTurn() {
         guard player.isReady else { return }
         guard let start = ReviewTimeline.nextTurnStart(after: player.currentTime,
                                                        starts: review.shownTurns.map(\.start)) else {
@@ -880,7 +705,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         ReviewPlaybackSpeed.save(rate, to: .standard)
     }
 
-    @objc private func nextUncertain() {
+    @objc func nextUncertain() {
         guard let turn = review.nextUncertain(after: turnList.selectedTurnIDs.last) else {
             NSSound.beep()
             return
@@ -895,7 +720,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         play(from: turn.start)
     }
 
-    @objc private func assignChosen(_ sender: NSMenuItem) {
+    @objc func assignChosen(_ sender: NSMenuItem) {
         guard let choice = sender.representedObject as? AssignChoice else { return }
         let ids = turnList.selectedTurnIDs
         guard !ids.isEmpty else { return }
@@ -1351,20 +1176,20 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         return (term, heard.flatMap { TranscriptEditLearning.heardAs(heard: $0, term: term) })
     }
 
-    @objc private func addOfferedTerm() {
+    @objc func addOfferedTerm() {
         guard let offered = offeredTerm, let adder = addWordListTerm else { return }
         offeredTerm = nil
         notice = adder(offered.term, offered.heardAs)
         refreshFooter()
     }
 
-    @objc private func dismissOfferedTerm() {
+    @objc func dismissOfferedTerm() {
         offeredTerm = nil
         refreshFooter()
     }
 
     /// "Edit Again" on an edit not saved: its field opens with what was typed, when its words are still shown.
-    @objc private func editUnsavedAgain() {
+    @objc func editUnsavedAgain() {
         guard canEditWordsNow else { return }
         if !turnList.editingWords { setEditMode(true) }
         let opened = wordEdits.reopenNextUnsaved()
@@ -1372,7 +1197,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         refreshFooter()
     }
 
-    @objc private func dismissUnsaved() {
+    @objc func dismissUnsaved() {
         wordEdits.dismissNextUnsaved()
         if !wordEdits.unsaved.holdsClose, notice == Self.unsavedBeforeClose { notice = nil }
         refreshFooter()
@@ -1389,7 +1214,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     }
 
     /// Undo (⌘Z, the menu): the review's newest change goes back, and every join with it.
-    @objc private func undo() {
+    @objc func undo() {
         clearJoins()
         perform { review in try await review.undo() }
     }
@@ -1428,16 +1253,16 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         }
     }
 
-    @objc private func labelAgain() {
+    @objc func labelAgain() {
         perform { review in try await review.labelAgain() }
     }
 
     /// The labels could not be reread after a change (`ReviewSession.reloadProblem`): try again.
-    @objc private func rereadLabels() {
+    @objc func rereadLabels() {
         perform { review in await review.reload() }
     }
 
-    @objc private func showStaleEdits() {
+    @objc func showStaleEdits() {
         var reasons: [String: Int] = [:]
         for edit in review.projection.staleEdits { reasons[edit.reason, default: 0] += 1 }
         let lines = reasons.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
@@ -1457,72 +1282,6 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         review.autoMergeVoices.toggle()
         UserDefaults.standard.set(review.autoMergeVoices, forKey: Self.autoMergeKey)
         refreshToolbar()
-    }
-
-    // MARK: - View options
-
-    /// Hide Speakers / Show Speakers (the toolbar button, View menu, ⌥⌘S): the speakers pane collapses and the turn
-    /// list takes its width. Speakers can still be named from each row's speaker pop-up.
-    @objc func toggleSpeakers(_ sender: Any?) {
-        let hide = !panes.speakersHidden
-        // A name being typed in the pane ends first (as a click elsewhere would end it). While a field is edited the
-        // first responder is the window's field editor, whose delegate is the field.
-        if hide, Self.isEditing(in: sidebar, responder: window.firstResponder) {
-            window.makeFirstResponder(turnList.table)
-        }
-        panes.setSpeakersHidden(hide, animated: true)
-    }
-
-    /// `responder` is in `pane`, or is the field editor of a field in it.
-    static func isEditing(in pane: NSView, responder: NSResponder?) -> Bool {
-        if let editor = responder as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSView {
-            return field.isDescendant(of: pane)
-        }
-        return (responder as? NSView)?.isDescendant(of: pane) ?? false
-    }
-
-    /// The pane was hidden or shown (also by dragging the divider): remembered for this meeting. Hidden by a drag with a
-    /// name being typed there, the field ends now, so nothing typed goes to a field out of sight.
-    func speakersHiddenChanged(_ hidden: Bool) {
-        if hidden, Self.isEditing(in: sidebar, responder: window.firstResponder) {
-            window.makeFirstResponder(turnList.table)
-        }
-        ReviewSpeakersPaneMemory().setHidden(hidden, sessionID: sessionID)
-        refreshSpeakersButton()
-    }
-
-    func refreshSpeakersButton() {
-        let title = Self.speakersTitle(hidden: panes.speakersHidden)
-        if speakersButton.title != title { speakersButton.title = title }
-        speakersButton.toolTip = (panes.speakersHidden ? "Show the speakers pane" : "Hide the speakers pane; name "
-            + "speakers from each row's speaker pop-up meanwhile") + " (⌥⌘S)"
-    }
-
-    /// The button's and the View menu item's title.
-    static func speakersTitle(hidden: Bool) -> String { hidden ? "Show Speakers" : "Hide Speakers" }
-
-    /// Show Short Interjections (View menu): the short turns of the unknown speaker the list leaves out are listed
-    /// again (docs/meeting/review-window.md §5.10); the exports leave them out either way. Kept across windows.
-    @objc func toggleShortInterjections(_ sender: Any?) {
-        review.showsShortInterjections.toggle()
-        UserDefaults.standard.set(review.showsShortInterjections, forKey: Self.showInterjectionsKey)
-        refresh()
-    }
-
-    /// The View menu's review items: their titles and check marks follow this window. Every other item it is asked
-    /// about (the Export pull-down) stays enabled.
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        switch menuItem.action {
-        case #selector(toggleSpeakers(_:))?:
-            menuItem.title = Self.speakersTitle(hidden: panes.speakersHidden)
-        case #selector(toggleShortInterjections(_:))?:
-            menuItem.state = review.showsShortInterjections ? .on : .off
-        case #selector(restoreDeletedWords(_:))?:
-            return !restorableDeletedWords.isEmpty
-        default:
-            break
-        }
-        return true
     }
 
     // MARK: - Export
@@ -1571,131 +1330,6 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         refresh()
         if let first = turnList.paragraphs.first, turnList.selectedTurnIDs.isEmpty {
             turnList.select([first.id], scroll: true)
-        }
-    }
-
-    // MARK: - Keys
-
-    /// Playback keys, anywhere in the window but while typing in a text field (or a sheet is open): Space (except
-    /// on a button focused with keyboard navigation) and K play/pause, ← and J back 5 seconds, → and L ahead 5 seconds, ⌘← the previous turn (the start of this one first),
-    /// ⌘→ the next turn.
-    private func handlePlaybackKey(_ event: NSEvent) -> Bool {
-        guard window.attachedSheet == nil else { return false }
-        if let text = window.firstResponder as? NSTextView, text.isEditable { return false }
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            .subtracting([.numericPad, .function, .capsLock])
-        let special = event.specialKey
-        if flags == [.command] {
-            switch special {
-            case .leftArrow?: previousTurn()
-            case .rightArrow?: nextTurn()
-            default: return false
-            }
-            return true
-        }
-        guard flags.isEmpty else { return false }
-        switch special {
-        case .leftArrow?:
-            seek(to: player.currentTime - Self.seekStep)
-            return true
-        case .rightArrow?:
-            seek(to: player.currentTime + Self.seekStep)
-            return true
-        default:
-            break
-        }
-        let key = event.charactersIgnoringModifiers?.lowercased()
-        // With keyboard navigation on, Space presses the focused button, checkbox, or pop-up (K still plays).
-        if key == " ", NSApplication.shared.isFullKeyboardAccessEnabled, window.firstResponder is NSButton {
-            return false
-        }
-        switch key {
-        case " ", "k":
-            // Held down, it would flip on every repeat.
-            if !event.isARepeat { togglePlay() }
-            return true
-        case "j":
-            seek(to: player.currentTime - Self.seekStep)
-            return true
-        case "l":
-            seek(to: player.currentTime + Self.seekStep)
-            return true
-        default:
-            return false
-        }
-    }
-
-    /// Seconds ← and → move the play head.
-    private static let seekStep = 5.0
-
-    /// Whether ⌘Z undoes typing (the text being edited) rather than the review's newest change: in a text field whose
-    /// own undo has something to undo (`typingToUndo`, whatever the text reads now: "cat" typed over "dog" typed over
-    /// "cat" is still typing), or a word's field holding text it did not open with (`unsavedText`: typing put back
-    /// without its undo, after a ⇧-click widened the field or a save failed). Only an untouched field hands ⌘Z to the
-    /// review.
-    static func undoIsTyping(editingText: Bool, typingToUndo: Bool, unsavedText: Bool = false) -> Bool {
-        editingText && (typingToUndo || unsavedText)
-    }
-
-    /// Shortcuts of the window (Holos has no main menu to carry them). Internal for tests.
-    func handleKey(_ event: NSEvent) -> Bool {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            .subtracting([.numericPad, .function, .capsLock])
-        guard let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
-        let editingText = window.firstResponder is NSTextView
-        if flags == [.command, .shift], key == "z" {
-            return editingText && NSApplication.shared.sendAction(Selector(("redo:")), to: nil, from: window)
-        }
-        if flags == [.command, .shift], key == "e" {
-            exportPopUp.performClick(nil)
-            return true
-        }
-        if flags == [.command, .option], key == "s" {
-            toggleSpeakers(nil)
-            return true
-        }
-        guard flags == [.command] else { return false }
-        switch key {
-        case "'":
-            nextUncertain()
-            return true
-        case "f":
-            window.makeFirstResponder(searchField)
-            return true
-        case "e":
-            // From the field being edited too: it closes unsaved, as the mode ends.
-            toggleEditMode()
-            return true
-        case "w":
-            window.performClose(nil)
-            return true
-        case "z":
-            // In a text field with typing to undo, ⌘Z undoes the typing (it leaves the review, and its joins, alone);
-            // with none (a word's field opened again after a join, say), it is the review's, as the banner says.
-            let editor = window.firstResponder as? NSTextView
-            let typingToUndo = editor?.undoManager?.canUndo ?? false
-            let unsavedText = editor != nil && editor === turnList.editField.currentEditor()
-                && turnList.wordEdit.map {
-                    TranscriptWordEdit.cleaned(turnList.editField.stringValue) != TranscriptWordEdit.cleaned($0.shown)
-                } == true
-            if Self.undoIsTyping(editingText: editingText, typingToUndo: typingToUndo, unsavedText: unsavedText) {
-                // Taken even when the field has no undo for its text: the review's change behind it stays.
-                _ = NSApplication.shared.sendAction(Selector(("undo:")), to: nil, from: window)
-                return true
-            }
-            undo()
-            return true
-        case "x":
-            return editingText && NSApplication.shared.sendAction(#selector(NSText.cut(_:)), to: nil, from: window)
-        case "c":
-            return editingText && NSApplication.shared.sendAction(#selector(NSText.copy(_:)), to: nil, from: window)
-        case "v":
-            return editingText && NSApplication.shared.sendAction(#selector(NSText.paste(_:)), to: nil, from: window)
-        case "a":
-            return editingText
-                && NSApplication.shared.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: window)
-        default:
-            return false
         }
     }
 
