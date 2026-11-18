@@ -45,9 +45,11 @@ the first seven words at the segment's start, in the silence, and the rest over 
 (given to WhisperKit as its `SegmentSeeking`) moves the weights up by those rows before
 WhisperKit aligns the words, keeping Core ML's padded row stride (1504 for 1500 frames; a
 first version that ignored it put every word 0.8 s late with that prompt and 8 s late with a
-110-token one). After it, the word starts with a 39- and a 448-character prompt matched the
-ones without a prompt within 0.05 s, except the first word with the long prompt (0.6 s
-early); the opt-in model test checks this.
+110-token one), and merges punctuation per segment afterwards instead of through WhisperKit's
+window-wide pass (which dropped an unspaced "-" before a spaced word and shifted later
+sub-segments' words into earlier ones). After it, the word starts with a 39- and a
+448-character prompt matched the ones without a prompt within 0.05 s, except the first word
+with the long prompt (0.6 s early); the opt-in model test checks this.
 
 *Timestamp rules with a prompt* (`PromptTimestampRulesFilter`). WhisperKit's
 `TimestampRulesFilter` finds where sampling begins by looking for `<|transcribe|>` among the
@@ -67,8 +69,13 @@ make the model stop early in a chunk: on ten minutes of a real call's system tra
 of the recorded transcript with no Whisper word within 3 s were 30 of 1,820 without a prompt,
 433 with a 10-term invented prompt, and 383 with the timestamp fix. So each chunk is decoded
 without the prompt too, and keeps the prompted result only when it has at least 85 % of the
-plain result's words: 0 of 1,820 left uncovered, 7 of 28 chunks kept without the prompt, at
-about 2.8 times the time of a plain pass (70 s for the ten minutes on the test Mac).
+plain result's words and did not invent speaker labels or a prompt roll-call list that the
+plain result lacks (when the plain result covers at least 85 % of the remaining words): 0 of
+1,820 left uncovered, 7 of 28 chunks kept without the prompt, at
+about 2.8 times the time of a plain pass (70 s for the ten minutes on the test Mac). Every
+decoded chunk's words and passages are also clipped to the chunk's own duration before its
+offset is added, dropping words WhisperKit aligned into the trailing zero-padding of its 30 s
+window so a chunk never projects a repeated passage onto the chunk after it.
 
 *Empty chunks* (found by evaluating the first version against a cloud reference). Whole chunks
 still came back with no words at random, in both decodes, and the dropped 20–30 s stretches
@@ -179,19 +186,25 @@ skips it.
    −43 dBFS (system), p50 −22 and −21; wordless seconds' p50 −64 and −72. Below −50 dBFS
    lay 0.6 % and 0.4 % of the words but 75 % and 92 % of the wordless seconds, and a quiet
    word the live recognizer heard still keeps its segment by the second condition.
-   Before both, speaker labels the model invents are removed (`droppedLabels`,
-   `DeepTranscriptLabels.swift`): Whisper, which learned from transcripts that name their
-   speakers, sometimes starts a passage with a name nobody said ("Jane Doe: Yes.", "Jane Doe,
-   Ph.D.: …", a date, an all-caps word). A label is 1 to 5 words, the last ending in ":", each
-   starting with an uppercase letter or a digit (leading punctuation aside, as Whisper splits
-   "Ph.D.") or a name particle ("de", "van"), at the start of a passage or after a word ending
-   a sentence. It stays when the recorded transcript has every one of its words but titles
-   ("Dr.", "Ph.D.") on the same track within 2 s ("Question: …" said aloud); without a
-   recorded transcript the shape alone decides. Only the label's words go; the passage starts
-   at its first word left, and one that held only a label is dropped. Measured on four
-   meetings' deep transcripts (the user's, numbers only): 46 labels in 5,276 passages, all
-   removed, 1 at a sentence end inside a passage, 1 passage that was only a label; the one
-   real colon near a passage start, after lowercase words, stays.
+   Before both, speaker labels and prompt roll-call lists the model invents are removed
+   (`droppedLabels`, `DeepTranscribedLabel.swift`, `DeepTranscriptLabels.swift`): Whisper,
+   which learned from transcripts that name their speakers and sees the vocabulary prompt in
+   `<|startofprev|>`, sometimes starts a passage with a name or list nobody said ("Jane Doe:
+   Yes.", "Jane Doe- Yes.", "Jane Doe, Ph.D.: …", "Jane Doe-Smith, Omar, Lena, …", a date, an
+   all-caps word). A speaker label ends in ":" (1 to 5 words per comma-separated item, up to
+   15 in all) or "-" (2 to 5 capitalized name words ending in or followed by "-", or joined by
+   "-" to the next word), each word starting with an uppercase letter or a digit (leading
+   punctuation aside, as Whisper splits "Ph.D.") or a name particle ("de", "van"), at the
+   start of a passage or after a word ending a sentence; it stays when the recorded transcript
+   has every one of its words but titles ("Dr.", "Ph.D.") on the same track within 2 s
+   ("Question: …" said aloud). A colon-less comma-separated roll-call list of at least two
+   capitalized items (three or more words) at the start of a passage stays when the recorded
+   transcript has any of its words there. Without a recorded transcript the shape alone
+   decides. Only the label's words go; the passage starts at its first word left, and one that
+   held only a label is dropped. Measured on four meetings' deep transcripts (the user's,
+   numbers only): 46 labels in 5,276 passages, all removed, 1 at a sentence end inside a
+   passage, 1 passage that was only a label; the one real colon near a passage start, after
+   lowercase words, stays.
 6. *Segments.* Words are joined as Whisper spaced them (punctuation it wrote as a word of its
    own joins the word before), each a `TimedWord` with its UTF-16 offset, start, end and
    probability as confidence; a segment without word timings keeps its text untimed. New

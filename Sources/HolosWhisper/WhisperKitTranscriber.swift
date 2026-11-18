@@ -147,9 +147,69 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
     static let promptedShare = 0.85
 
     /// Whether a chunk keeps its result without the prompt: the prompted one has fewer than `promptedShare` of its
-    /// words.
-    static func keepsPlain(prompted: Int, plain: Int) -> Bool {
-        Double(prompted) < promptedShare * Double(plain)
+    /// words, or it invented speaker labels or a prompt roll-call list (`promptedLabels > plainLabels`) while the
+    /// plain result has at least `promptedShare` of the remaining words.
+    static func keepsPlain(prompted: Int, plain: Int, promptedLabels: Int = 0, plainLabels: Int = 0) -> Bool {
+        if Double(prompted) < promptedShare * Double(plain) { return true }
+        guard promptedLabels > plainLabels, plain > 0 else { return false }
+        let content = max(0, prompted - promptedLabels)
+        return Double(plain) >= promptedShare * Double(content)
+    }
+
+    /// How many words in `results` belong to invented speaker labels or prompt roll-call lists.
+    static func labelWordCount(_ results: [TranscriptionResult], specialTokenBegin: Int) -> Int {
+        results.reduce(0) { total, result in
+            total + result.segments.reduce(0) { count, segment in
+                let timed = (segment.words ?? []).compactMap { word -> DeepTranscribedWord? in
+                    guard word.tokens.contains(where: { $0 < specialTokenBegin }), !isSpecial(word.word) else {
+                        return nil
+                    }
+                    return DeepTranscribedWord(text: word.word, start: Double(word.start), end: Double(word.end))
+                }
+                let words = !timed.isEmpty ? timed : withoutSpecialTokens(segment.text)
+                    .split(whereSeparator: \.isWhitespace).map {
+                        DeepTranscribedWord(text: " " + $0, start: Double(segment.start), end: Double(segment.end))
+                    }
+                return count + DeepTranscribedLabel.count(in: words).words
+            }
+        }
+    }
+
+    /// `segments` clipped to `[0, chunkSeconds]` (the chunk's actual audio, before WhisperKit's trailing zero-padding
+    /// to a 30 s window): words and segments that start in the zero-padding (`>= chunkSeconds`), and a word in the
+    /// last 0.25 s before the cut that stretches into a dropped zero-padding tail, are dropped; kept ends are clamped
+    /// to `chunkSeconds`, so a chunk never projects words or passages onto the chunk after it.
+    static func clippedSegments(_ segments: [TranscriptionSegment], chunkSeconds: Double,
+                                specialTokenBegin: Int) -> [TranscriptionSegment] {
+        let limit = Float(max(0, chunkSeconds))
+        guard limit > 0 else { return [] }
+        return segments.compactMap { segment -> TranscriptionSegment? in
+            if let words = segment.words, !words.isEmpty {
+                let real = words.filter { word in
+                    word.tokens.contains(where: { $0 < specialTokenBegin }) && !isSpecial(word.word)
+                }
+                var kept = real.filter { $0.start < limit }
+                if kept.count < real.count, let last = kept.last, last.start >= limit - 0.25, last.end > limit {
+                    kept.removeLast()
+                }
+                guard !kept.isEmpty else { return nil }
+                for index in kept.indices {
+                    kept[index].end = max(kept[index].start, min(kept[index].end, limit))
+                }
+                var updated = segment
+                updated.words = kept
+                updated.start = min(max(0, segment.start), kept[0].start)
+                updated.end = max(updated.start, min(limit, kept[kept.count - 1].end))
+                if kept.count < real.count { updated.text = kept.map(\.word).joined() }
+                return updated
+            }
+            let text = withoutSpecialTokens(segment.text)
+            guard !text.isEmpty, segment.start < limit else { return nil }
+            var updated = segment
+            updated.start = max(0, segment.start)
+            updated.end = max(updated.start, min(limit, segment.end))
+            return updated
+        }
     }
 
     /// The words of a decode: a segment's timed words, or its text's words when it has no timings.
@@ -250,6 +310,7 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
     private func decodeChosen(_ spans: [Span], options: DecodingOptions, plain: DecodingOptions?,
                               depth: Int, recordedSamples: [Int]) async throws -> [Decoded] {
         guard !spans.isEmpty else { return [] }
+        let special = kit.tokenizer?.specialTokens.specialTokenBegin ?? Int.max
         var chosen = try await decode(spans.map(\.samples), offsets: spans.map(\.offset), options: options)
         var plainResults: [[TranscriptionResult]]?
         if let plain {
@@ -259,7 +320,10 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         for index in spans.indices {
             if let plainResults {
                 let promptedWords = Self.wordCount(chosen[index]), plainWords = Self.wordCount(plainResults[index])
-                let keepsPlain = Self.keepsPlain(prompted: promptedWords, plain: plainWords)
+                let promptedLabels = Self.labelWordCount(chosen[index], specialTokenBegin: special)
+                let plainLabels = Self.labelWordCount(plainResults[index], specialTokenBegin: special)
+                let keepsPlain = Self.keepsPlain(prompted: promptedWords, plain: plainWords,
+                                                 promptedLabels: promptedLabels, plainLabels: plainLabels)
                 chunkLog.append(ChunkDecision(start: Double(spans[index].offset) / 16_000,
                                               seconds: Double(spans[index].samples.count) / 16_000,
                                               promptedWords: promptedWords, plainWords: plainWords,
@@ -352,7 +416,17 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
                 Self.log.error("Deep transcription: a chunk at \(offsets[index] / WhisperKit.sampleRate, privacy: .public) s could not be decoded: \(String(describing: error), privacy: .public)")
             }
         }
-        return try Self.requireAll(outcomes, startSeconds: offsets.map { Double($0) / Double(WhisperKit.sampleRate) })
+        let decoded = try Self.requireAll(outcomes,
+                                          startSeconds: offsets.map { Double($0) / Double(WhisperKit.sampleRate) })
+        let special = kit.tokenizer?.specialTokens.specialTokenBegin ?? Int.max
+        for (index, results) in decoded.enumerated() {
+            let seconds = Double(chunks[index].count) / Double(WhisperKit.sampleRate)
+            for result in results {
+                result.segments = Self.clippedSegments(result.segments, chunkSeconds: seconds,
+                                                       specialTokenBegin: special)
+            }
+        }
+        return decoded
     }
 
     /// Every chunk's results; throws `incomplete` naming the chunks that could not be decoded (also on their own), so a
