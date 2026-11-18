@@ -172,6 +172,101 @@ import Testing
         #expect(WhisperKitTranscriber.keepsPlain(prompted: 70, plain: 100))
         #expect(!WhisperKitTranscriber.keepsPlain(prompted: 85, plain: 100))
         #expect(!WhisperKitTranscriber.keepsPlain(prompted: 0, plain: 0))
+        // The prompt invented speaker labels ("Jane Doe-") that the plain decode does not have: plain is kept when it
+        // covers the speech, and the prompted result stays when plain dropped the speech.
+        #expect(WhisperKitTranscriber.keepsPlain(prompted: 60, plain: 50, promptedLabels: 10, plainLabels: 0))
+        #expect(!WhisperKitTranscriber.keepsPlain(prompted: 60, plain: 20, promptedLabels: 10, plainLabels: 0))
+        #expect(!WhisperKitTranscriber.keepsPlain(prompted: 20, plain: 0, promptedLabels: 2, plainLabels: 0))
+        #expect(!WhisperKitTranscriber.keepsPlain(prompted: 50, plain: 50, promptedLabels: 2, plainLabels: 2))
+    }
+
+    @Test func aPromptNameLabelCountsOnlyWhenTheOtherDecodeHasNoneOfItsWordsNearIt() {
+        let special = 50_257
+        func result(_ texts: [String], from start: Float = 0) -> TranscriptionResult {
+            let words = texts.enumerated().map { index, text in
+                WordTiming(word: text, tokens: [10], start: start + Float(index), end: start + Float(index + 1),
+                           probability: 0.9)
+            }
+            let segment = TranscriptionSegment(id: 0, seek: 0, start: start, end: start + Float(texts.count),
+                                               text: texts.joined(), tokens: [10], tokenLogProbs: [[10: -0.1]],
+                                               temperature: 0, avgLogprob: -0.1, compressionRatio: 1, noSpeechProb: 0,
+                                               words: words)
+            return TranscriptionResult(text: segment.text, segments: [segment], language: "en",
+                                       timings: TranscriptionTimings())
+        }
+        let promptWords = DeepTranscribedLabel.promptWords("Sync. Jane Doe-Smith, Omar, Ana do Carmo.")
+        func count(_ prompted: TranscriptionResult, _ plain: TranscriptionResult) -> Int {
+            WhisperKitTranscriber.labelWordCount([prompted], other: [plain], specialTokenBegin: special,
+                                                 promptWords: promptWords)
+        }
+        let invented = result([" Jane", " Doe", "-Making", " the", " plan."])
+        // The plain decode has "Jane" where the label is: said. "Jane" only in the turn before it, or only a
+        // particle of the name there: invented.
+        #expect(count(invented, result([" Jane", " Dosmith", " making", " the", " plan."])) == 0)
+        #expect(count(invented, result([" Jane,", " any", " update?"], from: -6)) == 2)
+        #expect(count(result([" Ana", " do", " Carmo-", " Yes."]), result([" I", " do."])) == 3)
+        // "Jane Doe-Smith" as the prompt spells it is a name, not a label glued to the next word.
+        #expect(count(result([" Jane", " Doe", "-Smith", " will", " present."]), result([" Hi."])) == 0)
+        #expect(count(result([" Jane", " Doe", "-Smith", " -", " Yes."]), result([" Yes."])) == 4)
+        // Names that are not in the prompt are never a dash label.
+        #expect(count(result([" Mary", " Smith", "-Jones", " will", " present."]), result([" Hi."])) == 0)
+    }
+
+    @Test func punctuationIsMergedPerSegmentWithoutDroppingHyphens() {
+        func word(_ text: String, _ token: Int, _ start: Float, _ end: Float) -> WordTiming {
+            WordTiming(word: text, tokens: [token], start: start, end: end, probability: 0.9)
+        }
+        // Whisper tokenizes "Jane Doe- Yeah." as [" Jane", " Doe", "-", " Yeah", "."]: "-" has no leading space while
+        // " Yeah" does. WhisperKit's own pass deleted "-", stripping the label's dash and shifting every later
+        // sub-segment's words by one token; `PromptAlignedSegmentSeeker.mergePunctuations` attaches "-" to " Doe-".
+        let merged = PromptAlignedSegmentSeeker.mergePunctuations([
+            word(" Jane", 1, 0.0, 0.2), word(" Doe", 2, 0.2, 0.4), word("-", 12, 0.4, 0.45),
+            word(" Yeah", 3, 0.5, 0.8), word(".", 13, 0.8, 0.85),
+        ])
+        #expect(merged.map(\.word) == [" Jane", " Doe-", " Yeah."])
+        #expect(merged.flatMap(\.tokens) == [1, 2, 12, 3, 13], "Every token stays accounted for.")
+        #expect(merged[1].end == 0.45 && merged[2].end == 0.85)
+
+        // A spaced dash between two spaced words is kept as its own word rather than deleted, and quotes join the word
+        // they wrap.
+        let quoted = PromptAlignedSegmentSeeker.mergePunctuations([
+            word(" \"", 20, 1.0, 1.1), word("Hello", 21, 1.1, 1.4), word("\"", 22, 1.4, 1.5),
+            word(" -", 23, 1.6, 1.7), word(" world", 24, 1.7, 2.0),
+        ])
+        #expect(quoted.map(\.word) == [" \"Hello\"", " -", " world"])
+        #expect(quoted.flatMap(\.tokens) == [20, 21, 22, 23, 24])
+    }
+
+    @Test func wordsAndSegmentsInTrailingZeroPaddingAreClippedToTheChunk() {
+        let special = 50_257
+        func word(_ text: String, _ start: Float, _ end: Float) -> WordTiming {
+            WordTiming(word: text, tokens: [10], start: start, end: end, probability: 0.9)
+        }
+        func segment(_ text: String, _ start: Float, _ end: Float, _ words: [WordTiming]?) -> TranscriptionSegment {
+            TranscriptionSegment(id: 0, seek: 0, start: start, end: end, text: text, tokens: [10],
+                                 tokenLogProbs: [[10: -0.1]], temperature: 0, avgLogprob: -0.1, compressionRatio: 1,
+                                 noSpeechProb: 0, words: words)
+        }
+        // An 18 s chunk padded by WhisperKit to 30 s: a real passage whose last word DTW stretched to 29 s, a second
+        // passage with a repeat starting right before the 18 s cut and running into the zero-padding, and a passage
+        // wholly inside the zero-padding at 29–30 s.
+        let stretched = segment(" First sentence here", 0.5, 29.2, [
+            word(" First", 0.5, 1.0), word(" sentence", 1.0, 2.0), word(" here", 2.0, 29.2),
+        ])
+        let trailing = segment(" Kept words you have", 10.0, 29.8, [
+            word(" Kept", 10.0, 11.0), word(" words", 11.0, 17.6),
+            word(" you", 17.9, 18.5), word(" have", 18.5, 29.8),
+        ])
+        let hallucinated = segment(" Repeated in padding", 29.1, 30.0, [
+            word(" Repeated", 29.1, 29.5), word(" in", 29.5, 29.8), word(" padding", 29.8, 30.0),
+        ])
+        let untimedInPadding = segment(" Untimed padding", 22.0, 25.0, nil)
+        let clipped = WhisperKitTranscriber.clippedSegments(
+            [stretched, trailing, hallucinated, untimedInPadding], chunkSeconds: 18.0, specialTokenBegin: special)
+        #expect(clipped.count == 2)
+        #expect(clipped[0].end == 18.0 && clipped[0].words?.last?.end == 18.0)
+        #expect(clipped[1].text == " Kept words" && clipped[1].words?.map(\.word) == [" Kept", " words"])
+        #expect(clipped[1].end == 17.6)
     }
 
     @Test func aChunkThatCannotBeDecodedFailsThePass() throws {

@@ -21,6 +21,9 @@ private func passage(_ text: String, at start: Double, track: String = "system",
                             text: words.map(\.text).joined(), words: words, levelDB: -20)
 }
 
+/// A vocabulary prompt as the deep transcription pass builds it: the meeting's name, then terms and people's names.
+private let prompt = "Weekly sync. Ostrowski, Jane Ostrowski-Lind, Jane Doe-Smith, Omar, Lena, Анна Иванова."
+
 private func recorded(_ text: String, at start: Double, track: String = "system") -> TranscriptSegment {
     SessionFixtures.segment(text.split(separator: " ").map(String.init), track: track, start: start, wordSeconds: 0.3)
 }
@@ -47,17 +50,97 @@ private func recorded(_ text: String, at start: Double, track: String = "system"
 @Test func aLabelAfterASentenceIsRemovedAndAPassageOfOnlyALabelIsDropped() {
     let result = DeepTranscriptGuards.apply([
         passage("Back to the parking question. Mira Sandoval: Yeah.", at: 0),
+        passage("Agreed. Mira Sandoval: Yeah.", at: 5),
         passage("Mira Sandoval:", at: 10),
         passage("Mira Sandoval: Kai Brandt: Both.", at: 20),
     ], reference: nil)
-    #expect(result.droppedLabels == 4)
-    #expect(result.kept.map(\.text) == [" Back to the parking question. Yeah.", " Both."])
+    #expect(result.droppedLabels == 5)
+    #expect(result.kept.map(\.text) == [" Back to the parking question. Yeah.", " Agreed. Yeah.", " Both."])
+}
+
+@Test func hyphenatedLabelsAndPromptRollCallListsAreRemoved() throws {
+    let reference = [
+        recorded("still pending from the contractor", at: 10),
+        recorded("making the schedule work", at: 30),
+        recorded("checklist and flow", at: 40),
+        recorded("that works for the team", at: 50),
+        recorded("but the default works", at: 70),
+    ]
+    let result = DeepTranscriptGuards.apply([
+        // Speaker turn with a trailing hyphen or a spaced dash.
+        passage("Jane Ostrowski- Still pending from the contractor.", at: 10),
+        passage("Jane Ostrowski - Yes.", at: 20),
+        // Speaker turn whose hyphen was glued to the first word of the sentence.
+        passage("Jane Ostrowski +-Making the schedule work.", at: 30),
+        passage("Jane Ostrowski +-Vis, Checklist and flow.", at: 40),
+        // Comma-separated prompt roll-call lists, with and without a colon.
+        passage("Jane Ostrowski +-Lind, Omar, Lena, M +.D.: That works for the team.", at: 50),
+        passage("Jane Ostrowski +-Lind, Omar, Lena, Flight path.", at: 60),
+        passage("Jane Ostrowski +-Lind, Omar. But the default works.", at: 70),
+        passage("Jane Ostrowski +-Lind, Omar.", at: 80),
+        // Mid-passage hyphenated labels after sentence ends (as when several sub-segments sit in one passage).
+        passage("Jane Ostrowski- First point. Jane Ostrowski- Second point.", at: 90),
+    ], reference: reference, prompt: prompt)
+    #expect(result.droppedLabels == 10)
+    #expect(result.kept.map(\.text) == [
+        " Still pending from the contractor.",
+        " Yes.",
+        " Making the schedule work.",
+        " Checklist and flow.",
+        " That works for the team.",
+        " Flight path.",
+        " But the default works.",
+        " First point. Second point.",
+    ])
+    let unhyphenated = try #require(DeepAudio.transcriptSegment(result.kept[2]))
+    #expect(unhyphenated.text == "Making the schedule work.")
+}
+
+@Test func speechShapedLikeADashLabelOrAListStaysUnlessItsNamesComeFromThePrompt() {
+    let segments = [
+        // Not names from the prompt: ranges, a spaced dash, an addressed name, a sentence before a list.
+        passage("From January +-March we grew.", at: 0),
+        passage("Next Monday - Friday works for me.", at: 10),
+        passage("Phase Two - testing starts soon.", at: 20),
+        passage("Merci Marie +-Claire, c'est bon.", at: 30),
+        passage("Thanks Kai. Lena, Omar, Jane, can you join?", at: 40),
+        passage("Rhea Moss, Kai Brandt, Lena Vos, ready.", at: 50),
+    ]
+    let result = DeepTranscriptGuards.apply(segments, reference: nil, prompt: prompt)
+    #expect(result.droppedLabels == 0)
+    #expect(result.kept.map(\.text) == segments.map(\.text))
+    // Without a prompt, only a colon label is looked for.
+    let unprompted = [passage("Jane Ostrowski- Yes.", at: 0), passage("Jane Ostrowski +-Lind, Omar, Lena, Go.", at: 10)]
+    #expect(DeepTranscriptGuards.apply(unprompted, reference: nil).droppedLabels == 0)
+}
+
+@Test func aDashLabelOfPromptNamesStaysWhenAnyOfItsNamesWasSaidAtIt() {
+    // The recorded transcript misheard the surname but has the first name: the name was said.
+    let addressed = [passage("Jane Ostrowski +-Making the plan.", at: 10),
+                     passage("Анна Иванова — руководитель проекта.", at: 30)]
+    let reference = [recorded("Jane Ostrovsky making the plan", at: 10),
+                     recorded("Анна Иванов руководитель проекта", at: 30)]
+    let kept = DeepTranscriptGuards.apply(addressed, reference: reference, prompt: prompt)
+    #expect(kept.droppedLabels == 0 && kept.kept.map(\.text) == addressed.map(\.text))
+    // Nobody said either name there, or only in the turn before ("Jane, any update?" ending 1 s before): invented.
+    let invented = DeepTranscriptGuards.apply(addressed, reference: [recorded("Jane any update", at: 8.1),
+                                                                     recorded("making the plan", at: 10)],
+                                              prompt: prompt)
+    #expect(invented.droppedLabels == 2)
+    #expect(invented.kept.map(\.text) == [" Making the plan.", " руководитель проекта."])
+    // A hyphenated name spelled as in the prompt is the name, not a label glued to the next word.
+    let named = [passage("Jane Doe +-Smith will present.", at: 0), passage("Jane Doe +-Smith, can you share?", at: 10)]
+    #expect(DeepTranscriptGuards.apply(named, reference: nil, prompt: prompt).droppedLabels == 0)
+    let labelled = DeepTranscriptGuards.apply([passage("Jane Doe +-Smith - Yes.", at: 0)], reference: nil,
+                                              prompt: prompt)
+    #expect(labelled.kept.map(\.text) == [" Yes."])
 }
 
 @Test func speechThatLooksLikeALabelStays() {
     let reference = [
         recorded("question how long will it take", at: 0),
         recorded("Bruno says yes", at: 30, track: "mic"),
+        recorded("payload 1 payload 2 payload 3 ready", at: 70),
     ]
     let segments = [
         // Lowercase words: a sentence.
@@ -70,8 +153,13 @@ private func recorded(_ text: String, at start: Double, track: String = "system"
         passage("Alpha Beta Gamma Delta Epsilon Zeta: done.", at: 40),
         passage("At 10:30 we start.", at: 50),
         passage("The rule is simple: Ask first.", at: 60),
+        // A spoken list whose numbers the recorded transcript heard, and hyphenated non-name tokens.
+        passage("Pailot 1, Pailot 2, Pailot 3, ready.", at: 70),
+        passage("I'm R2 +-D2, ready.", at: 80),
+        passage("For C +-12, ready.", at: 90),
+        passage("Let's- go.", at: 100),
     ]
-    let result = DeepTranscriptGuards.apply(segments, reference: reference)
+    let result = DeepTranscriptGuards.apply(segments, reference: reference, prompt: prompt + " Pailot.")
     #expect(result.droppedLabels == 0)
     #expect(result.kept.map(\.text) == segments.map(\.text))
 }

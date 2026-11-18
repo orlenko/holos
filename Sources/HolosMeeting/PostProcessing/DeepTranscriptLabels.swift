@@ -2,27 +2,27 @@ import Foundation
 import HolosCore
 import HolosSpeakers
 
-/// Speaker labels Whisper writes into a passage that nobody said ("Jane Doe: Yes.", "Jane Doe, Ph.D.: …"), as the
-/// transcripts it learned from put them (docs/meeting/deep-transcription.md §4.16). Pure.
+/// Speaker labels and prompt roll-call lists Whisper writes into a passage that nobody said ("Jane Doe: Yes.",
+/// "Jane Doe- Yes.", "Jane Doe, Ph.D.: …", "Jane Doe-Smith, Omar, Lena, …"), as the transcripts it learned from and
+/// the vocabulary prompt put them (docs/meeting/deep-transcription.md §4.16). Pure.
 extension DeepTranscriptGuards {
-    /// The most words a label has, its colon word included ("Dr. Jane Q. Doe:").
-    public static let labelMaxWords = 5
-    /// How far around a label the recorded transcript's words are looked for: a label whose every word is there was
-    /// said.
-    public static let labelReferenceSeconds = 2.0
-    /// Lowercase words a name may hold.
-    static let nameParticles: Set<String> = ["al", "bin", "da", "das", "de", "del", "della", "den", "der", "di", "do",
-                                             "dos", "du", "el", "la", "le", "van", "von", "y"]
-    /// Titles and degrees (as letters, "Ph.D." being "ph" and "d"): not looked for in the recorded transcript.
-    static let labelTitles: Set<String> = ["d", "dr", "jr", "md", "mr", "mrs", "ms", "ph", "phd", "prof", "sr"]
+    /// The most words one name or title in a label has, its colon or dash word included ("Dr. Jane Q. Doe:").
+    public static let labelMaxWords = DeepTranscribedLabel.labelMaxWords
+    /// How far after a label, and before a colon label, the recorded transcript's words are looked for: a label whose
+    /// words are there was said (`DeepTranscribedLabel.heardSpan`).
+    public static let labelReferenceSeconds = DeepTranscribedLabel.referenceSeconds
 
-    /// `segment` without the speaker labels the model invented in it, and how many there were; nil when nothing else
-    /// was in it. A label is 1 to `labelMaxWords` words, the last ending in ":", each starting with an uppercase letter
-    /// or a digit (leading punctuation aside, as Whisper splits "Ph.D.") or a name particle, at the start of the
-    /// passage or after a word ending a sentence. It stays when the recorded transcript (`spoken`) has each of its
-    /// words but titles on the same track within `labelReferenceSeconds`: it was said ("Question: …"). Without a
-    /// recorded transcript the shape alone decides. A segment without word timings is looked at by its text.
-    static func withoutLabels(_ segment: DeepHeardSegment, spoken: SpokenWords?)
+    /// `segment` without the speaker labels and prompt roll-call lists the model invented in it, and how many there
+    /// were; nil when nothing else was in it. A speaker label ends in ":" (1 to `labelMaxWords` words per
+    /// comma-separated item) or "-" (2 to `labelMaxWords` name words, or a name joined by "-" to the next word), at the
+    /// start of the passage or after a word ending a sentence. A colon label stays when the recorded transcript
+    /// (`spoken`) has each of its words but titles on the same track within `labelReferenceSeconds` ("Question: …").
+    /// A dash label, and a colon-less comma-separated roll-call list at the start of a passage, is looked at only when
+    /// its name words are words of the vocabulary prompt (`promptWords`), and stays when the recorded transcript has
+    /// any of them from `DeepTranscribedLabel.dashLeadSeconds` before it to `labelReferenceSeconds` after it. Without a
+    /// recorded transcript the shape (and, for a dash label or a list, the prompt) alone decides. A segment without word timings is
+    /// looked at by its text.
+    static func withoutLabels(_ segment: DeepHeardSegment, spoken: SpokenWords?, promptWords: Set<String>)
         -> (segment: DeepHeardSegment?, labels: Int) {
         let timed = !segment.words.isEmpty
         var words = timed ? segment.words : segment.text.split(whereSeparator: \.isWhitespace).map {
@@ -31,10 +31,12 @@ extension DeepTranscriptGuards {
         var labels = 0
         var index = 0
         while index < words.count {
-            let starts = index == 0 || endsSentence(words[index - 1].text)
-            if starts, let end = labelEnd(words, from: index),
-               !said(words[index...end], track: segment.track, spoken: spoken) {
-                words.removeSubrange(index...end)
+            if let found = DeepTranscribedLabel.match(words, from: index, promptWords: promptWords),
+               !said(words[index...found.end], kind: found.kind, track: segment.track, spoken: spoken) {
+                if found.unhyphenateNext, found.end + 1 < words.count {
+                    words[found.end + 1].text = DeepTranscribedLabel.unhyphenated(words[found.end + 1].text)
+                }
+                words.removeSubrange(index...found.end)
                 labels += 1
                 continue
             }
@@ -53,38 +55,14 @@ extension DeepTranscriptGuards {
         return (kept, labels)
     }
 
-    /// The index of a label's colon word when one starts at `start`.
-    private static func labelEnd(_ words: [DeepTranscribedWord], from start: Int) -> Int? {
-        for index in start..<min(words.count, start + labelMaxWords) {
-            let text = words[index].text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard isLabelWord(text) else { return nil }
-            if text.hasSuffix(":") { return index }
-        }
-        return nil
-    }
-
-    private static func isLabelWord(_ text: String) -> Bool {
-        let core = text.drop { $0.isPunctuation || $0.isSymbol }
-        guard let first = core.first else { return false }
-        if first.isUppercase || first.isNumber { return true }
-        return nameParticles.contains(core.trimmingCharacters(in: .punctuationCharacters))
-    }
-
-    private static func endsSentence(_ text: String) -> Bool {
-        guard let last = text.trimmingCharacters(in: .whitespacesAndNewlines).last else { return false }
-        return last == "." || last == "?" || last == "!"
-    }
-
-    /// Whether the recorded transcript has every word of `label` but titles near it on `track`.
-    private static func said(_ label: ArraySlice<DeepTranscribedWord>, track: String, spoken: SpokenWords?) -> Bool {
+    /// Whether the recorded transcript has `label`'s words (but titles) near it on `track`
+    /// (`DeepTranscribedLabel.heardSpan`, `isHeard`: every one of a colon label's, any of a dash label's or a list's).
+    private static func said(_ label: ArraySlice<DeepTranscribedWord>, kind: DeepTranscribedLabel.Match.Kind,
+                             track: String, spoken: SpokenWords?) -> Bool {
         guard let spoken else { return false }
-        let names = label.flatMap { normalized($0.text).split(separator: " ").map(String.init) }
-            .filter { !labelTitles.contains($0) }
-        guard !names.isEmpty else { return false }
-        let from = (label.map(\.start).min() ?? 0) - labelReferenceSeconds
-        let to = (label.map(\.end).max() ?? 0) + labelReferenceSeconds
-        let near = spoken.words(track: track, from: from, to: to)
-        return names.allSatisfy(near.contains)
+        let span = DeepTranscribedLabel.heardSpan(label, kind: kind)
+        return DeepTranscribedLabel.isHeard(label, kind: kind,
+                                            in: spoken.words(track: track, from: span.from, to: span.to))
     }
 
     /// The recorded transcript's words per track (letters and digits, lowercased), with their times, to ask which lie

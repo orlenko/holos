@@ -695,7 +695,7 @@ public enum EvalLocal {
                     }
                     if let next { progress(next * 10) }
                 }
-            let built = DeepTranscriptionStage.segments(heard, reference: reference)
+            let built = DeepTranscriptionStage.segments(heard, reference: reference, prompt: record.prompt ?? "")
             if !built.lost.isEmpty {
                 throw HolosError.incomplete(DeepTranscriptionStage.lostMessage(built.lost))
             }

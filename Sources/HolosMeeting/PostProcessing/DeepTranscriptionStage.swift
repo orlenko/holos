@@ -212,7 +212,8 @@ public enum DeepTranscriptionStage {
         }
 
         // Without a recorded transcript, the silence guard has no words to look for: the audio level alone decides.
-        let (segments, guarded, lostSpeech) = Self.segments(pass.segments, reference: base?.reference)
+        let (segments, guarded, lostSpeech) = Self.segments(pass.segments, reference: base?.reference,
+                                                             prompt: prompt.text)
         // Speech the model left out even decoded again in parts: never published as a complete transcript.
         guard lostSpeech.isEmpty else { return fail("\(keptText) \(Self.lostMessage(lostSpeech))") }
         guard LanguageStage.hasWords(segments) || !(current.map { LanguageStage.hasWords($0.segments) } ?? true) else {
@@ -410,10 +411,12 @@ public enum DeepTranscriptionStage {
     }
 
     /// The transcript segments of a pass: the guards applied against `reference` (the recorded transcript; nil when
-    /// there is none), then each kept segment built with its word timings, in time order.
-    public static func segments(_ heard: [DeepHeardSegment], reference: Transcript?)
+    /// there is none) and `prompt` (the vocabulary prompt the model was given), then each kept segment built with its
+    /// word timings, in time order.
+    public static func segments(_ heard: [DeepHeardSegment], reference: Transcript?, prompt: String)
         -> (segments: [TranscriptSegment], guards: DeepTranscriptGuards.Result, lost: [DeepHeardSegment]) {
-        let guarded = DeepTranscriptGuards.apply(heard.filter { !$0.unheard }, reference: reference?.segments)
+        let guarded = DeepTranscriptGuards.apply(heard.filter { !$0.unheard }, reference: reference?.segments,
+                                                 prompt: prompt)
         let segments = guarded.kept.compactMap(DeepAudio.transcriptSegment)
             .sorted { ($0.start, $0.track ?? "") < ($1.start, $1.track ?? "") }
         return (segments, guarded, lost(heard.filter(\.unheard), reference: reference))

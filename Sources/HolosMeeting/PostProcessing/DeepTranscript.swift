@@ -327,20 +327,21 @@ public enum DeepTranscriptGuards {
         public var droppedLabels = 0
     }
 
-    /// Removes the speaker labels the model invented (`withoutLabels`, a passage that held nothing else going with
-    /// them); then drops, per track, each segment that is both over near-silent audio (`silenceThresholdDB`) and where
-    /// the recorded transcript (`reference`, nil when there is none) has no word within `referencePaddingSeconds`; then
-    /// each repeat past the first in a run of at least `repeatRunLength` consecutive segments with the same text
-    /// (compared lowercased, letters and digits only), each starting within
-    /// `repeatGapSeconds` of the one before, with no other track's speech starting between them (the same reply given
-    /// to each of several questions is not a loop; the same text on the other track, its echo, does not count). The
-    /// rest keep their order.
-    public static func apply(_ segments: [DeepHeardSegment], reference: [TranscriptSegment]?,
+    /// Removes the speaker labels the model invented (`withoutLabels`, with `prompt` the vocabulary prompt the model
+    /// was given; a passage that held nothing else going with them); then drops, per track, each segment that is both
+    /// over near-silent audio (`silenceThresholdDB`) and where the recorded transcript (`reference`, nil when there is
+    /// none) has no word within `referencePaddingSeconds`; then each repeat past the first in a run of at least
+    /// `repeatRunLength` consecutive segments with the same text (compared lowercased, letters and digits only), each
+    /// starting within `repeatGapSeconds` of the one before, with no other track's speech starting between them (the
+    /// same reply given to each of several questions is not a loop; the same text on the other track, its echo, does
+    /// not count). The rest keep their order.
+    public static func apply(_ segments: [DeepHeardSegment], reference: [TranscriptSegment]?, prompt: String = "",
                              silenceThresholdDB: Double = silenceThresholdDB) -> Result {
         let spoken = reference.map(SpokenWords.init)
+        let promptWords = DeepTranscribedLabel.promptWords(prompt)
         var droppedLabels = 0
         let unlabelled = segments.compactMap { segment -> DeepHeardSegment? in
-            let result = withoutLabels(segment, spoken: spoken)
+            let result = withoutLabels(segment, spoken: spoken, promptWords: promptWords)
             droppedLabels += result.labels
             return result.segment
         }
