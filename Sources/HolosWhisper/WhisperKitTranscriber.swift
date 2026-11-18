@@ -77,7 +77,8 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         let decoded = try await decodeChosen(ranges.map { range in
             Span(offset: range.lowerBound, samples: Array(request.samples[range]),
                  recordedWords: recordedSamples.filter { range.contains($0) }.count)
-        }, options: options, plain: plainOptions, depth: 0, recordedSamples: recordedSamples)
+        }, options: options, plain: plainOptions, promptWords: DeepTranscribedLabel.promptWords(request.prompt),
+           depth: 0, recordedSamples: recordedSamples)
         chunkCount += ranges.count
         // Audible stretches the model gave no words for, even in halves: reported, for the pass to judge against the
         // recorded transcript (speech it would leave out, or music and noise).
@@ -147,8 +148,9 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
     static let promptedShare = 0.85
 
     /// Whether a chunk keeps its result without the prompt: the prompted one has fewer than `promptedShare` of its
-    /// words, or it invented speaker labels or a prompt roll-call list (`promptedLabels > plainLabels`) while the
-    /// plain result has at least `promptedShare` of the remaining words.
+    /// words, or it invented speaker labels or a prompt roll-call list (`promptedLabels > plainLabels`, each counting
+    /// only labels the other decode does not show were said, `labelWordCount`) while the plain result has at least
+    /// `promptedShare` of the remaining words.
     static func keepsPlain(prompted: Int, plain: Int, promptedLabels: Int = 0, plainLabels: Int = 0) -> Bool {
         if Double(prompted) < promptedShare * Double(plain) { return true }
         guard promptedLabels > plainLabels, plain > 0 else { return false }
@@ -156,22 +158,32 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         return Double(plain) >= promptedShare * Double(content)
     }
 
-    /// How many words in `results` belong to invented speaker labels or prompt roll-call lists.
-    static func labelWordCount(_ results: [TranscriptionResult], specialTokenBegin: Int) -> Int {
-        results.reduce(0) { total, result in
-            total + result.segments.reduce(0) { count, segment in
-                let timed = (segment.words ?? []).compactMap { word -> DeepTranscribedWord? in
-                    guard word.tokens.contains(where: { $0 < specialTokenBegin }), !isSpecial(word.word) else {
-                        return nil
-                    }
-                    return DeepTranscribedWord(text: word.word, start: Double(word.start), end: Double(word.end))
-                }
-                let words = !timed.isEmpty ? timed : withoutSpecialTokens(segment.text)
-                    .split(whereSeparator: \.isWhitespace).map {
-                        DeepTranscribedWord(text: " " + $0, start: Double(segment.start), end: Double(segment.end))
-                    }
-                return count + DeepTranscribedLabel.count(in: words).words
+    /// How many words in `results` belong to invented speaker labels or prompt roll-call lists made of `promptWords`;
+    /// a label whose words the chunk's other decode has (`heard`, from `normalizedWords`) was said and is not counted.
+    static func labelWordCount(_ results: [TranscriptionResult], specialTokenBegin: Int, promptWords: Set<String>,
+                               heard: Set<String>) -> Int {
+        segmentWords(results, specialTokenBegin: specialTokenBegin).reduce(0) { count, words in
+            count + DeepTranscribedLabel.count(in: words, promptWords: promptWords, heard: heard).words
+        }
+    }
+
+    /// The words of a decode, normalized as the label guard compares them.
+    static func normalizedWords(_ results: [TranscriptionResult], specialTokenBegin: Int) -> Set<String> {
+        Set(segmentWords(results, specialTokenBegin: specialTokenBegin).flatMap { words in
+            words.flatMap { DeepTranscribedLabel.normalized($0.text).split(separator: " ").map(String.init) }
+        })
+    }
+
+    /// Each segment's words: its timed words but special tokens, or its text's words when it has no timings.
+    private static func segmentWords(_ results: [TranscriptionResult], specialTokenBegin: Int)
+        -> [[DeepTranscribedWord]] {
+        results.flatMap(\.segments).map { segment in
+            let timed = (segment.words ?? []).compactMap { word -> DeepTranscribedWord? in
+                guard word.tokens.contains(where: { $0 < specialTokenBegin }), !isSpecial(word.word) else { return nil }
+                return DeepTranscribedWord(text: word.word, start: Double(word.start), end: Double(word.end))
             }
+            return !timed.isEmpty ? timed : withoutSpecialTokens(segment.text).split(whereSeparator: \.isWhitespace)
+                .map { DeepTranscribedWord(text: " " + $0, start: Double(segment.start), end: Double(segment.end)) }
         }
     }
 
@@ -308,7 +320,7 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
     /// `spans` decoded with the prompt and (with `plain`) without it, the better kept per span (`keepsPlain`); a span
     /// that gave no words in either though its audio is not near-silent (`needsSplit`) is decoded again in halves.
     private func decodeChosen(_ spans: [Span], options: DecodingOptions, plain: DecodingOptions?,
-                              depth: Int, recordedSamples: [Int]) async throws -> [Decoded] {
+                              promptWords: Set<String>, depth: Int, recordedSamples: [Int]) async throws -> [Decoded] {
         guard !spans.isEmpty else { return [] }
         let special = kit.tokenizer?.specialTokens.specialTokenBegin ?? Int.max
         var chosen = try await decode(spans.map(\.samples), offsets: spans.map(\.offset), options: options)
@@ -320,8 +332,12 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         for index in spans.indices {
             if let plainResults {
                 let promptedWords = Self.wordCount(chosen[index]), plainWords = Self.wordCount(plainResults[index])
-                let promptedLabels = Self.labelWordCount(chosen[index], specialTokenBegin: special)
-                let plainLabels = Self.labelWordCount(plainResults[index], specialTokenBegin: special)
+                let promptedHeard = Self.normalizedWords(chosen[index], specialTokenBegin: special)
+                let plainHeard = Self.normalizedWords(plainResults[index], specialTokenBegin: special)
+                let promptedLabels = Self.labelWordCount(chosen[index], specialTokenBegin: special,
+                                                         promptWords: promptWords, heard: plainHeard)
+                let plainLabels = Self.labelWordCount(plainResults[index], specialTokenBegin: special,
+                                                      promptWords: promptWords, heard: promptedHeard)
                 let keepsPlain = Self.keepsPlain(prompted: promptedWords, plain: plainWords,
                                                  promptedLabels: promptedLabels, plainLabels: plainLabels)
                 chunkLog.append(ChunkDecision(start: Double(spans[index].offset) / 16_000,
@@ -346,8 +362,8 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
                                 .prefix(range.count)),
                              recordedWords: recordedSamples.filter { range.contains($0) }.count)
                     }
-                out += try await decodeChosen(halves, options: options, plain: plain, depth: depth + 1,
-                                              recordedSamples: recordedSamples)
+                out += try await decodeChosen(halves, options: options, plain: plain, promptWords: promptWords,
+                                              depth: depth + 1, recordedSamples: recordedSamples)
             } else {
                 out.append(Decoded(offset: span.offset, count: span.samples.count, results: chosen[index],
                                    unheard: Self.isUnheard(words: words, levelDB: level,

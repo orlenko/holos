@@ -2,7 +2,9 @@ import Foundation
 
 /// Speaker labels and prompt roll-call lists Whisper writes into a passage that nobody said ("Jane Doe: Yes.",
 /// "Jane Doe- Yes.", "Jane Doe-Smith, Omar, Lena, …"), as the transcripts it learned from and the vocabulary prompt
-/// put them (docs/meeting/deep-transcription.md §4.16). Pure.
+/// put them (docs/meeting/deep-transcription.md §4.16). A colon label is matched by its shape; a dash label or a
+/// roll-call list only when its name words are words of the vocabulary prompt, which is where those come from, so
+/// "From January-March …" or "Анна Иванова — руководитель …" is never one. Pure.
 public enum DeepTranscribedLabel {
     /// The most words one name or title in a label has, its colon or dash word included ("Dr. Jane Q. Doe:").
     public static let labelMaxWords = 5
@@ -24,36 +26,82 @@ public enum DeepTranscribedLabel {
 
     /// One invented label or prompt list found from a start index in a passage's words.
     public struct Match: Sendable, Equatable {
+        public enum Kind: Sendable, Equatable {
+            /// Ends in ":" ("Jane Doe: Yes."): kept when every non-title word of it was said there.
+            case colon
+            /// Ends in a dash or a hyphen ("Jane Doe- Yes.", "Jane Doe-Making …"): kept when any of its name words was
+            /// said there, since it is made of prompt names, which the recorded transcript may have misheard.
+            case dash
+            /// A colon-less comma-separated roll-call list at the start of a passage: kept when any of its words was
+            /// said there.
+            case list
+        }
+
         /// The last word index of the label (`start...end`).
         public var end: Int
-        /// A colon-less comma-separated roll-call list at the start of a passage: kept when any of its words was said
-        /// there, whereas a speaker label (`:` or `-`) is kept only when every non-title word of it was said there.
-        public var isList = false
+        public var kind: Kind
         /// The next word (`end + 1`) begins with an unspaced "-" that belongs to the label ("Jane" "Doe" "-Making"):
         /// removing `start...end` also replaces that leading "-" with a space.
         public var unhyphenateNext = false
 
-        public init(end: Int, isList: Bool = false, unhyphenateNext: Bool = false) {
-            self.end = end; self.isList = isList; self.unhyphenateNext = unhyphenateNext
+        public init(end: Int, kind: Kind, unhyphenateNext: Bool = false) {
+            self.end = end; self.kind = kind; self.unhyphenateNext = unhyphenateNext
         }
     }
 
+    /// The words of a vocabulary prompt as `normalized` gives them: what a dash label or roll-call list is made of.
+    public static func promptWords(_ prompt: String) -> Set<String> {
+        Set(normalized(prompt).split(separator: " ").map(String.init))
+    }
+
     /// The label starting at `start` in `words` (when `start` is the start of the passage or follows a word ending a
-    /// sentence); nil when none starts there.
-    public static func match(_ words: [DeepTranscribedWord], from start: Int) -> Match? {
+    /// sentence); nil when none starts there. A dash label or a roll-call list counts only when its name words are in
+    /// `promptWords` (`fromPrompt`).
+    public static func match(_ words: [DeepTranscribedWord], from start: Int, promptWords: Set<String>) -> Match? {
         guard start >= 0, start < words.count,
               start == 0 || endsSentence(words[start - 1].text) else { return nil }
         if let colon = colonMatch(words, from: start) { return colon }
-        if start == 0, let list = listMatch(words, from: start) { return list }
-        return hyphenMatch(words, from: start)
+        guard !promptWords.isEmpty else { return nil }
+        if start == 0, let list = listMatch(words, from: start), fromPrompt(words[start...list.end], promptWords) {
+            return list
+        }
+        if let dash = hyphenMatch(words, from: start), fromPrompt(words[start...dash.end], promptWords) { return dash }
+        return nil
     }
 
-    /// How many invented labels and label words `words` holds by shape alone (without a recorded transcript).
-    public static func count(in words: [DeepTranscribedWord]) -> (labels: Int, words: Int) {
+    /// Whether every name word of `label` is a prompt word. Titles, particles, single letters and a word glued on by a
+    /// leading "-" or "." ("-Smith,", ".D.") are not looked at; a label with no other word is not from the prompt.
+    static func fromPrompt(_ label: ArraySlice<DeepTranscribedWord>, _ promptWords: Set<String>) -> Bool {
+        var checked = 0
+        for word in label {
+            let text = word.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let first = text.first, first != "-", first != "." else { continue }
+            for part in normalized(text).split(separator: " ").map(String.init)
+            where part.count > 1 && !labelTitles.contains(part) && !nameParticles.contains(part) {
+                guard promptWords.contains(part) else { return false }
+                checked += 1
+            }
+        }
+        return checked > 0
+    }
+
+    /// Whether `heard` (normalized words near the label) shows `label` was said: every non-title word of a colon label,
+    /// or any of a dash label's or a list's.
+    public static func isHeard(_ label: ArraySlice<DeepTranscribedWord>, kind: Match.Kind, in heard: Set<String>)
+        -> Bool {
+        let names = labelNames(label)
+        guard !names.isEmpty else { return false }
+        return kind == .colon ? names.allSatisfy(heard.contains) : names.contains(where: heard.contains)
+    }
+
+    /// How many invented labels and label words `words` holds, a label `heard` shows was said (`isHeard`) left aside.
+    public static func count(in words: [DeepTranscribedWord], promptWords: Set<String>, heard: Set<String> = [])
+        -> (labels: Int, words: Int) {
         var copy = words
         var labels = 0, removed = 0, index = 0
         while index < copy.count {
-            if let found = match(copy, from: index) {
+            if let found = match(copy, from: index, promptWords: promptWords),
+               !isHeard(copy[index...found.end], kind: found.kind, in: heard) {
                 if found.unhyphenateNext, found.end + 1 < copy.count {
                     copy[found.end + 1].text = unhyphenated(copy[found.end + 1].text)
                 }
@@ -98,11 +146,11 @@ public enum DeepTranscribedLabel {
         var itemWords = 0
         for index in start..<min(words.count, start + labelMaxListWords) {
             let text = words[index].text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if text == ":" { return index > start ? Match(end: index) : nil }
+            if text == ":" { return index > start ? Match(end: index, kind: .colon) : nil }
             guard isLabelWord(text) else { return nil }
             itemWords += 1
             guard itemWords <= labelMaxWords else { return nil }
-            if text.hasSuffix(":") { return Match(end: index) }
+            if text.hasSuffix(":") { return Match(end: index, kind: .colon) }
             if text.hasSuffix(",") {
                 itemWords = 0
             } else if text.hasSuffix(".") {
@@ -141,7 +189,7 @@ public enum DeepTranscribedLabel {
                 if text.hasSuffix("."), !continuesPastPeriod(text) { break }
             }
         }
-        return lastEnd.map { Match(end: $0, isList: true) }
+        return lastEnd.map { Match(end: $0, kind: .list) }
     }
 
     private static func hyphenMatch(_ words: [DeepTranscribedWord], from start: Int) -> Match? {
@@ -150,16 +198,16 @@ public enum DeepTranscribedLabel {
             let text = words[index].text.trimmingCharacters(in: .whitespacesAndNewlines)
             if index - start >= 2, text.hasPrefix("-"),
                let first = text.dropFirst().first, first.isUppercase || first.isNumber {
-                if text.hasSuffix(",") { return Match(end: index) }
-                return Match(end: index - 1, unhyphenateNext: true)
+                if text.hasSuffix(",") { return Match(end: index, kind: .dash) }
+                return Match(end: index - 1, kind: .dash, unhyphenateNext: true)
             }
             guard index - start < labelMaxWords, isStrictNameWord(text) else { return nil }
             let endsWithDash = text.hasSuffix("-") || text.hasSuffix("–") || text.hasSuffix("—")
             if index > start {
-                if endsWithDash { return Match(end: index) }
+                if endsWithDash { return Match(end: index, kind: .dash) }
                 if index + 1 < words.count,
                    dashes.contains(words[index + 1].text.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                    return Match(end: index + 1)
+                    return Match(end: index + 1, kind: .dash)
                 }
             }
             if endsWithDash { return nil }

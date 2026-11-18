@@ -70,7 +70,9 @@ of the recorded transcript with no Whisper word within 3 s were 30 of 1,820 with
 433 with a 10-term invented prompt, and 383 with the timestamp fix. So each chunk is decoded
 without the prompt too, and keeps the prompted result only when it has at least 85 % of the
 plain result's words and did not invent speaker labels or a prompt roll-call list that the
-plain result lacks (when the plain result covers at least 85 % of the remaining words): 0 of
+plain result lacks (when the plain result covers at least 85 % of the remaining words; a
+label of prompt names counts only when the other decode has none of its words, so a
+participant addressed by name keeps the prompted spelling): 0 of
 1,820 left uncovered, 7 of 28 chunks kept without the prompt, at
 about 2.8 times the time of a plain pass (70 s for the ten minutes on the test Mac). Every
 decoded chunk's words and passages are also clipped to the chunk's own duration before its
@@ -195,12 +197,16 @@ skips it.
    15 in all) or "-" (2 to 5 capitalized name words ending in or followed by "-", or joined by
    "-" to the next word), each word starting with an uppercase letter or a digit (leading
    punctuation aside, as Whisper splits "Ph.D.") or a name particle ("de", "van"), at the
-   start of a passage or after a word ending a sentence; it stays when the recorded transcript
-   has every one of its words but titles ("Dr.", "Ph.D.") on the same track within 2 s
-   ("Question: …" said aloud). A colon-less comma-separated roll-call list of at least two
-   capitalized items (three or more words) at the start of a passage stays when the recorded
-   transcript has any of its words there. Without a recorded transcript the shape alone
-   decides. Only the label's words go; the passage starts at its first word left, and one that
+   start of a passage or after a word ending a sentence. A colon label stays when the
+   recorded transcript has every one of its words but titles ("Dr.", "Ph.D.") on the same
+   track within 2 s ("Question: …" said aloud). A dash label, and a colon-less
+   comma-separated roll-call list of at least two capitalized items (three or more words) at
+   the start of a passage, is looked at only when its name words are words of the vocabulary
+   prompt, where these come from, so "From January-March …", "Next Monday - Friday …" or
+   "Анна Иванова — руководитель …" with names outside the prompt stays as said; it stays
+   too when the recorded transcript has any of its name words there, since the live
+   recognizer often mishears the prompt names it is made of. Without a recorded transcript
+   the shape alone decides. Only the label's words go; the passage starts at its first word left, and one that
    held only a label is dropped. Measured on four meetings' deep transcripts (the user's,
    numbers only): 46 labels in 5,276 passages, all removed, 1 at a sentence end inside a
    passage, 1 passage that was only a label; the one real colon near a passage start, after
