@@ -156,9 +156,14 @@ stops, run it again soon:
    [orlenko/voiceislocal.com](https://github.com/orlenko/voiceislocal.com) next to this one (`SITE_PUBLISHER`
    overrides the path). It checks the DMG (notarized, stapled, signed by Bjola Software Inc., GitHub's asset digest)
    and the appcast (both EdDSA signatures, a build above the live feed's), uploads the DMG, updates and deploys the
-   pages, then publishes the appcast, each checked over HTTPS. It needs the tailnet (`ssh root@simple-sites-tor2`),
-   `gh` with push access to the site's repository, `jq`, and Python 3.11+ with `cryptography`; see that
-   repository's README, "Releases".
+   pages, checks the DMG link and SHA-256 on the live pages, then publishes the appcast, and comments its record on
+   the site's release pull request. It needs the tailnet (`ssh root@simple-sites-tor2`), `gh` with push access to the
+   site's repository, `jq`, and Python 3.11+ with `cryptography`; see that repository's README, "Releases".
+   It deploys only this release's page change. If the site's main holds another merged change that is not deployed
+   yet, or the live site is not a commit on its main, it stops before the deploy and says it needs the owner's
+   approval: the DMG is uploaded and the page change merged, but the pages and the appcast are not live, so the
+   app's update check does not offer the release yet. Do not work around this stop. Ask the owner (or the website's
+   agent) to deploy the site, then run `./scripts/release.sh <version>` again; it finishes the site and then the cask.
 3. **Homebrew cask**: `version` and `sha256` of `Casks/voiceislocal.rb` in
    [orlenko/homebrew-tap](https://github.com/orlenko/homebrew-tap), through a pull request it merges.
 
