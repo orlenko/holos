@@ -159,19 +159,20 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
     }
 
     /// How many words in `results` belong to invented speaker labels or prompt roll-call lists made of `promptWords`;
-    /// a label whose words the chunk's other decode has (`heard`, from `normalizedWords`) was said and is not counted.
-    static func labelWordCount(_ results: [TranscriptionResult], specialTokenBegin: Int, promptWords: Set<String>,
-                               heard: Set<String>) -> Int {
-        segmentWords(results, specialTokenBegin: specialTokenBegin).reduce(0) { count, words in
-            count + DeepTranscribedLabel.count(in: words, promptWords: promptWords, heard: heard).words
+    /// a label whose words the same chunk's other decode (`other`) has near it (`DeepTranscribedLabel.heardSpan`,
+    /// `isHeard`) was said and is not counted.
+    static func labelWordCount(_ results: [TranscriptionResult], other: [TranscriptionResult], specialTokenBegin: Int,
+                               promptWords: Set<String>) -> Int {
+        let heard = segmentWords(other, specialTokenBegin: specialTokenBegin).joined().flatMap { word in
+            DeepTranscribedLabel.normalized(word.text).split(separator: " ").map { (word.start, word.end, String($0)) }
         }
-    }
-
-    /// The words of a decode, normalized as the label guard compares them.
-    static func normalizedWords(_ results: [TranscriptionResult], specialTokenBegin: Int) -> Set<String> {
-        Set(segmentWords(results, specialTokenBegin: specialTokenBegin).flatMap { words in
-            words.flatMap { DeepTranscribedLabel.normalized($0.text).split(separator: " ").map(String.init) }
-        })
+        return segmentWords(results, specialTokenBegin: specialTokenBegin).reduce(0) { count, words in
+            count + DeepTranscribedLabel.count(in: words, promptWords: promptWords) { label, kind in
+                let span = DeepTranscribedLabel.heardSpan(label, kind: kind)
+                let near = Set(heard.filter { $0.1 >= span.from && $0.0 <= span.to }.map(\.2))
+                return DeepTranscribedLabel.isHeard(label, kind: kind, in: near)
+            }.words
+        }
     }
 
     /// Each segment's words: its timed words but special tokens, or its text's words when it has no timings.
@@ -332,12 +333,10 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         for index in spans.indices {
             if let plainResults {
                 let promptedWords = Self.wordCount(chosen[index]), plainWords = Self.wordCount(plainResults[index])
-                let promptedHeard = Self.normalizedWords(chosen[index], specialTokenBegin: special)
-                let plainHeard = Self.normalizedWords(plainResults[index], specialTokenBegin: special)
-                let promptedLabels = Self.labelWordCount(chosen[index], specialTokenBegin: special,
-                                                         promptWords: promptWords, heard: plainHeard)
-                let plainLabels = Self.labelWordCount(plainResults[index], specialTokenBegin: special,
-                                                      promptWords: promptWords, heard: promptedHeard)
+                let promptedLabels = Self.labelWordCount(chosen[index], other: plainResults[index],
+                                                         specialTokenBegin: special, promptWords: promptWords)
+                let plainLabels = Self.labelWordCount(plainResults[index], other: chosen[index],
+                                                      specialTokenBegin: special, promptWords: promptWords)
                 let keepsPlain = Self.keepsPlain(prompted: promptedWords, plain: plainWords,
                                                  promptedLabels: promptedLabels, plainLabels: plainLabels)
                 chunkLog.append(ChunkDecision(start: Double(spans[index].offset) / 16_000,

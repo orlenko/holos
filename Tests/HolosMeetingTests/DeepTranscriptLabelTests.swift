@@ -114,19 +114,26 @@ private func recorded(_ text: String, at start: Double, track: String = "system"
     #expect(DeepTranscriptGuards.apply(unprompted, reference: nil).droppedLabels == 0)
 }
 
-@Test func aDashLabelOfPromptNamesStaysWhenAnyOfItsNamesWasSaidNearIt() {
-    // The recorded transcript misheard the surname but has the first name: the address was said.
-    let addressed = [passage("Jane Doe +-Smith, can you share your screen?", at: 10),
+@Test func aDashLabelOfPromptNamesStaysWhenAnyOfItsNamesWasSaidAtIt() {
+    // The recorded transcript misheard the surname but has the first name: the name was said.
+    let addressed = [passage("Jane Ostrowski +-Making the plan.", at: 10),
                      passage("Анна Иванова — руководитель проекта.", at: 30)]
-    let reference = [recorded("Jane Dosmith can you share your screen", at: 10),
+    let reference = [recorded("Jane Ostrovsky making the plan", at: 10),
                      recorded("Анна Иванов руководитель проекта", at: 30)]
     let kept = DeepTranscriptGuards.apply(addressed, reference: reference, prompt: prompt)
     #expect(kept.droppedLabels == 0 && kept.kept.map(\.text) == addressed.map(\.text))
-    // Nobody said either name there: invented from the prompt.
-    let invented = DeepTranscriptGuards.apply(addressed, reference: [recorded("can you share your screen", at: 10)],
+    // Nobody said either name there, or only in the turn before ("Jane, any update?" ending 1 s before): invented.
+    let invented = DeepTranscriptGuards.apply(addressed, reference: [recorded("Jane any update", at: 8.1),
+                                                                     recorded("making the plan", at: 10)],
                                               prompt: prompt)
     #expect(invented.droppedLabels == 2)
-    #expect(invented.kept.map(\.text) == [" can you share your screen?", " руководитель проекта."])
+    #expect(invented.kept.map(\.text) == [" Making the plan.", " руководитель проекта."])
+    // A hyphenated name spelled as in the prompt is the name, not a label glued to the next word.
+    let named = [passage("Jane Doe +-Smith will present.", at: 0), passage("Jane Doe +-Smith, can you share?", at: 10)]
+    #expect(DeepTranscriptGuards.apply(named, reference: nil, prompt: prompt).droppedLabels == 0)
+    let labelled = DeepTranscriptGuards.apply([passage("Jane Doe +-Smith - Yes.", at: 0)], reference: nil,
+                                              prompt: prompt)
+    #expect(labelled.kept.map(\.text) == [" Yes."])
 }
 
 @Test func speechThatLooksLikeALabelStays() {

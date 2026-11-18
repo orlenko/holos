@@ -180,19 +180,36 @@ import Testing
         #expect(!WhisperKitTranscriber.keepsPlain(prompted: 50, plain: 50, promptedLabels: 2, plainLabels: 2))
     }
 
-    @Test func aPromptNameLabelCountsOnlyWhenTheOtherDecodeHasNoneOfItsWords() {
-        func words(_ texts: [String]) -> [DeepTranscribedWord] {
-            texts.enumerated().map { DeepTranscribedWord(text: $1, start: Double($0), end: Double($0 + 1)) }
+    @Test func aPromptNameLabelCountsOnlyWhenTheOtherDecodeHasNoneOfItsWordsNearIt() {
+        let special = 50_257
+        func result(_ texts: [String], from start: Float = 0) -> TranscriptionResult {
+            let words = texts.enumerated().map { index, text in
+                WordTiming(word: text, tokens: [10], start: start + Float(index), end: start + Float(index + 1),
+                           probability: 0.9)
+            }
+            let segment = TranscriptionSegment(id: 0, seek: 0, start: start, end: start + Float(texts.count),
+                                               text: texts.joined(), tokens: [10], tokenLogProbs: [[10: -0.1]],
+                                               temperature: 0, avgLogprob: -0.1, compressionRatio: 1, noSpeechProb: 0,
+                                               words: words)
+            return TranscriptionResult(text: segment.text, segments: [segment], language: "en",
+                                       timings: TranscriptionTimings())
         }
-        let promptWords = DeepTranscribedLabel.promptWords("Sync. Jane Doe-Smith, Omar.")
-        // The prompted decode addressed "Jane Doe-Smith"; the plain one wrote "Jane Dosmith": said, not invented.
-        let addressed = words([" Jane", " Doe", "-Smith,", " can", " you", " share?"])
-        #expect(DeepTranscribedLabel.count(in: addressed, promptWords: promptWords).words == 3)
-        #expect(DeepTranscribedLabel.count(in: addressed, promptWords: promptWords,
-                                           heard: ["jane", "dosmith", "can", "you", "share"]).words == 0)
+        let promptWords = DeepTranscribedLabel.promptWords("Sync. Jane Doe-Smith, Omar, Ana do Carmo.")
+        func count(_ prompted: TranscriptionResult, _ plain: TranscriptionResult) -> Int {
+            WhisperKitTranscriber.labelWordCount([prompted], other: [plain], specialTokenBegin: special,
+                                                 promptWords: promptWords)
+        }
+        let invented = result([" Jane", " Doe", "-Making", " the", " plan."])
+        // The plain decode has "Jane" where the label is: said. "Jane" only in the turn before it, or only a
+        // particle of the name there: invented.
+        #expect(count(invented, result([" Jane", " Dosmith", " making", " the", " plan."])) == 0)
+        #expect(count(invented, result([" Jane,", " any", " update?"], from: -6)) == 2)
+        #expect(count(result([" Ana", " do", " Carmo-", " Yes."]), result([" I", " do."])) == 3)
+        // "Jane Doe-Smith" as the prompt spells it is a name, not a label glued to the next word.
+        #expect(count(result([" Jane", " Doe", "-Smith", " will", " present."]), result([" Hi."])) == 0)
+        #expect(count(result([" Jane", " Doe", "-Smith", " -", " Yes."]), result([" Yes."])) == 4)
         // Names that are not in the prompt are never a dash label.
-        #expect(DeepTranscribedLabel.count(in: words([" Mary", " Smith", "-Jones", " will", " present."]),
-                                           promptWords: promptWords).labels == 0)
+        #expect(count(result([" Mary", " Smith", "-Jones", " will", " present."]), result([" Hi."])) == 0)
     }
 
     @Test func punctuationIsMergedPerSegmentWithoutDroppingHyphens() {

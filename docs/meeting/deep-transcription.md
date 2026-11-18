@@ -71,8 +71,8 @@ of the recorded transcript with no Whisper word within 3 s were 30 of 1,820 with
 without the prompt too, and keeps the prompted result only when it has at least 85 % of the
 plain result's words and did not invent speaker labels or a prompt roll-call list that the
 plain result lacks (when the plain result covers at least 85 % of the remaining words; a
-label of prompt names counts only when the other decode has none of its words, so a
-participant addressed by name keeps the prompted spelling): 0 of
+label of prompt names counts only when the other decode has none of its words near it, as
+the guard below looks for them in the recorded transcript): 0 of
 1,820 left uncovered, 7 of 28 chunks kept without the prompt, at
 about 2.8 times the time of a plain pass (70 s for the ten minutes on the test Mac). Every
 decoded chunk's words and passages are also clipped to the chunk's own duration before its
@@ -203,10 +203,13 @@ skips it.
    comma-separated roll-call list of at least two capitalized items (three or more words) at
    the start of a passage, is looked at only when its name words are words of the vocabulary
    prompt, where these come from, so "From January-March …", "Next Monday - Friday …" or
-   "Анна Иванова — руководитель …" with names outside the prompt stays as said; it stays
-   too when the recorded transcript has any of its name words there, since the live
-   recognizer often mishears the prompt names it is made of. Without a recorded transcript
-   the shape alone decides. Only the label's words go; the passage starts at its first word left, and one that
+   "Анна Иванова — руководитель …" with names outside the prompt stays as said, and a
+   hyphenated name spelled as in the prompt ("Jane Doe-Smith will …") is a name, a label
+   only when a dash follows it. It stays too when the recorded transcript has any of its
+   name words but particles from 0.5 s before it to 2 s after it, since the live recognizer
+   often mishears the prompt names it is made of; not further back, because the turn before
+   may name the person the label is invented for ("Jane, any update?"). Without a recorded
+   transcript the shape (and, for a dash label or a list, the prompt) alone decides. Only the label's words go; the passage starts at its first word left, and one that
    held only a label is dropped. Measured on four meetings' deep transcripts (the user's,
    numbers only): 46 labels in 5,276 passages, all removed, 1 at a sentence end inside a
    passage, 1 passage that was only a label; the one real colon near a passage start, after

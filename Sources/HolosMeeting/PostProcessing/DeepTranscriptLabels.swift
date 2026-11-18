@@ -8,8 +8,9 @@ import HolosSpeakers
 extension DeepTranscriptGuards {
     /// The most words one name or title in a label has, its colon or dash word included ("Dr. Jane Q. Doe:").
     public static let labelMaxWords = DeepTranscribedLabel.labelMaxWords
-    /// How far around a label the recorded transcript's words are looked for: a label whose words are there was said.
-    public static let labelReferenceSeconds = 2.0
+    /// How far after a label, and before a colon label, the recorded transcript's words are looked for: a label whose
+    /// words are there was said (`DeepTranscribedLabel.heardSpan`).
+    public static let labelReferenceSeconds = DeepTranscribedLabel.referenceSeconds
 
     /// `segment` without the speaker labels and prompt roll-call lists the model invented in it, and how many there
     /// were; nil when nothing else was in it. A speaker label ends in ":" (1 to `labelMaxWords` words per
@@ -18,7 +19,8 @@ extension DeepTranscriptGuards {
     /// (`spoken`) has each of its words but titles on the same track within `labelReferenceSeconds` ("Question: …").
     /// A dash label, and a colon-less comma-separated roll-call list at the start of a passage, is looked at only when
     /// its name words are words of the vocabulary prompt (`promptWords`), and stays when the recorded transcript has
-    /// any of them there. Without a recorded transcript the shape alone decides. A segment without word timings is
+    /// any of them from `DeepTranscribedLabel.dashLeadSeconds` before it to `labelReferenceSeconds` after it. Without a
+    /// recorded transcript the shape (and, for a dash label or a list, the prompt) alone decides. A segment without word timings is
     /// looked at by its text.
     static func withoutLabels(_ segment: DeepHeardSegment, spoken: SpokenWords?, promptWords: Set<String>)
         -> (segment: DeepHeardSegment?, labels: Int) {
@@ -54,13 +56,13 @@ extension DeepTranscriptGuards {
     }
 
     /// Whether the recorded transcript has `label`'s words (but titles) near it on `track`
-    /// (`DeepTranscribedLabel.isHeard`: every one of a colon label's, any of a dash label's or a list's).
+    /// (`DeepTranscribedLabel.heardSpan`, `isHeard`: every one of a colon label's, any of a dash label's or a list's).
     private static func said(_ label: ArraySlice<DeepTranscribedWord>, kind: DeepTranscribedLabel.Match.Kind,
                              track: String, spoken: SpokenWords?) -> Bool {
         guard let spoken else { return false }
-        let from = (label.map(\.start).min() ?? 0) - labelReferenceSeconds
-        let to = (label.map(\.end).max() ?? 0) + labelReferenceSeconds
-        return DeepTranscribedLabel.isHeard(label, kind: kind, in: spoken.words(track: track, from: from, to: to))
+        let span = DeepTranscribedLabel.heardSpan(label, kind: kind)
+        return DeepTranscribedLabel.isHeard(label, kind: kind,
+                                            in: spoken.words(track: track, from: span.from, to: span.to))
     }
 
     /// The recorded transcript's words per track (letters and digits, lowercased), with their times, to ask which lie
