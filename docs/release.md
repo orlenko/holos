@@ -160,10 +160,10 @@ stops, run it again soon:
    the site's release pull request. It needs the tailnet (`ssh root@simple-sites-tor2`), `gh` with push access to the
    site's repository, `jq`, and Python 3.11+ with `cryptography`; see that repository's README, "Releases".
    It deploys only this release's page change. If the site's main holds another merged change that is not deployed
-   yet, it stops before the deploy and says it needs the owner's approval: the DMG is uploaded and the page change
-   merged, but the pages and the appcast are not live, so the app's update check does not offer the release yet.
-   Do not work around this stop. Ask the owner (or the website's agent) to deploy the site, then run this script
-   again; it finishes the site and then the cask.
+   yet, or the live site is not a commit on its main, it stops before the deploy and says it needs the owner's
+   approval: the DMG is uploaded and the page change merged, but the pages and the appcast are not live, so the
+   app's update check does not offer the release yet. Do not work around this stop. Ask the owner (or the website's
+   agent) to deploy the site, then run `./scripts/release.sh <version>` again; it finishes the site and then the cask.
 3. **Homebrew cask**: `version` and `sha256` of `Casks/voiceislocal.rb` in
    [orlenko/homebrew-tap](https://github.com/orlenko/homebrew-tap), through a pull request it merges.
 
