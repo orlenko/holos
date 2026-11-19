@@ -7,6 +7,8 @@ public enum TidyCommand {
     public enum Engine: String, Sendable, Codable, CaseIterable {
         /// Apple's on-device model (`OnDeviceTidy`).
         case apple
+        /// Qwen3.5 9B through llama.cpp (`QwenTidy`, HolosLlama), once its file is installed (`TidyModel`).
+        case qwen
     }
 
     public struct Outcome: Sendable, Codable, Equatable {

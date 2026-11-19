@@ -3,6 +3,7 @@ import Foundation
 import HolosContent
 import HolosCore
 import HolosDictation
+import HolosLlama
 
 /// `voiceislocal tidy` (docs/design.md "Tidy Up").
 struct Tidy: AsyncParsableCommand {
@@ -20,16 +21,15 @@ struct Tidy: AsyncParsableCommand {
             """)
 
     @Argument(help: "A UTF-8 text file, or - (or nothing) for standard input.") var file: String?
-    @Option(help: "The model: apple.") var model: TidyCommand.Engine = .apple
+    @Option(help: "The model: qwen or apple.") var model: TidyCommand.Engine = .apple
+    /// A GGUF file to tidy with instead of the installed Qwen file (development).
+    @Option(help: .hidden) var modelFile: String?
     @Flag(help: "Print the result as JSON.") var json = false
 
     func run() async throws {
         let text = try input()
-        if let reason = OnDeviceTidy.unavailableReason(for: text) {
-            Console.error("Cannot tidy with Apple's model: \(reason).")
-            throw ExitCode(1)
-        }
-        let outcome = try await TidyCommand.run(text, engine: model, tidier: OnDeviceTidy.tidier()) { done, total in
+        let tidier = try makeTidier(for: text)
+        let outcome = try await TidyCommand.run(text, engine: model, tidier: tidier) { done, total in
             guard total > 1, done < total else { return }
             Console.error("Tidying part \(done + 1) of \(total)…")
         }
@@ -43,6 +43,25 @@ struct Tidy: AsyncParsableCommand {
             throw ExitCode(1)
         }
         Console.error(Self.changeSummary(outcome.changes))
+    }
+
+    private func makeTidier(for text: String) throws -> TextTidier {
+        switch model {
+        case .apple:
+            if let reason = OnDeviceTidy.unavailableReason(for: text) {
+                Console.error("Cannot tidy with Apple's model: \(reason).")
+                throw ExitCode(1)
+            }
+            return OnDeviceTidy.tidier()
+        case .qwen:
+            guard let modelFile else {
+                Console.error("Qwen is not installed.")
+                throw ExitCode(1)
+            }
+            Console.error("Loading Qwen…")
+            let url = URL(fileURLWithPath: (modelFile as NSString).expandingTildeInPath)
+            return QwenTidy.tidier(model: try LlamaModel(file: url))
+        }
     }
 
     /// At most 1 MB of UTF-8 text from `file` or standard input.
