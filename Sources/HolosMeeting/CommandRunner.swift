@@ -176,7 +176,8 @@ public final class CommandHandle: Sendable {
 
     private let state = Mutex(State())
 
-    init() {}
+    /// A handle with no command yet (`CommandRunner` makes them; tests stand one in for a command).
+    public init() {}
 
     /// The command's pid; 0 before it started.
     public var pid: Int32 { state.withLock { $0.pid } }

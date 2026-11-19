@@ -89,7 +89,7 @@ enum AppKeyboard {
             item(ReviewWindow.speakersTitle(hidden: false), Selector(("toggleSpeakers:")), "s", [.command, .option]),
             item("Show Short Interjections", Selector(("toggleShortInterjections:")), ""),
         ])
-        // ⌘1 … ⌘5 switch the main window's sections, and show it when it is closed.
+        // ⌘1 … ⌘6 switch the main window's sections, and show it when it is closed.
         submenu("Go", MainSection.allCases.filter { $0 != .settings }.map { section in
             let entry = item(section.title, Selector(("showMainSection:")), section.keyEquivalent)
             entry.tag = section.rawValue

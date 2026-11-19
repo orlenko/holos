@@ -99,8 +99,8 @@ recording), then:
    Resize it, close it, reopen it: same size
    and place. The app shows in the Dock and ⌘-Tab while it is open. Check light and dark
    mode.
-2. **⌘1–⌘5 and ⌘,**: with the window key, each switches section (History, Corrections,
-   Meetings, People, Reading, Settings), and the menu bar shows Voice is Local, Edit, Go,
+2. **⌘1–⌘6 and ⌘,**: with the window key, each switches section (History, Corrections,
+   Meetings, People, Reading, Tidy Up, Settings), and the menu bar shows Voice is Local, Edit, Go,
    and Window menus with those items (Settings… under Voice is Local, Find… under Edit). With the window closed and another Voice is Local window key (the
    Setup Assistant, Review), ⌘1 opens it on History.
 3. **⌘F** in History focuses the search field; typing filters by text and app; Escape

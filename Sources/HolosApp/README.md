@@ -11,7 +11,7 @@ wiring between them and the library controllers (docs/design.md "Main window").
   `AppUpdates`, Sparkle) with their state holders (`MeetingAppState`, `DeepTranscriptionAppState`, …).
   `+BackgroundJobs` wires `HolosMeeting`'s `BackgroundJobCoordinator`, which runs final transcripts, echo analyses
   and summaries.
-- `MainWindow/`: `MainWindowController` (sidebar window) and the panes (History, Meetings, People, Corrections,
+- `MainWindow/`: `MainWindowController` (sidebar window) and the panes (History, Meetings, People, Corrections, Tidy Up,
   Reading, Settings, live meeting view). `ReadingRowView` and `ReadingDropView` are the Reading pane's rows and drop
   target, `ReadingSeekBar` the playback position shared by a row and `ReadingTextWindow`, Show Text's window that follows the voice. `ReadingLibrary+Formatting` holds the Reading pane's duration and position
   texts. `ReadingVoicePopup` and `ReadingVoiceBrowser` share the searchable, language-filtered voice picker between

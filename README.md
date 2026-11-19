@@ -168,8 +168,9 @@ Meeting can also forget the voice samples learned from that meeting. See the
 
 | Section | Key | What it does |
 | --- | --- | --- |
-| History | ⌘1 | Dictations kept on this Mac, grouped by day, with search (⌘F). The selected one shows its text, the text as heard before fixes (changed words marked), where it went, its language, what was fixed, and its length. Copy (⌘C; for a partly written dictation, only the part that was not written, as Copy Result had it), Copy As Heard (⇧⌘C), Correct… (⌘E), Delete (⌫, asks first); its audio plays (▶, Space in the list) and Run Again (⌘R) recognizes it again with today's settings and compares; Clear History… in the footer. |
+| History | ⌘1 | Dictations kept on this Mac, grouped by day, with search (⌘F). The selected one shows its text, the text as heard before fixes (changed words marked), where it went, its language, what was fixed, and its length. Copy (⌘C; for a partly written dictation, only the part that was not written, as Copy Result had it), Copy As Heard (⇧⌘C), Correct… (⌘E), Tidy Up…, Delete (⌫, asks first); its audio plays (▶, Space in the list) and Run Again (⌘R) recognizes it again with today's settings and compares; Clear History… in the footer. |
 | Corrections | ⌘2 | Fix a dictation and learn the word swaps, and edit the learned list (was the Corrections window). It opens with the last dictation; **Last Dictation** loads the newest one since launch, History's Correct… the chosen one. Below, the **Word list** (see below). |
+| Tidy Up | ⌘6 | Paste a text (or take the last dictation, or History's **Tidy Up…**) and a model on this Mac rejoins sentences a pause split and adds paragraphs, lists and quotes. Removed words show struck through, added ones underlined; **Copy Tidied Text** copies the edit. Install Qwen3.5 9B here for better results (about 5.7 GB), or use a copy already on the Mac. |
 | Meetings | ⌘3 | The saved meetings (was the Meetings window). Return opens Review, ⌫ is Delete Meeting…. |
 | People | ⌘4 | People you have named and their voice samples (was the People window). |
 | Reading | ⌘5 | Articles and documents made into one audio file each (see below). |

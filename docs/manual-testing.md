@@ -85,7 +85,7 @@ How each item gets covered:
 ### Main window and Settings
 
 - [ ] **Keys and accessibility** — [dictation-validation.md](dictation-validation.md) "Main window and
-  history" steps 1–3 and 9–14: ⌘0, ⌘1–⌘5, ⌘,, ⌘F, Full Keyboard Access, VoiceOver, open at launch,
+  history" steps 1–3 and 9–14: ⌘0, ⌘1–⌘6, ⌘,, ⌘F, Full Keyboard Access, VoiceOver, open at launch,
   closing never quits, the Dock icon, Appearance Light/Dark/System.
 - [ ] **Settings search** — choosing a chapter under Settings in the sidebar scrolls to its card; the
   search field (⌘F) shows only matching settings, Return goes to the best match, Escape clears. Smooth

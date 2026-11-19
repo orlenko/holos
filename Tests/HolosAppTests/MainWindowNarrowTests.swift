@@ -592,7 +592,7 @@ struct MainWindowNarrowTests {
         #expect(controller.sidebarCollapsed)
     }
 
-    /// ⌘1–⌘5, ⌘, and the menus choose sections through `select`: with the sidebar hidden each still comes on screen.
+    /// ⌘1–⌘6, ⌘, and the menus choose sections through `select`: with the sidebar hidden each still comes on screen.
     @Test func everySectionShowsWithTheSidebarHidden() throws {
         NSApplication.shared.setActivationPolicy(.prohibited)
         let controller = MainWindowController(autosave: nil) { _ in FocusSection() }
@@ -777,6 +777,10 @@ struct MainWindowNarrowTests {
                               sessionsRoot: temp)
         case .reading:
             return ReadingPane(controller: ReadingController())
+        case .tidy:
+            let pane = TidyPane(actions: TidyPaneTests.actions(status: .notInstalled))
+            pane.load("the budget looks fine. for the next quarter")
+            return pane
         case .settings:
             let noop = SettingsPane.Callbacks(perform: { _ in }, opacity: { _ in }, language: { _ in },
                                               shortcut: { _ in }, retention: { _ in }, appearance: { _ in })
