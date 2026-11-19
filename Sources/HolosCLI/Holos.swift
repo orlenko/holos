@@ -29,6 +29,7 @@ struct Holos: AsyncParsableCommand {
             History.self,
             Words.self,
             Pronunciations.self,
+            Tidy.self,
         ]
         #if Evaluation
         commands.append(Eval.self)
