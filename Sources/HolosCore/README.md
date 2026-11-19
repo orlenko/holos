@@ -10,7 +10,8 @@ The values every other target shares, and text processing that needs no engine.
   `DeepTranscription.swift` (`DeepTranscriber`), `DeepTranscribedLabel.swift` (speaker labels and prompt lists the deep transcription model invents), `DictationHistory.swift`, `DictationLevel.swift` (the preview bars' loudness).
 - `HolosJSON` (the encoder and decoder for session files and the HolosStorage stores) and `OpenStringCode`.
 - Text processing: `TranscriptFixer` (language-model fix of misheard words, with an injected model and the
-  `AIFixGuard` check), `SpokenCode`, `DictationSeams`, `FillerWords`,
+  `AIFixGuard` check), `TextTidier` and `WordChanges` (Tidy Up's parts, reply cleaning and check, and the words an edit
+  changed; docs/design.md "Tidy Up"), `SpokenCode`, `DictationSeams`, `FillerWords`,
   `WordList`, `TranscriptEditLearning`, `DictationTextPipeline` (with Run Again's report types), `SpelledNumbers` (the
   numbers of a text written out in English or French words with Foundation's `NumberFormatter`),
   `PronunciationList` (the spellings every reading voice says listed words by, and the respelling of a text by them;

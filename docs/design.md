@@ -1236,6 +1236,36 @@ The recognizer needs the language's speech model installed for the process runni
 (`voiceislocal setup --locale ru-RU --backend dictation`
 for a language only `DictationTranscriber` has).
 
+### Tidy Up
+
+Long dictation made while thinking comes out with the pauses in it: the recognizer ends each stretch of speech
+between pauses with a period, so "Sometimes I stop and think. And continue. A sentence." is one sentence said
+slowly. It has no paragraphs, lists or quotes either. Tidy Up rereads such a text with a language model on the Mac
+and rejoins the split sentences, fixes punctuation and capitals, breaks the text into paragraphs, makes a list where
+the speaker lists items and quotes where they quote someone, and drops fillers ("um"), false starts and repeated
+words. Nothing leaves the Mac and nothing is copied.
+
+`voiceislocal tidy [FILE] [--model apple] [--json]` tidies a file or standard input (at most 1 MB of UTF-8 text) and
+prints the result; `--json` prints `TidyCommand.Outcome`: the text, each part as sent and as used, and the words it
+changed. The model is Apple's on-device model (`OnDeviceTidy`, the model of Apple Intelligence's fix): it needs Apple
+Intelligence turned on and tidies English and French text, as the fix does.
+
+`TextTidier` (HolosCore) sends the text in parts, so the instructions, a part and its edit fit the model's context:
+whole paragraphs while they fit (600 words for Apple's model), a longer paragraph at sentence ends, a longer
+sentence at word boundaries. Each part is one request under the same instructions, which carry three worked
+before-and-after examples of pause periods: without them the models kept most of those periods. The edits are joined
+with a blank line. A reply loses a reasoning block, code fences, a "Text:" label and an introduction line ("Here is
+the edited text:") unless the speaker's text opens with that line; its lines lose trailing spaces, and `*` or `•`
+bullets become `- `.
+
+A part keeps its own text, and the result says why, when the model fails, takes longer than the part's limit (60 s for
+Apple's model), or changes too much (`TextTidier.verdict`): the edit may leave out at most a quarter of the part's
+words and add at most a fifth (at least 3 either way). Words are runs of letters and digits with inner apostrophes,
+compared lowercased (`WordChanges`), so punctuation, capitals and line breaks never count. The changes reported
+(`WordChanges.between`, a shortest edit script over the words) are the words the edit added, with their place in the
+tidied text in UTF-16 offsets, and the words it removed there; the person reviews them before using the text.
+Cancelling a tidy-up returns nothing.
+
 ### First-launch setup
 
 A first launch opens the Setup Assistant, one page at a time, ordered so the app

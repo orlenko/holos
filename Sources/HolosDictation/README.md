@@ -12,6 +12,8 @@ Dictation without the UI: one microphone utterance at a time, and Run Again over
   dictation would, runs the current text steps, and compares with what History kept. `DictationPreferences` reads
   the app's saved dictation settings. `OnDeviceFix`: Apple Intelligence's fix of misheard words
   (FoundationModels), used by dictation and Run Again.
+- `TidyCommand` (`voiceislocal tidy`) and `OnDeviceTidy`, Tidy Up on Apple's on-device model (docs/design.md
+  "Tidy Up").
 
 **Must not own:** inserting text or the hotkey (`HolosDesktop`), the overlay and menus (`HolosApp`), history files
 (`HolosStorage`). The text steps themselves (`DictationTextPipeline`, `TranscriptFixer`, `DictationSeams`) are in
