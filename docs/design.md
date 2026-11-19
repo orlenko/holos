@@ -346,15 +346,15 @@ later") are left as the recognizer wrote them.
 The app's windows other than the transient ones are one main window, "Voice is Local"
 (`MainWindowController`, Sources/HolosApp/MainWindow): an `NSSplitViewController` with a
 native source-list sidebar and the selected section's content. Sections: Dictation ›
-History (⌘1), Corrections (⌘2); Meetings › Meetings (⌘3), People (⌘4); Listen › Reading
-(⌘5, see "Reading section"); Settings (⌘,). A section with nothing in it shows a symbol, a headline, a sentence and
+History (⌘1), Corrections (⌘2), Tidy Up (⌘6, see "Tidy Up"); Meetings › Meetings (⌘3), People (⌘4); Listen ›
+Reading (⌘5, see "Reading section"); Settings (⌘,). A section with nothing in it shows a symbol, a headline, a sentence and
 at most its one action (`SectionEmptyView`): Turn On Dictation in History while dictation is off, Start Recording… in
 Meetings, Open Meetings in People. A status card at
 the sidebar's bottom shows the dictation state and message, independently of any
 meeting recording. The sidebar can be hidden, so the window fits beside a call's window
 (Teams, Zoom) during a meeting: View › **Hide Sidebar** / **Show Sidebar** (⌃⌘S), the
 toolbar's sidebar button, or a drag of the divider to the edge. Hidden, the section takes the
-whole window, ⌘1–⌘5, ⌘, and the menus still choose sections, and the keyboard focus moves
+whole window, ⌘1–⌘6, ⌘, and the menus still choose sections, and the keyboard focus moves
 from the sidebar to the section; it stays hidden for the next opening and launch
 (UserDefaults `mainWindowSidebarHidden`). Showing it in a window too narrow for it widens
 the window to the left. The window is 1280 × 800 by default and at least 560 points high;
@@ -448,7 +448,7 @@ main window (with the live transcript), the dictation preview, Review, the Setup
 Assistant, the meeting start panel, and alerts. Views draw with semantic colours only (layer colours
 are set in `updateLayer`, custom drawing in `draw(_:)`), so they redraw for either.
 
-Keyboard: ⌘1–⌘5 and ⌘, switch sections; ⌘F focuses the section's search field (History,
+Keyboard: ⌘1–⌘6 and ⌘, switch sections; ⌘F focuses the section's search field (History,
 Meetings, Settings); ↑↓ move
 in lists, Return opens (History: the text; Meetings: the live transcript, Review, or the
 transcript), ⌫ deletes
@@ -1297,6 +1297,18 @@ reported (`WordChanges.between`, a shortest edit script over the words) are the 
 place in the tidied text in UTF-16 offsets, and the words it removed there; the person reviews them before using the
 text, and the command says on standard error how many there are. It exits 1 when no model could run or every part
 kept its own text. Cancelling a tidy-up returns nothing.
+
+The main window's Tidy Up section (Dictation › Tidy Up, ⌘6; `TidyPane`) runs the same command on a text pasted or
+typed into its box, the newest dictation (**Last Dictation**), or one chosen in History (**Tidy Up…**). The app
+writes the text to a private temporary file (0600), runs `voiceislocal tidy --json` on it as a child process (it
+never links llama.cpp), and removes the file when the command ends; **Cancel** stops it. The edit shows the words
+the model removed struck through in red where they were, after a sentence's punctuation when they ended it, and the
+words it added underlined in green (`TidyReview`, HolosAppModel), with how many of each; a part left as it was says
+why. **Copy Tidied Text** copies the edit without the struck-through words, and nothing is copied otherwise. The
+Model line at the top says which model tidies: with Qwen not installed, **Install Qwen…** runs `voiceislocal setup
+--tidy-model` and shows its progress, and **Use a File Already Downloaded…** runs it with `--from` the file chosen;
+with Qwen installed, **Remove Qwen…** asks, then runs `setup --remove-tidy-model`. The section reads the model's
+state from its files (`TidyModel.status`). One tidy-up or one model change runs at a time.
 
 ### First-launch setup
 

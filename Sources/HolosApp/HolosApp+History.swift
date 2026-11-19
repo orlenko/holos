@@ -33,6 +33,7 @@ extension HolosAppDelegate {
         let pane = HistoryPane(actions: HistoryPane.Actions(
             copy: { [weak self] text in self?.copyToClipboardOnRequest(text) ?? false },
             correct: { [weak self] record in self?.correct(record) },
+            tidy: { [weak self] record in self?.tidyUp(record) },
             delete: { [weak self] record in self?.history.delete(record.id) },
             clear: { [weak self] in self?.history.clear() },
             audioURL: { [weak self] record in self?.historyAudioURL(record) },

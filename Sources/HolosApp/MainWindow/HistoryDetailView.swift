@@ -11,6 +11,7 @@ import HolosCore
 final class HistoryDetailView: NSView {
     var onCopy: ((_ heard: Bool) -> Void)?
     var onCorrect: (() -> Void)?
+    var onTidy: (() -> Void)?
     var onDelete: (() -> Void)?
     var onPlay: (() -> Void)?
     var onRunAgain: (() -> Void)?
@@ -44,11 +45,12 @@ final class HistoryDetailView: NSView {
     private let copyButton = NSButton(title: "Copy", target: nil, action: nil)
     private let copyHeardButton = NSButton(title: "Copy As Heard", target: nil, action: nil)
     private let correctButton = NSButton(title: "Correct…", target: nil, action: nil)
+    private let tidyButton = NSButton(title: "Tidy Up…", target: nil, action: nil)
     private let deleteButton = NSButton(title: "Delete…", target: nil, action: nil)
     private let feedback = NSTextField(labelWithString: "")
-    /// Copy, Copy As Heard, Correct…, Delete…, and the feedback, wrapping when the detail is narrow.
-    private lazy var actionRow = WrappingRowView(views: [copyButton, copyHeardButton, correctButton, deleteButton,
-                                                         feedback])
+    /// Copy, Copy As Heard, Correct…, Tidy Up…, Delete…, and the feedback, wrapping when the detail is narrow.
+    private lazy var actionRow = WrappingRowView(views: [copyButton, copyHeardButton, correctButton, tidyButton,
+                                                         deleteButton, feedback])
     private let content = NSStackView()
     private let empty = NSTextField(labelWithString: "")
     private var feedbackTask: Task<Void, Never>?
@@ -96,7 +98,8 @@ final class HistoryDetailView: NSView {
         grid.column(at: 0).xPlacement = .leading
 
         for (button, action) in [(copyButton, #selector(copyPressed)), (copyHeardButton, #selector(copyHeardPressed)),
-                                 (correctButton, #selector(correctPressed)), (deleteButton, #selector(deletePressed))] {
+                                 (correctButton, #selector(correctPressed)), (tidyButton, #selector(tidyPressed)),
+                                 (deleteButton, #selector(deletePressed))] {
             button.target = self
             button.action = action
             button.bezelStyle = .push
@@ -108,6 +111,7 @@ final class HistoryDetailView: NSView {
         correctButton.keyEquivalent = "e"
         correctButton.keyEquivalentModifierMask = .command
         correctButton.toolTip = "Fix misheard words in Corrections (⌘E)"
+        tidyButton.toolTip = "Rejoin sentences a pause split and add paragraphs, in Tidy Up"
         deleteButton.toolTip = "Delete this dictation from History (⌫ in the list)"
         feedback.font = .systemFont(ofSize: 11)
         feedback.textColor = .secondaryLabelColor
@@ -213,7 +217,9 @@ final class HistoryDetailView: NSView {
         feedback.stringValue = ""
         // With nothing selected the actions (and their keys: ⇧⌘C, ⌘E, ⌘R) are off, not merely hidden; `showAudio`
         // turns Play and Run Again on for a dictation with audio.
-        for button in [copyButton, copyHeardButton, correctButton, deleteButton] { button.isEnabled = record != nil }
+        for button in [copyButton, copyHeardButton, correctButton, tidyButton, deleteButton] {
+            button.isEnabled = record != nil
+        }
         if record == nil {
             playButton.isEnabled = false
             runAgainButton.isEnabled = false
@@ -333,5 +339,6 @@ final class HistoryDetailView: NSView {
     @objc private func copyPressed() { onCopy?(false) }
     @objc private func copyHeardPressed() { onCopy?(true) }
     @objc private func correctPressed() { onCorrect?() }
+    @objc private func tidyPressed() { onTidy?() }
     @objc private func deletePressed() { onDelete?() }
 }

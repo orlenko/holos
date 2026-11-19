@@ -165,7 +165,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// History record gets it, and a dictation History does not record deletes it.
     private var historyAudio: (id: UUID, writer: DictationAudioWriter)?
     /// The last complete transcript as Holos wrote it, for Corrections.
-    private var lastTranscript = ""
+    private(set) var lastTranscript = ""
     /// The same transcript before corrections, so edits are learned against what the recognizer heard.
     private var lastRecognized = ""
     /// The History ID of the dictation `lastTranscript` came from.

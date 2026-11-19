@@ -4,8 +4,8 @@ import HolosCore
 import HolosDesktop
 import HolosMeeting
 
-/// The main window (docs/design.md "Main window"): created on first use, it hosts History, Corrections, Meetings,
-/// People, Reading, and Settings. The menu bar menu, the main menu (⌘0, ⌘1 … ⌘5, ⌘,), and "Setup…"
+/// The main window (docs/design.md "Main window"): created on first use, it hosts History, Corrections, Tidy Up,
+/// Meetings, People, Reading, and Settings. The menu bar menu, the main menu (⌘0, ⌘1 … ⌘6, ⌘,), and "Setup…"
 /// everywhere open it.
 extension HolosAppDelegate {
     /// The window, made on first use.
@@ -51,6 +51,8 @@ extension HolosAppDelegate {
             return pane
         case .reading:
             return makeReadingPane()
+        case .tidy:
+            return makeTidyPane()
         case .settings:
             return SettingsPane(callbacks: SettingsPane.Callbacks(
                 perform: { [weak self] action in self?.performSetup(action) },

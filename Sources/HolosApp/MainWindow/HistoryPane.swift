@@ -17,6 +17,8 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         var copy: (_ text: String) -> Bool
         /// Correct…: opens Corrections with this dictation.
         var correct: (DictationRecord) -> Void
+        /// Tidy Up…: opens Tidy Up with this dictation's text.
+        var tidy: (DictationRecord) -> Void = { _ in }
         var delete: (DictationRecord) -> Void
         var clear: () -> Void
         /// The dictation's saved audio file, when it is still on this Mac.
@@ -102,6 +104,7 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         view = makeContent()
         detail.onCopy = { [weak self] heard in self?.copySelected(heard: heard) }
         detail.onCorrect = { [weak self] in self?.correctSelected() }
+        detail.onTidy = { [weak self] in self?.tidySelected() }
         detail.onDelete = { [weak self] in self?.deleteSelected() }
         detail.onPlay = { [weak self] in _ = self?.togglePlay() }
         detail.onRunAgain = { [weak self] in self?.runAgain() }
@@ -521,6 +524,11 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         let copied = actions.copy(heard ? record.heard : record.copyText)
         let done = heard ? "Copied the text as heard." : record.unwritten == nil ? "Copied." : "Copied the part not written."
         detail.showFeedback(copied ? done : "Clipboard write failed.")
+    }
+
+    private func tidySelected() {
+        guard let record = selectedRecord else { return }
+        actions.tidy(record)
     }
 
     private func correctSelected() {

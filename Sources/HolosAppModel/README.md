@@ -17,6 +17,7 @@ executable.
   the app injects the readers, and enable and Settings share a request for the same configuration.
 - `MeetingProgressPresentation`: the current processing step and its bounded percentage, without a remaining-time estimate.
 - `SpeakerNameChoices`: the names Name Speaker… offers while a meeting records.
+- `TidyReview`: what Tidy Up shows of an edit (removed words in place, added words marked) and what Copy takes.
 - `LicenseNotice` (the About panel's license notice and source links).
 
 **Must not own:** AppKit views or windows (`HolosApp`), controllers (`HolosMeeting`, `HolosDictation`), anything

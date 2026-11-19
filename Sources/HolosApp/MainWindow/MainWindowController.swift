@@ -3,7 +3,7 @@ import Quartz
 
 /// The sections of the main window, in sidebar order (docs/design.md "Main window").
 enum MainSection: Int, CaseIterable {
-    case history, corrections, meetings, people, reading, settings
+    case history, corrections, meetings, people, reading, tidy, settings
 
     var title: String {
         switch self {
@@ -12,6 +12,7 @@ enum MainSection: Int, CaseIterable {
         case .meetings: "Meetings"
         case .people: "People"
         case .reading: "Reading"
+        case .tidy: "Tidy Up"
         case .settings: "Settings"
         }
     }
@@ -24,6 +25,7 @@ enum MainSection: Int, CaseIterable {
         case .meetings: "meetings"
         case .people: "people"
         case .reading: "reading"
+        case .tidy: "tidy"
         case .settings: "settings"
         }
     }
@@ -40,11 +42,12 @@ enum MainSection: Int, CaseIterable {
         case .meetings: "waveform"
         case .people: "person.2"
         case .reading: "book"
+        case .tidy: "wand.and.stars"
         case .settings: "gearshape"
         }
     }
 
-    /// The key equivalent with Command: ⌘1 … ⌘5, ⌘,.
+    /// The key equivalent with Command: ⌘1 … ⌘6, ⌘,.
     var keyEquivalent: String {
         switch self {
         case .history: "1"
@@ -52,6 +55,7 @@ enum MainSection: Int, CaseIterable {
         case .meetings: "3"
         case .people: "4"
         case .reading: "5"
+        case .tidy: "6"
         case .settings: ","
         }
     }
@@ -476,7 +480,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     private let rows: [Row] = [
-        .group("Dictation"), .section(.history), .section(.corrections),
+        .group("Dictation"), .section(.history), .section(.corrections), .section(.tidy),
         .group("Meetings"), .section(.meetings), .section(.people),
         .group("Listen"), .section(.reading),
         .spacer, .section(.settings),
