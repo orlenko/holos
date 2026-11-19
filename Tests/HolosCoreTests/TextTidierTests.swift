@@ -99,9 +99,10 @@ import Testing
             == ["One two. Three four!", "Five six?"])
         #expect(TextTidier.parts(of: "He said \"stop.\" Then left.", maximumWords: 3) == ["He said \"stop.\"", "Then left."])
         #expect(TextTidier.parts(of: "a b c d e f g", maximumWords: 3) == ["a b c", "d e f", "g"])
-        // A line break beats a sentence end, and a blank line beats both.
+        // A line break beats a sentence end, and a blank line beats both, after the first third of the words.
         #expect(TextTidier.parts(of: "a. b\nc d", maximumWords: 3) == ["a. b", "c d"])
-        #expect(TextTidier.parts(of: "a\n\nb\nc d", maximumWords: 3) == ["a", "b\nc d"])
+        #expect(TextTidier.parts(of: "a b\n\nc. d e", maximumWords: 4) == ["a b", "c. d e"])
+        #expect(TextTidier.parts(of: "a\n\nb c. d e", maximumWords: 4) == ["a\n\nb c.", "d e"])
     }
 
     @Test func piecesCarryTheSpacingAfterThemSoLinesSurvive() {
@@ -112,12 +113,23 @@ import Testing
         #expect(pieces[0].separator == "\n")
     }
 
+    @Test func aShortFirstLineStaysWithTheTextAfterIt() {
+        let prose = (1 ... 700).map { "w\($0)" }.joined(separator: " ")
+        let parts = TextTidier.parts(of: "Dear John,\n" + prose, maximumWords: 600)
+        #expect(parts.first?.hasPrefix("Dear John,\nw1 ") == true)
+    }
+
     @Test func aTextWhosePartsAllFailComesBackExactly() async throws {
         struct Refused: Error {}
-        let text = (1 ... 80).map { "- item \($0) is here today" }.joined(separator: "\n") + "\n\nThe end."
+        let text = "  " + (1 ... 80).map { "- item \($0) is here today" }.joined(separator: "\n") + "\n\nThe end.\n\n"
         let result = try await tidier(partWords: 100) { _ in throw Refused() }.tidy(text)
         #expect(result.text == text)
         #expect(result.nothingTidied)
+    }
+
+    @Test func editsGetTheTextsOwnLineEnding() async throws {
+        let result = try await tidier { _ in "One.\nTwo." }.tidy("one\r\ntwo")
+        #expect(result.text == "One.\r\nTwo.")
     }
 
     @Test func repliesLoseReasoningFencesLabelsAndIntroductions() {
@@ -130,25 +142,41 @@ import Testing
             == "We should ship it.")
     }
 
-    @Test func aFirstLineTheSpeakerSaidIsKeptEvenIfItLooksLikeAnIntroduction() {
-        let original = "here is the text for the invitation: come at six"
-        let reply = "Here is the text for the invitation:\nCome at six."
-        #expect(TextTidier.cleanedReply(reply, original: original) == reply)
-        let list = "The new version has three changes:\n- faster sync\n- fewer crashes"
-        #expect(TextTidier.cleanedReply(list, original: "Um. The new version has three changes: faster sync, fewer crashes")
-            == list)
-        let toast = "Here is the text of my toast:\n\nThank you all."
-        #expect(TextTidier.cleanedReply(toast, original: "So here is the text of my toast: thank you all") == toast)
+    @Test func aFirstLineWithAnyOfTheSpeakersWordsIsKept() {
+        let tail = " " + (1 ... 60).map { "w\($0)" }.joined(separator: " ")
+        let tailEdit = "\n" + (1 ... 60).map { "w\($0)" }.joined(separator: " ")
+        for (said, wrote) in [("the new version has three changes", "The new version has 3 changes:"),
+                              ("OK here are my notes", "Okay, here are my notes:"),
+                              ("here's what happened", "Here is what happened:"),
+                              ("the text of the knew law says", "The text of the new law says:"),
+                              ("here is the text for the invitation", "Here is the text for the invitation:")] {
+            #expect(TextTidier.cleanedReply(wrote + tailEdit, original: said + tail) == wrote + tailEdit)
+        }
     }
 
-    @Test func aReplyIntroductionTheSpeakerDidNotSayIsDropped() {
-        #expect(TextTidier.cleanedReply("Sure! Here's your revised journal entry:\n\nToday was long.",
-                                        original: "Today was. Long.") == "Today was long.")
+    @Test func linesTheModelAddedAtTheStartOrEndAreDropped() {
+        let part = (1 ... 50).map { "w\($0)" }.joined(separator: " ")
+        for reply in ["Here it is:\n" + part, "Sure! Here's your revised journal entry:\n\n" + part,
+                      "Voici le texte corrigé :\n" + part, "**Edited text:**\n" + part,
+                      part + "\n\nHope this helps!", part + "\n\nAll done!\nLet me know."] {
+            #expect(TextTidier.cleanedReply(reply, original: part) == part)
+        }
+    }
+
+    @Test func aSentenceTheModelMovedToTheEndIsNotDropped() {
+        let original = "Thanks for the draft. It looks great. See you at noon."
+        let reply = "It looks great.\nThanks for the draft.\nSee you at noon."
+        #expect(TextTidier.cleanedReply(reply, original: original) == reply)
     }
 
     @Test func replyLinesBecomePlainText() {
-        #expect(TextTidier.cleanedReply("Things:  \n*   milk\n• eggs\n  * bread", original: "")
+        #expect(TextTidier.cleanedReply("Things:  \n*   milk\n• eggs\n  * bread", original: "things milk eggs bread")
             == "Things:\n- milk\n- eggs\n  - bread")
+    }
+
+    @Test func verdictDoesNotCountFillersAndRepeatsAgainstTheEdit() {
+        #expect(TextTidier.verdict(original: "Um so I I think we should uh we should go tomorrow",
+                                   edited: "I think we should go tomorrow.") == nil)
     }
 
     @Test func verdictAllowsDroppingFillersAndRejoiningSentences() {
