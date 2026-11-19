@@ -55,7 +55,8 @@ public struct TidyReview: Sendable, Equatable {
         var addedPlaces = 0
         let sorted = changes.sorted(by: { $0.location < $1.location })
         for (index, change) in sorted.enumerated()
-        where change.location >= cursor && change.length >= 0 && change.location + change.length <= utf16.count {
+        where change.location >= cursor && change.location <= utf16.count && change.length >= 0
+            && change.length <= utf16.count - change.location {
             // Words removed at a sentence's end show after its punctuation: "the bank. ~~They said…~~ Then".
             var place = change.location
             if change.length == 0 {
@@ -63,7 +64,9 @@ public struct TidyReview: Sendable, Equatable {
                 func character(at offset: Int) -> Character? { slice(offset ..< offset + 1).first }
                 var moved = place
                 while moved < limit, let next = character(at: moved), next.isPunctuation { moved += 1 }
-                if moved > place {
+                // Only past a sentence's end: punctuation inside "3.5", "e-mail" or before "Hello" keeps it in place.
+                let ended = moved == utf16.count || character(at: moved)?.isWhitespace == true
+                if moved > place, ended {
                     while moved < limit, let next = character(at: moved), next == " " { moved += 1 }
                     place = moved
                 }
@@ -87,6 +90,18 @@ public struct TidyReview: Sendable, Equatable {
         self.segments = segments
         self.removedWords = removedWords
         self.addedPlaces = addedPlaces
+    }
+
+    /// The edit as VoiceOver reads it, which does not speak strikethrough or colour: "We went out and then
+    /// (removed: We) came back home." Added words are read as "(added: to)".
+    public var spokenText: String {
+        segments.map { segment in
+            switch segment.kind {
+            case .kept: segment.text
+            case .added: "(added: \(segment.text))"
+            case .removed: " (removed: \(segment.text.trimmingCharacters(in: .whitespacesAndNewlines))) "
+            }
+        }.joined()
     }
 
     /// "4 words removed (struck through), 2 places with words added (marked)." or the no-change line.

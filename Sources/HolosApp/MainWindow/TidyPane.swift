@@ -73,6 +73,8 @@ final class TidyPane: NSViewController, MainSectionContent {
         }
         resultView.isEditable = false
         resultView.isRichText = true
+        // Not selectable: a copy from it would take the struck-through words; Copy Tidied Text takes the edit.
+        resultView.isSelectable = false
         inputScroll.borderType = .bezelBorder
         resultScroll.borderType = .bezelBorder
         inputScroll.heightAnchor.constraint(equalToConstant: 160).isActive = true
@@ -149,9 +151,13 @@ final class TidyPane: NSViewController, MainSectionContent {
     func sectionDidShow() { showModel() }
     func sectionWindowDidBecomeKey() { showModel() }
 
-    /// Puts `text` in the box (History's Tidy Up…), replacing what is there, and clears the last edit.
+    /// Puts `text` in the box (History's Tidy Up…), replacing what is there, and clears the last edit; while a
+    /// tidy-up runs, says so and keeps the box.
     func load(_ text: String) {
-        guard running == nil else { return }
+        guard running == nil else {
+            statusLabel.stringValue = "A tidy-up is running. Cancel it to tidy another text."
+            return
+        }
         inputView.string = text
         showResult(nil)
         statusLabel.stringValue = ""
@@ -180,6 +186,7 @@ final class TidyPane: NSViewController, MainSectionContent {
         fromFileButton.isHidden = status == .installed
         removeButton.isHidden = status != .installed
         for button in [installButton, fromFileButton, removeButton] { button.isEnabled = !busy && status != .downloading }
+        tidyButton.isEnabled = running == nil && installing == nil
     }
 
     @objc private func install() { startInstall(from: nil) }
@@ -241,6 +248,7 @@ final class TidyPane: NSViewController, MainSectionContent {
             if !started {
                 self.installing = nil
                 self.showModel()
+                self.modelLabel.stringValue = "Qwen cannot be removed: the voiceislocal tool could not start."
             }
         }
     }
@@ -261,6 +269,10 @@ final class TidyPane: NSViewController, MainSectionContent {
         guard running == nil, installing == nil else { return }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             statusLabel.stringValue = "Paste or type a text first, or use Last Dictation."
+            return
+        }
+        guard text.utf8.count <= Self.maximumBytes else {
+            statusLabel.stringValue = "The text is longer than Tidy Up takes (1 MB). Tidy it in parts."
             return
         }
         generation += 1
@@ -289,8 +301,10 @@ final class TidyPane: NSViewController, MainSectionContent {
         statusLabel.stringValue = "Cancelled."
     }
 
+    /// The most text `voiceislocal tidy` takes (`Tidy.maximumBytes`).
+    static let maximumBytes = 1_000_000
+
     private func setRunning(_ on: Bool) {
-        tidyButton.isEnabled = !on
         lastButton.isEnabled = !on
         cancelButton.isHidden = !on
         inputView.isEditable = !on
@@ -323,6 +337,7 @@ final class TidyPane: NSViewController, MainSectionContent {
         copyButton.isEnabled = review != nil
         guard let review else {
             resultView.textStorage?.setAttributedString(NSAttributedString(string: ""))
+            resultView.setAccessibilityValue("")
             summaryLabel.stringValue = ""
             return
         }
@@ -342,11 +357,12 @@ final class TidyPane: NSViewController, MainSectionContent {
             shown.append(NSAttributedString(string: segment.text, attributes: attributes))
         }
         resultView.textStorage?.setAttributedString(shown)
+        resultView.setAccessibilityValue(review.spokenText)
         summaryLabel.stringValue = review.summary
     }
 
     @objc private func copyTidied() {
-        guard let review else { return }
+        guard let review, !review.text.isEmpty else { return }
         statusLabel.stringValue = actions.copy(review.text)
             ? "Copied the tidied text (without the struck-through words)." : "Clipboard write failed."
     }

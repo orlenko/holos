@@ -1301,14 +1301,16 @@ kept its own text. Cancelling a tidy-up returns nothing.
 The main window's Tidy Up section (Dictation › Tidy Up, ⌘6; `TidyPane`) runs the same command on a text pasted or
 typed into its box, the newest dictation (**Last Dictation**), or one chosen in History (**Tidy Up…**). The app
 writes the text to a private temporary file (0600), runs `voiceislocal tidy --json` on it as a child process (it
-never links llama.cpp), and removes the file when the command ends; **Cancel** stops it. The edit shows the words
-the model removed struck through in red where they were, after a sentence's punctuation when they ended it, and the
-words it added underlined in green (`TidyReview`, HolosAppModel), with how many of each; a part left as it was says
-why. **Copy Tidied Text** copies the edit without the struck-through words, and nothing is copied otherwise. The
-Model line at the top says which model tidies: with Qwen not installed, **Install Qwen…** runs `voiceislocal setup
---tidy-model` and shows its progress, and **Use a File Already Downloaded…** runs it with `--from` the file chosen;
-with Qwen installed, **Remove Qwen…** asks, then runs `setup --remove-tidy-model`. The section reads the model's
-state from its files (`TidyModel.status`). One tidy-up or one model change runs at a time.
+never links llama.cpp), and removes the file when the command ends; **Cancel** stops it, and so does quitting, which
+deletes the file too. A text over 1 MB is refused before anything runs. The edit shows the words the model removed
+struck through in red where they were, after a sentence's punctuation when they ended it (punctuation followed by a
+space or the end), and the words it added underlined in green (`TidyReview`, HolosAppModel), with how many of each;
+a part left as it was says why. **Copy Tidied Text** copies the edit without the struck-through words, and nothing
+is copied otherwise: the edit cannot be selected, and VoiceOver reads it with each change named ("(removed: We)",
+"(added: to)"). The Model line at the top says which model tidies: with Qwen not installed, **Install Qwen…** runs
+`voiceislocal setup --tidy-model` and shows its progress, and **Use a File Already Downloaded…** runs it with
+`--from` the file chosen; with Qwen installed, **Remove Qwen…** asks, then runs `setup --remove-tidy-model`. The
+section reads the model's state from its files (`TidyModel.status`). One tidy-up or one model change runs at a time.
 
 ### First-launch setup
 

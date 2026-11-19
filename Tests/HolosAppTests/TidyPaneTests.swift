@@ -111,4 +111,38 @@ struct TidyPaneTests {
         try Self.button(none, "Last Dictation").performClick(nil)
         #expect(Self.labels(none).contains { $0.hasPrefix("No dictation since Voice is Local started.") })
     }
+
+    @Test func aTextOverOneMegabyteIsRefusedBeforeAnythingRuns() throws {
+        let calls = Calls()
+        let pane = TidyPane(actions: Self.actions(status: .installed, calls: calls))
+        pane.load(String(repeating: "word ", count: 210_000))
+        try Self.button(pane, "Tidy Up").performClick(nil)
+        #expect(calls.tidied.isEmpty)
+        #expect(Self.labels(pane).contains { $0.hasPrefix("The text is longer than Tidy Up takes") })
+    }
+
+    @Test func historysTidyUpWhileATidyUpRunsSaysSoAndKeepsTheBox() throws {
+        let calls = Calls()
+        let pane = TidyPane(actions: Self.actions(status: .installed, calls: calls))
+        pane.load("first text")
+        try Self.button(pane, "Tidy Up").performClick(nil)
+        pane.load("second text")
+        let box = try #require(Self.views(pane, NSTextView.self).first { $0.accessibilityLabel() == "Text to tidy" })
+        #expect(box.string == "first text")
+        #expect(Self.labels(pane).contains("A tidy-up is running. Cancel it to tidy another text."))
+        try Self.button(pane, "Cancel").performClick(nil)
+        #expect(try Self.button(pane, "Tidy Up").isEnabled)
+    }
+
+    @Test func tidyUpWaitsWhileQwenInstalls() throws {
+        let pane = TidyPane(actions: Self.actions(status: .notInstalled))
+        try Self.button(pane, "Install Qwen…").performClick(nil)
+        #expect(try !Self.button(pane, "Tidy Up").isEnabled)
+    }
+
+    @Test func theEditCannotBeSelectedSoACopyFromItCannotTakeRemovedWords() throws {
+        let pane = TidyPane(actions: Self.actions(status: .installed))
+        let result = try #require(Self.views(pane, NSTextView.self).first { $0.accessibilityLabel() == "Tidied text" })
+        #expect(!result.isSelectable)
+    }
 }

@@ -24,7 +24,7 @@ public enum TidyModel {
     }
 
     /// What a Qwen tidy-up without the model says.
-    public static let missingModelMessage = "Qwen is not installed. Install it from Settings, or run voiceislocal "
+    public static let missingModelMessage = "Qwen is not installed. Install it in Voice is Local's Tidy Up (⌘6), or run voiceislocal "
         + "setup --tidy-model (about 5.7 GB)."
     /// What `setup --tidy-model` prints when the model is ready.
     public static let readyMessage = "Ready: Tidy Up model (\(displayName))."

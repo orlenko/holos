@@ -11,10 +11,17 @@ extension HolosAppDelegate {
     static let tidyOutputBytes = 16 << 20
 
     func makeTidyPane() -> TidyPane {
-        TidyPane(actions: TidyPane.Actions(
+        // Quitting stops a tidy-up and deletes its copy of the text: the tool would otherwise run on for a result
+        // nobody reads, with the text in a temporary file until a later launch sweeps it.
+        let current = TidyRun()
+        current.observer = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { current.stop() }
+        }
+        return TidyPane(actions: TidyPane.Actions(
             tidy: { [weak self] text, completion in
                 guard let self else { return .failure(HolosError.unavailable("Voice is Local is quitting.")) }
-                return self.startTidy(text, completion: completion)
+                return self.startTidy(text, run: current, completion: completion)
             },
             install: { [weak self] file, progress, done in
                 self?.runTidyModelSetup(file.map { ["--tidy-model", "--from", $0.path] } ?? ["--tidy-model"],
@@ -28,6 +35,7 @@ extension HolosAppDelegate {
                 return self.lastTranscript
             },
             copy: { text in
+                guard !text.isEmpty else { return false }
                 NSPasteboard.general.clearContents()
                 return NSPasteboard.general.setString(text, forType: .string)
             }))
@@ -40,7 +48,7 @@ extension HolosAppDelegate {
     }
 
     /// Writes `text` to a private temporary file (0600), which the tool reads and the completion removes.
-    private func startTidy(_ text: String,
+    private func startTidy(_ text: String, run current: TidyRun,
                            completion: @escaping @MainActor (CommandResult<TidyCommand.Outcome>) -> Void)
         -> Result<CommandHandle, Error> {
         guard let commands = meeting.commands else {
@@ -52,12 +60,16 @@ extension HolosAppDelegate {
             return .failure(HolosError.io("the text could not be written to a temporary file"))
         }
         do {
-            return .success(try commands.start(["tidy", "--json", input.url.path], output: "tidy-json",
-                                               errors: "tidy-errors", maxOutputBytes: Self.tidyOutputBytes,
-                                               as: TidyCommand.Outcome.self) { result in
+            let handle = try commands.start(["tidy", "--json", input.url.path], output: "tidy-json",
+                                            errors: "tidy-errors", maxOutputBytes: Self.tidyOutputBytes,
+                                            as: TidyCommand.Outcome.self) { result in
                 input.remove()
+                if current.input == input { current.clear() }
                 completion(result)
-            })
+            }
+            current.handle = handle
+            current.input = input
+            return .success(handle)
         } catch {
             input.remove()
             return .failure(error)
@@ -92,6 +104,24 @@ extension HolosAppDelegate {
             }
         }
         return true
+    }
+}
+
+/// The tidy-up running now, so quitting can stop it and delete its input (main actor only).
+@MainActor private final class TidyRun {
+    var handle: CommandHandle?
+    var input: TemporaryArtifact?
+    var observer: NSObjectProtocol?
+
+    func stop() {
+        handle?.terminate()
+        input?.remove()
+        clear()
+    }
+
+    func clear() {
+        handle = nil
+        input = nil
     }
 }
 
