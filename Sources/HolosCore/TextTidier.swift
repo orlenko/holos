@@ -168,18 +168,21 @@ public struct TextTidier: Sendable {
     }
 
     /// The edit inside a reply: without a reasoning block (`<think>…</think>`), surrounding code fences, or a leading
-    /// "Text:" label (the prompt's own, unless `original` starts with it too). Nothing else the model wrote is taken
+    /// "Text:" label (the prompt's own, unless `original`'s first word is "text"). Nothing else the model wrote is taken
     /// out: a line it added ("Here is the edited text:") is left for `verdict` and for the person, who sees it marked
     /// as added. Its line breaks become `\n`, its lines lose trailing spaces, and `*` or `•` bullets become `- `.
     public static func cleanedReply(_ reply: String, original: String) -> String {
         var text = trimmed(reply.replacingOccurrences(of: "\r\n", with: "\n").replacing(thinkBlock, with: ""))
-        if text.hasPrefix("```") {
-            var lines = text.components(separatedBy: "\n")
+        var lines = text.components(separatedBy: "\n")
+        // A fence line is three backticks and at most a language name, never text.
+        if let first = lines.first, first.wholeMatch(of: fenceLine) != nil, lines.count > 1 {
             lines.removeFirst()
             if lines.last.map(trimmed) == "```" { lines.removeLast() }
             text = trimmed(lines.joined(separator: "\n"))
         }
-        if text.hasPrefix("Text:"), !trimmed(original).hasPrefix("Text:") { text = trimmed(String(text.dropFirst(5))) }
+        if text.hasPrefix("Text:"), WordChanges.words(in: original).first?.word != "text" {
+            text = trimmed(String(text.dropFirst(5)))
+        }
         return text.components(separatedBy: "\n").map(plainLine).joined(separator: "\n")
     }
 
@@ -193,13 +196,14 @@ public struct TextTidier: Sendable {
         return line
     }
 
-    /// Nil when `edited` is an acceptable tidy-up of `original`; otherwise why not, in words for the person. It is a
-    /// coarse guard against an edit that is not one (an answer, a summary, a dropped passage, a sentence of the model's
-    /// own); the person reviews the words an edit changed (`WordChanges`). Removing fillers and repeated words is the
-    /// edit's job, so they do not count towards the total: a removed filler (`FillerWords`), or a removed word with
-    /// another copy within four words of it that the edit keeps. Of the other words, the edit may leave out at most a
-    /// third (rambling speech loses its "I mean" restarts) and add at most a tenth (at least 2 either way). It may not
-    /// leave out more than 12 of any 20 words in a row (every removed word counts there), or add a run of more than 3.
+    /// Nil when `edited` is an acceptable tidy-up of `original`; otherwise why not, in words for the person. It refuses
+    /// only an edit that is plainly not one, and leaves the rest to the person, who sees every word the edit removed
+    /// and added (`WordChanges`) before using the text: heavy tidying of rambling speech passes, and so can a dropped
+    /// sentence, which shows as removed. Fillers (`FillerWords`) never count, and a removed word with another copy
+    /// within four words of it that the edit keeps (a repeat) does not count towards the total. The edit fails when it
+    /// leaves out more than two thirds of the other words (a summary; at least 2) or more than 16 of any 20 words in a
+    /// row (a dropped passage), or adds more than a tenth of the words (at least 2) or a run of more than 3 (an answer,
+    /// or a sentence of the model's own).
     public static func verdict(original: String, edited: String) -> String? {
         let before = WordChanges.words(in: original).map(\.word)
         let after = WordChanges.words(in: edited).map(\.word)
@@ -214,7 +218,8 @@ public struct TextTidier: Sendable {
             return !nearby.contains { $0 != offset && before[$0] == word && !removedSet.contains($0) }
         }
         let inserted = offsets(difference.insertions)
-        if counted.count > max(2, before.count / 3) || densest(removed, window: 20) > 12 {
+        let unfilled = removed.filter { !FillerWords.isFiller(before[$0], language: nil) }
+        if counted.count > max(2, before.count * 2 / 3) || densest(unfilled, window: 20) > 16 {
             return "the model left out too many words"
         }
         if inserted.count > max(2, before.count / 10) || longestRun(inserted) > 3 {
@@ -263,5 +268,6 @@ public struct TextTidier: Sendable {
     /// A word (any run without whitespace) and the whitespace after it.
     private static var wordAndSpace: Regex<(Substring, Substring, Substring)> { /(\S+)(\s*)/ }
     private static var bulletMarker: Regex<(Substring, Substring)> { /^([ \t]*)[*•][ \t]+/ }
+    private static var fenceLine: Regex<Substring> { /```[A-Za-z]*\s*/ }
     private static var thinkBlock: Regex<Substring> { /(?s)<think>.*?<\/think>/ }
 }

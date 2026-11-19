@@ -1264,13 +1264,14 @@ become `- `, and the edit gets the text's own line ending (`\r\n` or `\n`). The 
 after the last is kept.
 
 A part keeps its own text, and the result says why, when the model fails, takes longer than the part's limit (60 s
-for Apple's model), or changes too much (`TextTidier.verdict`, a coarse guard against an edit that is not one: an
-answer, a summary, a dropped passage, a sentence of the model's own). A removed filler (`FillerWords`), or a removed
-word with another copy within four words of it that the edit keeps (a repeat), does not count towards the total. Of
-the other words, the edit may leave out at most a third (rambling speech loses its "I mean" restarts) and add at
-most a tenth (at least 2 either way). It may not leave out more than 12 of any 20 words in a row, every removed word
-counted there, or add a run of more than 3 words. Words are runs of letters and digits with inner apostrophes,
-compared lowercased (`WordChanges`), so punctuation, capitals and line breaks never count. The changes reported
+for Apple's model), or gives an edit that is plainly not one (`TextTidier.verdict`). The check is lenient: the
+person sees every word the edit removed and added before using the text, so heavy tidying of rambling speech passes,
+and so can a dropped sentence, which shows as removed. Fillers (`FillerWords`) never count, and a removed word with
+another copy within four words of it that the edit keeps (a repeat) does not count towards the total. The edit fails
+when it leaves out more than two thirds of the other words (a summary; at least 2) or more than 16 of any 20 words
+in a row (a dropped passage), or adds more than a tenth of the words (at least 2) or a run of more than 3 (an
+answer, or a sentence of the model's own). Words are runs of letters and digits with inner apostrophes, compared
+lowercased (`WordChanges`), so punctuation, capitals and line breaks never count. The changes reported
 (`WordChanges.between`, a shortest edit script over the words) are the words the edit added, with their place in the
 tidied text in UTF-16 offsets, and the words it removed there; the person reviews them before using the text, and
 the command says on standard error how many there are. It exits 1 when no model could run or every part kept its own

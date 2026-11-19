@@ -151,7 +151,14 @@ import Testing
 
     @Test func aTextLabelTheSpeakerSaidStays() {
         #expect(TextTidier.cleanedReply("Text: buy milk.", original: "Text: buy milk") == "Text: buy milk.")
+        #expect(TextTidier.cleanedReply("Text: Call the plumber.", original: "text: call the plumber")
+            == "Text: Call the plumber.")
         #expect(TextTidier.cleanedReply("Text: Buy milk.", original: "buy milk") == "Buy milk.")
+    }
+
+    @Test func aFenceLineIsDroppedOnlyWhenItIsJustTheFence() {
+        #expect(TextTidier.cleanedReply("```text\nDear John,\nThanks.\n```", original: "") == "Dear John,\nThanks.")
+        #expect(TextTidier.cleanedReply("```Dear John,\nThanks.", original: "") == "```Dear John,\nThanks.")
     }
 
     @Test func replyLinesBecomePlainText() {
@@ -180,17 +187,40 @@ import Testing
         #expect(TextTidier.verdict(original: original, edited: edited) == "the model left out too many words")
     }
 
-    @Test func fillersAndFalseStartsSpreadThroughTheTextPass() {
-        let original = "So um I was thinking that we, uh, we could maybe move the launch. I mean, the launch could "
-            + "move to May. Um, because the design, the design team needs, like, one more week."
-        let edited = "I was thinking that we could move the launch to May, because the design team needs one more week."
+    @Test func fillersAndRepeatsSpreadThroughTheTextPass() {
+        let original = "So um I was thinking that we, uh, we could move the launch to May. Um, because the design, the "
+            + "design team needs, um, one more week. And, uh, the site is ready."
+        let edited = "I was thinking that we could move the launch to May, because the design team needs one more week. "
+            + "The site is ready."
         #expect(TextTidier.verdict(original: original, edited: edited) == nil)
     }
 
+    @Test func aFewShortSentencesDroppedApartPassAndShowAsRemoved() {
+        let entry = "Today was busy at work. I called my mother after dinner and we talked for ages. She sounded tired "
+            + "but happy about the news from the clinic. The doctor says her knee is healing faster than expected. She "
+            + "can walk to the shops on her own again. My brother is visiting her next week with the kids. She has "
+            + "started baking for them already. Then I read for an hour and went to bed early, which felt good."
+        let edited = "Today was busy at work. She sounded tired but happy about the news from the clinic. She can walk "
+            + "to the shops on her own again. She has started baking for them already. Then I read for an hour and went "
+            + "to bed early, which felt good."
+        // Lenient by design: the dropped sentences pass the check and show as removed words for the person.
+        #expect(TextTidier.verdict(original: entry, edited: edited) == nil)
+        let removed = WordChanges.between(entry, edited).map(\.removed)
+        #expect(removed.contains("I called my mother after dinner and we talked for ages"))
+        #expect(removed.contains("The doctor says her knee is healing faster than expected"))
+    }
+
+    @Test func ramblingRestartsCanBeTidiedAway() {
+        #expect(TextTidier.verdict(
+            original: "I mean, the thing is, I mean, I don't know, I just feel like, I mean, we've been working on "
+                + "this for months and, I mean, nobody has even looked at it.",
+            edited: "We've been working on this for months and nobody has even looked at it.") == nil)
+    }
+
     @Test func aRepeatIsExcusedOnlyWhileTheEditKeepsAnotherCopy() {
-        let original = "we will not not go and then stay"
-        #expect(TextTidier.verdict(original: original, edited: "we will not and then stay") == nil)
-        #expect(TextTidier.verdict(original: original, edited: "we will and then stay")
+        let original = "no no no no no no go"
+        #expect(TextTidier.verdict(original: original, edited: "no go") == nil)
+        #expect(TextTidier.verdict(original: original, edited: "go")
             == "the model left out too many words")
     }
 
