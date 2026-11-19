@@ -168,7 +168,7 @@ public struct TextTidier: Sendable {
     }
 
     /// The edit inside a reply: without a reasoning block (`<think>…</think>`), surrounding code fences, or a leading
-    /// "Text:" label (the prompt's own, unless `original`'s first word is "text"). Nothing else the model wrote is taken
+    /// "Text:" label (the prompt's own: the reply says "text" more often than `original`). Nothing else the model wrote is taken
     /// out: a line it added ("Here is the edited text:") is left for `verdict` and for the person, who sees it marked
     /// as added. Its line breaks become `\n`, its lines lose trailing spaces, and `*` or `•` bullets become `- `.
     public static func cleanedReply(_ reply: String, original: String) -> String {
@@ -180,7 +180,8 @@ public struct TextTidier: Sendable {
             if lines.last.map(trimmed) == "```" { lines.removeLast() }
             text = trimmed(lines.joined(separator: "\n"))
         }
-        if text.hasPrefix("Text:"), WordChanges.words(in: original).first?.word != "text" {
+        if text.hasPrefix("Text:"),
+           WordChanges.words(in: text).count { $0.word == "text" } > WordChanges.words(in: original).count { $0.word == "text" } {
             text = trimmed(String(text.dropFirst(5)))
         }
         return text.components(separatedBy: "\n").map(plainLine).joined(separator: "\n")
@@ -219,7 +220,9 @@ public struct TextTidier: Sendable {
         }
         let inserted = offsets(difference.insertions)
         let unfilled = removed.filter { !FillerWords.isFiller(before[$0], language: nil) }
-        if counted.count > max(2, before.count * 2 / 3) || densest(unfilled, window: 20) > 16 {
+        let others = before.count - before.count { FillerWords.isFiller($0, language: nil) }
+            - (unfilled.count - counted.count)
+        if counted.count > max(2, others * 2 / 3) || densest(unfilled, window: 20) > 16 {
             return "the model left out too many words"
         }
         if inserted.count > max(2, before.count / 10) || longestRun(inserted) > 3 {

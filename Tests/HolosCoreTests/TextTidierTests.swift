@@ -153,6 +153,8 @@ import Testing
         #expect(TextTidier.cleanedReply("Text: buy milk.", original: "Text: buy milk") == "Text: buy milk.")
         #expect(TextTidier.cleanedReply("Text: Call the plumber.", original: "text: call the plumber")
             == "Text: Call the plumber.")
+        #expect(TextTidier.cleanedReply("Text: Call the plumber.", original: "Um, text: call the plumber")
+            == "Text: Call the plumber.")
         #expect(TextTidier.cleanedReply("Text: Buy milk.", original: "buy milk") == "Buy milk.")
     }
 
@@ -215,6 +217,11 @@ import Testing
             original: "I mean, the thing is, I mean, I don't know, I just feel like, I mean, we've been working on "
                 + "this for months and, I mean, nobody has even looked at it.",
             edited: "We've been working on this for months and nobody has even looked at it.") == nil)
+    }
+
+    @Test func theSummaryLimitCountsOnlyWordsThatAreNotFillers() {
+        #expect(TextTidier.verdict(original: "um uh um uh apples pears plums figs dates kiwis", edited: "apples")
+            == "the model left out too many words")
     }
 
     @Test func aRepeatIsExcusedOnlyWhileTheEditKeepsAnotherCopy() {

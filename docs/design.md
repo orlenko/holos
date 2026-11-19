@@ -1257,7 +1257,7 @@ John,") stays with the text after it. Each part is exactly the text as given, it
 line breaks included, and the whitespace that followed it stays between the parts in the result, so a part that keeps
 its own text comes back unchanged. Each part is one request under the same instructions, which carry three worked
 before-and-after examples of pause periods: without them the models kept most of those periods. A reply loses a
-reasoning block, code fences and a leading "Text:" label (the prompt's own, unless the part starts with it too), and
+reasoning block, code fences and a leading "Text:" label (the prompt's own, when the reply says "text" more often than the part), and
 nothing else: a line the model added ("Here is the edited text:") is left for the check below and for the person, who
 sees it marked as added. The reply's line breaks become `\n`, its lines lose trailing spaces, `*` or `•` bullets
 become `- `, and the edit gets the text's own line ending (`\r\n` or `\n`). The whitespace before the first word and
