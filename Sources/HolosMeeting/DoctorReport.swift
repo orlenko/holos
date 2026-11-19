@@ -25,18 +25,21 @@ public struct DoctorReport: Codable, Sendable {
     public var deepTranscriptionModel: DeepModelStatus
     /// Each natural voice pack ("english", "french"): "installed", "downloading", or "notInstalled".
     public var naturalVoices: [String: DeepModelStatus]?
+    /// Tidy Up's Qwen model (`TidyModel`): "installed", "downloading", or "notInstalled"; absent from older tools.
+    public var tidyModel: DeepModelStatus?
 
     public init(os: String, microphone: String, systemAudioPermission: Bool, accessibilityPermission: Bool,
                 foundationModel: String, contextSize: Int?, voiceCount: Int, speech: SpeechCapabilities,
                 dictation: SpeechCapabilities, locale: String, speechAssetStatus: String,
                 dictationAssetStatus: String, sessionsDirectory: String, speakerModels: String,
-                deepTranscriptionModel: DeepModelStatus, naturalVoices: [String: DeepModelStatus]? = nil) {
+                deepTranscriptionModel: DeepModelStatus, naturalVoices: [String: DeepModelStatus]? = nil,
+                tidyModel: DeepModelStatus? = nil) {
         self.os = os; self.microphone = microphone; self.systemAudioPermission = systemAudioPermission
         self.accessibilityPermission = accessibilityPermission; self.foundationModel = foundationModel
         self.contextSize = contextSize; self.voiceCount = voiceCount; self.speech = speech
         self.dictation = dictation; self.locale = locale; self.speechAssetStatus = speechAssetStatus
         self.dictationAssetStatus = dictationAssetStatus; self.sessionsDirectory = sessionsDirectory
         self.speakerModels = speakerModels; self.deepTranscriptionModel = deepTranscriptionModel
-        self.naturalVoices = naturalVoices
+        self.naturalVoices = naturalVoices; self.tidyModel = tidyModel
     }
 }
