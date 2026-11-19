@@ -69,9 +69,10 @@ public enum TidyModelInstall {
         let file = TidyModel.file(root: root)
         try removeIfPresent(file)
         try FileManager.default.moveItem(at: partial, to: file)
-        // The other way's leftovers: an unfinished download once a copy is installed, or a copy that was stopped.
-        try removeIfPresent(TidyModel.partialFile(root: root))
-        try removeIfPresent(TidyModel.copyFile(root: root))
+        // The other way's leftovers: an unfinished download once a copy is installed, or a copy that was stopped. The
+        // model is installed either way, so a leftover that cannot be deleted is not an error.
+        try? removeIfPresent(TidyModel.partialFile(root: root))
+        try? removeIfPresent(TidyModel.copyFile(root: root))
         log.info("Tidy Up model installed")
         progress(1)
     }
