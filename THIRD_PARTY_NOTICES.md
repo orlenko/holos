@@ -1,11 +1,12 @@
 # Third-party notices
 
-The `voiceislocal` command-line tool includes FluidAudio, Mozilla Readability, and WhisperKit; `voiceislocal setup
---speakers` downloads the speaker diarization models it runs, `voiceislocal setup --whisper` the Whisper model of
-deep transcription, and `voiceislocal setup --natural-voices` the Pocket TTS voices of Reading. Their licenses and
-credits follow. The Voice is Local app does not link FluidAudio or WhisperKit or include the models; it runs speaker
-labelling, deep transcription, and natural voices through the `voiceislocal` tool. The app itself includes Sparkle, which installs
-its updates (section 7).
+The `voiceislocal` command-line tool includes FluidAudio, Mozilla Readability, WhisperKit, and llama.cpp;
+`voiceislocal setup --speakers` downloads the speaker diarization models it runs, `voiceislocal setup --whisper` the
+Whisper model of deep transcription, `voiceislocal setup --natural-voices` the Pocket TTS voices of Reading, and
+`voiceislocal setup --tidy-model` the Qwen model of Tidy Up. Their licenses and credits follow. The Voice is Local
+app does not link FluidAudio, WhisperKit, or llama.cpp or include the models; it runs speaker labelling, deep
+transcription, natural voices, and Tidy Up through the `voiceislocal` tool, and carries `llama.framework` in
+`Contents/Frameworks` only for that tool. The app itself includes Sparkle, which installs its updates (section 7).
 
 ## 1. FluidAudio 0.17.1
 
@@ -1157,3 +1158,44 @@ STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
 IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 ````
+
+## 8. llama.cpp b12359 (Tidy Up)
+
+- Source: https://github.com/ggml-org/llama.cpp, tag b12359, commit `b1b770d90d94cad9e9ea5b993bdbc383a522fb28`;
+  its prebuilt `llama-b12359-xcframework.zip` release (Package.swift pins its SHA-256).
+- License: MIT; the repository's `LICENSE` follows.
+- `voiceislocal tidy` uses it to run the Qwen model on this Mac.
+
+### llama.cpp `LICENSE`
+
+````text
+MIT License
+
+Copyright (c) 2023-2026 The ggml authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+````
+
+## 9. Qwen3.5 9B (Tidy Up model)
+
+Tidy Up uses Qwen3.5 9B (https://huggingface.co/Qwen/Qwen3.5-9B, by the Qwen team, Alibaba Cloud), licensed under
+the Apache License 2.0, whose full text is the FluidAudio `LICENSE` in section 1, in Unsloth's GGUF quantization
+`Qwen3.5-9B-Q4_K_M.gguf` from https://huggingface.co/unsloth/Qwen3.5-9B-GGUF (Apache 2.0; revision
+3885219b6810b007914f3a7950a8d1b469d598a5). It is downloaded by `voiceislocal setup --tidy-model` and not included
+in the app. The model was quantized by Unsloth; no other change was made to it.

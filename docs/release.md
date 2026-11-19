@@ -246,9 +246,11 @@ microphone. Accessibility, the CGEvent tap (and Input Monitoring, only where mac
 need no entitlement outside the sandbox. Both binaries link only system libraries (FluidAudio and
 swift-argument-parser are linked statically), so library validation needs no exception. The app also loads
 `Sparkle.framework` from `Contents/Frameworks`, which the script signs with the same identity before the app, so
-library validation accepts it (same Team ID). An ad-hoc dry run has no Team ID: only there the app is signed with
-`com.apple.security.cs.disable-library-validation` too. Every build then runs the app's `--check` report, which
-fails at once if dyld refuses the framework.
+library validation accepts it (same Team ID). The bundled `voiceislocal` loads `llama.framework` (llama.cpp, for
+Tidy Up) from the same folder, signed the same way; the script deletes the tool's rpaths into the build folder, so
+it finds the framework only in the bundle. An ad-hoc dry run has no Team ID: only there the app and the tool are
+signed with `com.apple.security.cs.disable-library-validation` too. Every build then runs the app's `--check`
+report and the tool's `tidy --help`, which fail at once if dyld refuses a framework.
 
 ## What users see
 
