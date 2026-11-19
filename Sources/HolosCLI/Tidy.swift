@@ -15,8 +15,8 @@ struct Tidy: AsyncParsableCommand {
             keeps its own text, and so does a part the model fails on; each is named on standard error. Nothing \
             leaves this Mac and nothing is copied. The tidied text goes to standard output (with --json, the text, \
             each part, and the words changed). Apple's on-device model needs Apple Intelligence turned on and tidies \
-            English and French text. Exits 0 when the text was tidied, even if some parts kept their own text, and 1 \
-            when no model could run.
+            English and French text. Standard error says how many words changed. Exits 0 when the text was tidied, \
+            even if some parts kept their own text, and 1 when no model could run or no part was tidied.
             """)
 
     @Argument(help: "A UTF-8 text file, or - (or nothing) for standard input.") var file: String?
@@ -38,6 +38,11 @@ struct Tidy: AsyncParsableCommand {
             Console.error("Part \(index + 1) of \(outcome.parts.count) is left as it was: \(reason).")
         }
         if json { try Console.json(outcome) } else { Console.output(outcome.text) }
+        if outcome.nothingTidied {
+            Console.error("Nothing was tidied.")
+            throw ExitCode(1)
+        }
+        Console.error(Self.changeSummary(outcome.changes))
     }
 
     /// At most 1 MB of UTF-8 text from `file` or standard input.
@@ -60,6 +65,16 @@ struct Tidy: AsyncParsableCommand {
     }
 
     static let maximumBytes = 1_000_000
+
+    /// "Words changed in 3 places: 5 removed, 2 places with words added. …", for standard error, so the words the
+    /// model changed are known even without --json.
+    static func changeSummary(_ changes: [WordChanges.Change]) -> String {
+        guard !changes.isEmpty else { return "No words changed; only punctuation, capitals and line breaks." }
+        let removed = changes.reduce(0) { $0 + WordChanges.words(in: $1.removed).count }
+        let added = changes.filter { $0.length > 0 }.count
+        return "Words changed in \(changes.count) \(changes.count == 1 ? "place" : "places"): \(removed) removed, "
+            + "\(added) \(added == 1 ? "place" : "places") with words added. Use --json to see them."
+    }
 }
 
 extension TidyCommand.Engine: ExpressibleByArgument {}

@@ -4,32 +4,52 @@ import Foundation
 /// punctuation and capitals, breaks the text into paragraphs, lists and quotes, and drops fillers and false starts.
 /// The model is injected (`TranscriptFixer.Model`), so the tool can use Qwen or Apple's on-device model and tests a
 /// closure. The text goes to the model in parts of at most `partWords` words; a part whose reply fails, times out, or
-/// fails `verdict` keeps its own text, and the result says which parts did.
+/// fails `verdict` keeps its own text exactly, and the result says which parts did.
 public struct TextTidier: Sendable {
+    /// A run of the given text: its words and the spacing between them exactly as given, and the spacing after it.
+    public struct Piece: Sendable, Codable, Equatable {
+        public var text: String
+        /// The whitespace that followed `text` in the given text (empty for the last piece).
+        public var separator: String
+
+        public init(text: String, separator: String) {
+            self.text = text
+            self.separator = separator
+        }
+    }
+
     public struct Part: Sendable, Codable, Equatable {
-        /// The part as given.
+        /// The part exactly as given.
         public var original: String
         /// The text used: the model's edit, or `original` when `kept` is set.
         public var text: String
+        /// The whitespace that followed the part in the given text; the result keeps it between parts.
+        public var separator: String
         /// Why the part keeps its own text (the model failed, timed out, or changed too much); nil when edited.
         public var kept: String?
 
-        public init(original: String, text: String, kept: String? = nil) {
+        public init(original: String, text: String, separator: String = "", kept: String? = nil) {
             self.original = original
             self.text = text
+            self.separator = separator
             self.kept = kept
         }
     }
 
     public struct Result: Sendable, Codable, Equatable {
-        /// The parts' texts, a blank line between parts.
+        /// The parts' texts, each followed by the whitespace that followed it in the given text.
         public var text: String
         public var parts: [Part]
 
         public init(parts: [Part]) {
             self.parts = parts
-            text = parts.map(\.text).joined(separator: "\n\n")
+            text = parts.enumerated().map { index, part in
+                index == parts.count - 1 ? part.text : part.text + part.separator
+            }.joined()
         }
+
+        /// Every part kept its own text: nothing was tidied.
+        public var nothingTidied: Bool { parts.allSatisfy { $0.kept != nil } }
     }
 
     /// Words per part: the model's context holds the instructions, the part and its edit, and a longer part takes
@@ -48,7 +68,7 @@ public struct TextTidier: Sendable {
     /// Tidies `text` part by part, in order, calling `progress(done, total)` before each part and once at the end.
     /// Throws `CancellationError` when the task is cancelled: no partial result is returned.
     public func tidy(_ text: String, progress: @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> Result {
-        let pieces = Self.parts(of: text, maximumWords: partWords)
+        let pieces = Self.pieces(of: text, maximumWords: partWords)
         var parts: [Part] = []
         for (index, piece) in pieces.enumerated() {
             try Task.checkCancellation()
@@ -60,20 +80,21 @@ public struct TextTidier: Sendable {
         return Result(parts: parts)
     }
 
-    private func tidyPart(_ piece: String) async -> Part {
+    private func tidyPart(_ piece: Piece) async -> Part {
         let model = model
-        let prompt = Self.prompt(for: piece)
+        let prompt = Self.prompt(for: piece.text)
+        func kept(_ reason: String) -> Part {
+            Part(original: piece.text, text: piece.text, separator: piece.separator, kept: reason)
+        }
         switch await TranscriptFixer.firstOf(timeout, { try await model(Self.instructions, prompt) }) {
         case .timedOut:
-            return Part(original: piece, text: piece, kept: "the model took too long")
+            return kept("the model took too long")
         case .failed:
-            return Part(original: piece, text: piece, kept: "the model gave no answer")
+            return kept("the model gave no answer")
         case .value(let reply):
-            let edit = Self.cleanedReply(reply, original: piece)
-            if let reason = Self.verdict(original: piece, edited: edit) {
-                return Part(original: piece, text: piece, kept: reason)
-            }
-            return Part(original: piece, text: edit)
+            let edit = Self.cleanedReply(reply, original: piece.text)
+            if let reason = Self.verdict(original: piece.text, edited: edit) { return kept(reason) }
+            return Part(original: piece.text, text: edit, separator: piece.separator)
         }
     }
 
@@ -99,73 +120,60 @@ public struct TextTidier: Sendable {
     /// Framed as a labelled field so the model treats a dictated question or request as text to edit.
     public static func prompt(for text: String) -> String { "Text:\n\(text)" }
 
-    /// `text` in parts of at most `maximumWords` words, in order: whole paragraphs (split at blank lines) while they
-    /// fit, a longer paragraph at sentence ends, and a longer sentence at word boundaries. Parts are trimmed and never
-    /// empty; text without words gives no parts.
+    /// The texts of `pieces(of:maximumWords:)`.
     public static func parts(of text: String, maximumWords: Int) -> [String] {
-        let limit = max(1, maximumWords)
-        let paragraphs = text.split(separator: blankLine).map(trimmed).filter { !$0.isEmpty }
-        var parts: [String] = []
-        var current: [String] = []
-        var currentWords = 0
-        func flush() {
-            if !current.isEmpty { parts.append(current.joined(separator: "\n\n")) }
-            current = []
-            currentWords = 0
-        }
-        for paragraph in paragraphs.flatMap({ pieces(of: $0, limit: limit) }) {
-            let count = wordCount(paragraph)
-            if currentWords + count > limit { flush() }
-            current.append(paragraph)
-            currentWords += count
-        }
-        flush()
-        return parts.filter { wordCount($0) > 0 }
+        pieces(of: text, maximumWords: maximumWords).map(\.text)
     }
 
-    /// A paragraph that fits, or its sentences (and over-long sentences' word runs) grouped up to `limit` words.
-    private static func pieces(of paragraph: String, limit: Int) -> [String] {
-        guard wordCount(paragraph) > limit else { return [paragraph] }
-        let sentences = Self.sentences(of: paragraph)
-            .flatMap { sentence -> [String] in
-                guard wordCount(sentence) > limit else { return [sentence] }
-                let words = sentence.split(whereSeparator: \.isWhitespace)
-                return stride(from: 0, to: words.count, by: limit).map {
-                    words[$0 ..< min($0 + limit, words.count)].joined(separator: " ")
-                }
+    /// `text` in pieces of at most `maximumWords` words, in order, each exactly as given (spacing and line breaks
+    /// inside it kept), with the whitespace after it. A piece ends where the strongest break within its words is,
+    /// the latest of equals: a blank line, then a line break, then a sentence end (`.`, `!`, `?` or `…`, past closing
+    /// quotes and brackets), then any space. Text without words gives no pieces.
+    public static func pieces(of text: String, maximumWords: Int) -> [Piece] {
+        let limit = max(1, maximumWords)
+        let words = text.matches(of: wordAndSpace)
+        var pieces: [Piece] = []
+        var start = 0
+        while start < words.count {
+            var end = min(start + limit, words.count)
+            if end < words.count {
+                // The word whose following break is strongest ends the piece.
+                let ends = start ..< end
+                let strongest = ends.map { breakStrength(words[$0]) }.max() ?? 0
+                end = (ends.last { breakStrength(words[$0]) == strongest } ?? end - 1) + 1
             }
-        var pieces: [String] = []
-        var current: [String] = []
-        var currentWords = 0
-        for sentence in sentences {
-            let count = wordCount(sentence)
-            if currentWords + count > limit, !current.isEmpty {
-                pieces.append(current.joined(separator: " "))
-                current = []
-                currentWords = 0
-            }
-            current.append(sentence)
-            currentWords += count
+            let body = text[words[start].range.lowerBound ..< words[end - 1].output.1.endIndex]
+            let separator = end < words.count ? String(words[end - 1].output.2) : ""
+            pieces.append(Piece(text: String(body), separator: separator))
+            start = end
         }
-        if !current.isEmpty { pieces.append(current.joined(separator: " ")) }
         return pieces
+    }
+
+    /// 3 for a blank line after the word, 2 for a line break, 1 for a sentence end, 0 otherwise.
+    private static func breakStrength(_ match: Regex<(Substring, Substring, Substring)>.Match) -> Int {
+        let space = match.output.2
+        let newlines = space.filter(\.isNewline).count
+        if newlines >= 2 { return 3 }
+        if newlines == 1 { return 2 }
+        let end = match.output.1.reversed().first { !"\"'”’)]»".contains($0) }
+        return end.map { ".!?…".contains($0) } == true ? 1 : 0
     }
 
     /// The edit inside a reply: without a reasoning block (`<think>…</think>`), surrounding code fences, a leading
     /// "Text:" label, or a first line that only introduces the edit ("Here is the edited text:"). A first line whose
-    /// words open `original` is the speaker's own and stays.
+    /// words all appear, in order, in `original` is the speaker's own and stays.
     public static func cleanedReply(_ reply: String, original: String) -> String {
-        var text = reply.replacing(thinkBlock, with: "")
-        text = trimmed(text)
+        var text = trimmed(reply.replacing(thinkBlock, with: ""))
         if text.hasPrefix("```") {
             var lines = text.components(separatedBy: "\n")
             lines.removeFirst()
             if lines.last.map(trimmed) == "```" { lines.removeLast() }
             text = trimmed(lines.joined(separator: "\n"))
         }
-        if let first = text.components(separatedBy: "\n").first, first.wholeMatch(of: introduction) != nil {
-            let said = WordChanges.words(in: original).prefix(WordChanges.words(in: first).count).map(\.word)
-            if said != WordChanges.words(in: first).map(\.word) { text = trimmed(String(text.dropFirst(first.count))) }
+        if let first = text.components(separatedBy: "\n").first, first.wholeMatch(of: introduction) != nil,
+           !isSubsequence(WordChanges.words(in: first).map(\.word), of: WordChanges.words(in: original).map(\.word)) {
+            text = trimmed(String(text.dropFirst(first.count)))
         }
         if text.hasPrefix("Text:") { text = trimmed(String(text.dropFirst(5))) }
         return text.components(separatedBy: "\n").map(plainLine).joined(separator: "\n")
@@ -182,48 +190,64 @@ public struct TextTidier: Sendable {
     }
 
     /// Nil when `edited` is an acceptable tidy-up of `original`; otherwise why not, in words for the person. Removing
-    /// fillers, false starts and repeats takes words out, and rejoining sentences rarely adds any, so the edit may
-    /// leave out at most a quarter of the words and add at most a fifth (a few words more for a short part).
+    /// fillers, false starts and repeats takes out a few words here and there, and rejoining sentences or fixing a
+    /// misheard word adds one or two at a place. So the edit may leave out at most a sixth of the words and add at most
+    /// a tenth (at least 2 either way), and leave out no run of more than 12 words or add no run of more than 3: an
+    /// answer, a summary, a dropped passage or a sentence of the model's own fails.
     public static func verdict(original: String, edited: String) -> String? {
         let before = WordChanges.words(in: original).map(\.word)
         let after = WordChanges.words(in: edited).map(\.word)
         guard !after.isEmpty else { return "the model gave no text" }
         let difference = after.difference(from: before)
-        let removed = difference.removals.count
-        let inserted = difference.insertions.count
-        if removed > max(3, before.count / 4) { return "the model left out too many words" }
-        if inserted > max(3, before.count / 5) { return "the model added words that were not said" }
+        let removed = offsets(difference.removals)
+        let inserted = offsets(difference.insertions)
+        if removed.count > max(2, before.count / 6) || longestRun(removed) > 12 {
+            return "the model left out too many words"
+        }
+        if inserted.count > max(2, before.count / 10) || longestRun(inserted) > 3 {
+            return "the model added words that were not said"
+        }
         return nil
     }
 
-    /// `paragraph`'s sentences: runs of words ending with a word whose last character, past closing quotes and
-    /// brackets, is `.`, `!`, `?` or `…`.
-    static func sentences(of paragraph: String) -> [String] {
-        var sentences: [String] = []
-        var current: [Substring] = []
-        for word in paragraph.split(whereSeparator: \.isWhitespace) {
-            current.append(word)
-            let end = word.reversed().first { !"\"'”’)]»".contains($0) }
-            if let end, ".!?…".contains(end) {
-                sentences.append(current.joined(separator: " "))
-                current = []
+    private static func offsets(_ changes: [CollectionDifference<String>.Change]) -> [Int] {
+        changes.map { change in
+            switch change {
+            case .remove(let offset, _, _), .insert(let offset, _, _): offset
             }
-        }
-        if !current.isEmpty { sentences.append(current.joined(separator: " ")) }
-        return sentences
+        }.sorted()
     }
 
-    static func wordCount(_ text: String) -> Int { text.split(whereSeparator: \.isWhitespace).count }
+    /// The longest run of consecutive numbers in `offsets` (in increasing order).
+    private static func longestRun(_ offsets: [Int]) -> Int {
+        var longest = 0
+        var run = 0
+        var previous: Int?
+        for offset in offsets {
+            run = previous.map { offset == $0 + 1 } == true ? run + 1 : 1
+            longest = max(longest, run)
+            previous = offset
+        }
+        return longest
+    }
+
+    private static func isSubsequence(_ words: [String], of text: [String]) -> Bool {
+        var remaining = words[...]
+        for word in text where word == remaining.first { remaining = remaining.dropFirst() }
+        return remaining.isEmpty
+    }
 
     private static func trimmed(_ text: some StringProtocol) -> String {
         text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // Built on each use: `Regex` is not `Sendable`, so it cannot be a stored static.
-    private static var blankLine: Regex<Substring> { /\n[ \t]*\n/ }
+    /// A word (any run without whitespace) and the whitespace after it.
+    private static var wordAndSpace: Regex<(Substring, Substring, Substring)> { /(\S+)(\s*)/ }
     private static var bulletMarker: Regex<(Substring, Substring)> { /^([ \t]*)[*•][ \t]+/ }
     private static var thinkBlock: Regex<Substring> { /(?s)<think>.*?<\/think>/ }
+    /// A short first line ending with a colon that opens like a reply ("Here is…", "Sure…") or names the edit.
     private static var introduction: Regex<Substring> {
-        /(?i)\s*(?:here(?:'s| is)|sure|certainly)?[^\n]{0,40}\b(?:text|version)\b[^\n]{0,20}:\s*/
+        /(?i)\s*(?:(?:here|sure|certainly|of course|okay|ok|below)\b[^\n]{0,70}|[^\n]{0,50}\b(?:text|version|edit|edited|revised|cleaned)\b[^\n]{0,30}):\s*/
     }
 }

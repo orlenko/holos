@@ -27,6 +27,8 @@ public enum TidyCommand {
 
         /// The parts that kept their own text.
         public var keptParts: [TextTidier.Part] { parts.filter { $0.kept != nil } }
+        /// Every part kept its own text: nothing was tidied.
+        public var nothingTidied: Bool { parts.allSatisfy { $0.kept != nil } }
     }
 
     /// Tidies `text` with `tidier` (the model of `engine`), reporting `progress(done, total)` in parts. Throws

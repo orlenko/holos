@@ -1250,21 +1250,28 @@ prints the result; `--json` prints `TidyCommand.Outcome`: the text, each part as
 changed. The model is Apple's on-device model (`OnDeviceTidy`, the model of Apple Intelligence's fix): it needs Apple
 Intelligence turned on and tidies English and French text, as the fix does.
 
-`TextTidier` (HolosCore) sends the text in parts, so the instructions, a part and its edit fit the model's context:
-whole paragraphs while they fit (600 words for Apple's model), a longer paragraph at sentence ends, a longer
-sentence at word boundaries. Each part is one request under the same instructions, which carry three worked
-before-and-after examples of pause periods: without them the models kept most of those periods. The edits are joined
-with a blank line. A reply loses a reasoning block, code fences, a "Text:" label and an introduction line ("Here is
-the edited text:") unless the speaker's text opens with that line; its lines lose trailing spaces, and `*` or `•`
-bullets become `- `.
+`TextTidier` (HolosCore) sends the text in parts, so the instructions, a part and its edit fit the model's context
+(600 words for Apple's model). A part ends at the strongest break among its words, the latest of equals: a blank
+line, then a line break, then a sentence end, then any space. Each part is exactly the text as given, its spacing and
+line breaks included, and the whitespace that followed it stays between the parts in the result, so a part that keeps
+its own text comes back unchanged. Each part is one request under the same instructions, which carry three worked
+before-and-after examples of pause periods: without them the models kept most of those periods. A reply loses a
+reasoning block, code fences and a "Text:" label, and a first line that introduces the edit (a short line ending
+with a colon that opens like a reply, "Here is…", "Sure…", or names the text or version) unless all its words appear,
+in order, in the part, as a list's own heading does. Its lines lose trailing spaces, and `*` or `•` bullets become
+`- `.
 
 A part keeps its own text, and the result says why, when the model fails, takes longer than the part's limit (60 s for
-Apple's model), or changes too much (`TextTidier.verdict`): the edit may leave out at most a quarter of the part's
-words and add at most a fifth (at least 3 either way). Words are runs of letters and digits with inner apostrophes,
-compared lowercased (`WordChanges`), so punctuation, capitals and line breaks never count. The changes reported
-(`WordChanges.between`, a shortest edit script over the words) are the words the edit added, with their place in the
-tidied text in UTF-16 offsets, and the words it removed there; the person reviews them before using the text.
-Cancelling a tidy-up returns nothing.
+Apple's model), or changes too much (`TextTidier.verdict`). Removing fillers, false starts and repeats takes out a few
+words here and there, and rejoining sentences or fixing a misheard word adds one or two at a place, so the edit may
+leave out at most a sixth of the part's words and add at most a tenth (at least 2 either way), and may not leave out a
+run of more than 12 words or add a run of more than 3: an answer, a summary, a dropped passage or a sentence of the
+model's own fails. Words are runs of letters and digits with inner apostrophes, compared lowercased (`WordChanges`),
+so punctuation, capitals and line breaks never count. The changes reported (`WordChanges.between`, a shortest edit
+script over the words) are the words the edit added, with their place in the tidied text in UTF-16 offsets, and the
+words it removed there; the person reviews them before using the text, and the command says on standard error how
+many there are. It exits 1 when no model could run or every part kept its own text. Cancelling a tidy-up returns
+nothing.
 
 ### First-launch setup
 
