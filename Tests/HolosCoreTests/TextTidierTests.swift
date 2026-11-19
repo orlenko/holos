@@ -128,8 +128,9 @@ import Testing
     }
 
     @Test func editsGetTheTextsOwnLineEnding() async throws {
-        let result = try await tidier { _ in "One.\nTwo." }.tidy("one\r\ntwo")
-        #expect(result.text == "One.\r\nTwo.")
+        #expect(try await tidier { _ in "One.\nTwo." }.tidy("one\r\ntwo").text == "One.\r\nTwo.")
+        #expect(try await tidier { _ in "One.\r\nTwo." }.tidy("one\r\ntwo").text == "One.\r\nTwo.")
+        #expect(try await tidier { _ in "One.\r\nTwo." }.tidy("one\ntwo").text == "One.\nTwo.")
     }
 
     @Test func repliesLoseReasoningFencesLabelsAndIntroductions() {
@@ -169,9 +170,48 @@ import Testing
         #expect(TextTidier.cleanedReply(reply, original: original) == reply)
     }
 
+    @Test func aFirstOrLastLineTheModelRespelledOrMovedIsKept() {
+        let body = "the report is attached and the numbers look right to me so please send it on to the client today"
+        let cases: [(String, String)] = [
+            ("hey, " + body + " cheers\nvlad", "Hi,\n\nThe report is attached and the numbers look right to me, so "
+                + "please send it on to the client today.\n\nCheers,\nVlad"),
+            (body + " thanks\njon", "The report is attached and the numbers look right to me, so please send it on to "
+                + "the client today.\n\nThanks,\nJohn"),
+            ("Oh and happy um birthday. " + body, "Happy birthday!\n\nThe report is attached and the numbers look "
+                + "right to me, so please send it on to the client today."),
+            ("Thanks uh for the draft. " + body, "The report is attached and the numbers look right to me, so please "
+                + "send it on to the client today.\n\nThanks for the draft."),
+            ("Thanks for the graft. " + body, "The report is attached and the numbers look right to me, so please send "
+                + "it on to the client today.\n\nThanks for the draft."),
+        ]
+        for (original, reply) in cases {
+            #expect(TextTidier.cleanedReply(reply, original: original) == reply)
+        }
+    }
+
+    @Test func replyLineEndingsAreNormalizedBeforeCleaning() {
+        #expect(TextTidier.cleanedReply("Things:  \r\n* milk", original: "things milk") == "Things:\n- milk")
+    }
+
     @Test func replyLinesBecomePlainText() {
         #expect(TextTidier.cleanedReply("Things:  \n*   milk\n• eggs\n  * bread", original: "things milk eggs bread")
             == "Things:\n- milk\n- eggs\n  - bread")
+    }
+
+    @Test func aDroppedPassageOfRealProseFailsEvenThoughItsSmallWordsRepeat() {
+        let filler = (1 ... 300).map { "w\($0)" }.joined(separator: " ")
+        let passage = "The problem is that the vendor sent the invoice to the wrong address and the finance team paid "
+            + "it twice, so now we have to ask the vendor to refund the second payment and the bank to reverse the "
+            + "fee, and the auditors want a note on the whole thing by Friday."
+        #expect(TextTidier.verdict(original: filler + " " + passage + " " + filler, edited: filler + " " + filler)
+            == "the model left out too many words")
+    }
+
+    @Test func aRepeatIsExcusedOnlyWhileTheEditKeepsAnotherCopy() {
+        let original = "we will not not go and then stay a while"
+        #expect(TextTidier.verdict(original: original, edited: "we will not and then stay a while") == nil)
+        #expect(TextTidier.verdict(original: original, edited: "we will and then stay a while")
+            == "the model left out too many words")
     }
 
     @Test func verdictDoesNotCountFillersAndRepeatsAgainstTheEdit() {

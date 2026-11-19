@@ -168,11 +168,11 @@ public struct TextTidier: Sendable {
     }
 
     /// The edit inside a reply: without a reasoning block (`<think>…</think>`), surrounding code fences, or a leading
-    /// "Text:" label, and without a first or last line made only of words that are not in `original` (the model's
-    /// "Here is the edited text:" or "Hope this helps!"); a line with any of the speaker's words stays. Its lines lose
-    /// trailing spaces, and `*` or `•` bullets become `- `.
+    /// "Text:" label, and without up to two first and two last lines the model added (`isAdded`: its "Here is the
+    /// edited text:" or "Hope this helps!"). Its line breaks become `\n`, its lines lose trailing spaces, and `*` or
+    /// `•` bullets become `- `.
     public static func cleanedReply(_ reply: String, original: String) -> String {
-        var text = trimmed(reply.replacing(thinkBlock, with: ""))
+        var text = trimmed(reply.replacingOccurrences(of: "\r\n", with: "\n").replacing(thinkBlock, with: ""))
         if text.hasPrefix("```") {
             var lines = text.components(separatedBy: "\n")
             lines.removeFirst()
@@ -182,9 +182,10 @@ public struct TextTidier: Sendable {
         if text.hasPrefix("Text:") { text = trimmed(String(text.dropFirst(5))) }
         var lines = text.components(separatedBy: "\n").map(plainLine)
         let said = WordChanges.words(in: original).map(\.word)
-        for end in [false, true] {
-            while let index = end ? lines.lastIndex(where: hasWords) : lines.firstIndex(where: hasWords),
-                  isAdded(line: index, of: lines, said: said) {
+        for last in [false, true] {
+            for _ in 0 ..< 2 {
+                guard let index = last ? lines.lastIndex(where: hasWords) : lines.firstIndex(where: hasWords),
+                      isAdded(line: index, of: lines, said: said, last: last) else { break }
                 lines.remove(at: index)
             }
         }
@@ -193,19 +194,24 @@ public struct TextTidier: Sendable {
 
     private static func hasWords(_ line: String) -> Bool { !WordChanges.words(in: line).isEmpty }
 
-    /// Whether every word of `lines[line]` is one the edit added: an insertion in the shortest edit script from `said`
-    /// to the words of `lines`. A line whose words appear in a row in `said` is one the model moved, never added.
-    private static func isAdded(line: Int, of lines: [String], said: [String]) -> Bool {
+    /// Whether `lines[line]`, the first line with words (or the last, when `last`), is one the model added rather than
+    /// the speaker's own, edited or moved. In the shortest edit script from `said` to the words of `lines`, every word
+    /// of the line is an insertion, none of its words is one the script removes from `said` (a word the model moved
+    /// or respelled), and `said`'s own first word that is not a filler (last, when `last`) is not removed (the model
+    /// did not rewrite the speaker's opening or closing). Anything in doubt stays, for `verdict` to judge.
+    private static func isAdded(line: Int, of lines: [String], said: [String], last: Bool) -> Bool {
         let own = WordChanges.words(in: lines[line]).map(\.word)
-        if said.count >= own.count,
-           (0 ... said.count - own.count).contains(where: { said[$0 ..< $0 + own.count].elementsEqual(own) }) {
-            return false
-        }
-        let before = lines[..<line].reduce(0) { $0 + WordChanges.words(in: $1).count }
-        let count = own.count
         let edit = WordChanges.words(in: lines.joined(separator: "\n")).map(\.word)
-        let inserted = Set(offsets(edit.difference(from: said).insertions))
-        return (before ..< before + count).allSatisfy(inserted.contains)
+        let difference = edit.difference(from: said)
+        let inserted = Set(offsets(difference.insertions))
+        let removed = Set(offsets(difference.removals))
+        let start = lines[..<line].reduce(0) { $0 + WordChanges.words(in: $1).count }
+        guard (start ..< start + own.count).allSatisfy(inserted.contains) else { return false }
+        let removedWords = Set(removed.map { said[$0] })
+        guard !own.contains(where: removedWords.contains) else { return false }
+        let spoken = said.indices.filter { !FillerWords.isFiller(said[$0], language: nil) }
+        guard let edge = last ? spoken.last : spoken.first else { return true }
+        return !removed.contains(edge)
     }
 
     /// A reply line as plain text: no trailing spaces (Markdown's line break), and a bullet written `*` or `•`, with
@@ -219,22 +225,26 @@ public struct TextTidier: Sendable {
     }
 
     /// Nil when `edited` is an acceptable tidy-up of `original`; otherwise why not, in words for the person. Removing
-    /// fillers and repeated words is the edit's job and does not count: a removed word that is a filler
-    /// (`FillerWords`) or is also one of the four words before or after it. Of the other words, the edit may leave out at most a fifth
-    /// and add at most a tenth (at least 2 either way), and may not leave out a run of more than 12 or add a run of
-    /// more than 3: an answer, a summary, a dropped passage or a sentence of the model's own fails.
+    /// fillers and repeated words is the edit's job, so they do not count towards the total: a removed filler
+    /// (`FillerWords`), or a removed word with another copy within four words of it that the edit keeps. Of the other
+    /// words, the edit may leave out at most a fifth and add at most a tenth (at least 2 either way). It may not leave
+    /// out a run of more than 12 words (fillers and repeats included) or add a run of more than 3: an answer, a
+    /// summary, a dropped passage or a sentence of the model's own fails.
     public static func verdict(original: String, edited: String) -> String? {
         let before = WordChanges.words(in: original).map(\.word)
         let after = WordChanges.words(in: edited).map(\.word)
         guard !after.isEmpty else { return "the model gave no text" }
         let difference = after.difference(from: before)
-        let removed = offsets(difference.removals).filter { offset in
-            !FillerWords.isFiller(before[offset], language: nil)
-                && !before[max(0, offset - 4) ..< offset].contains(before[offset])
-                && !before[min(before.count, offset + 1) ..< min(before.count, offset + 5)].contains(before[offset])
+        let removed = offsets(difference.removals)
+        let removedSet = Set(removed)
+        let counted = removed.filter { offset in
+            let word = before[offset]
+            if FillerWords.isFiller(word, language: nil) { return false }
+            let nearby = max(0, offset - 4) ... min(before.count - 1, offset + 4)
+            return !nearby.contains { $0 != offset && before[$0] == word && !removedSet.contains($0) }
         }
         let inserted = offsets(difference.insertions)
-        if removed.count > max(2, before.count / 5) || longestRun(removed) > 12 {
+        if counted.count > max(2, before.count / 5) || longestRun(removed) > 12 {
             return "the model left out too many words"
         }
         if inserted.count > max(2, before.count / 10) || longestRun(inserted) > 3 {

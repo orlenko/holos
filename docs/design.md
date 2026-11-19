@@ -1257,17 +1257,19 @@ John,") stays with the text after it. Each part is exactly the text as given, it
 line breaks included, and the whitespace that followed it stays between the parts in the result, so a part that keeps
 its own text comes back unchanged. Each part is one request under the same instructions, which carry three worked
 before-and-after examples of pause periods: without them the models kept most of those periods. A reply loses a
-reasoning block, code fences and a "Text:" label, and a first or last line made only of words the edit added (the
-model's "Here is the edited text:" or "Hope this helps!", in any language); a line with any of the speaker's words, or
-one the speaker said word for word elsewhere in the part, stays. Its lines lose trailing spaces, `*` or `•` bullets
-become `- `, and its line breaks become the text's own (`\r\n` or `\n`). The whitespace before the first word and
-after the last is kept.
+reasoning block, code fences and a "Text:" label, and up to two first and two last lines the model added (its "Here
+is the edited text:" or "Hope this helps!", in any language): every word of the line is new in the edit, none of them
+is a word the edit removed from the part (a sentence moved or respelled), and the part's own first or last word that
+is not a filler is still there. Anything in doubt stays, for the check below. The reply's line breaks become `\n`, its
+lines lose trailing spaces, `*` or `•` bullets become `- `, and the edit gets the text's own line ending (`\r\n` or
+`\n`). The whitespace before the first word and after the last is kept.
 
 A part keeps its own text, and the result says why, when the model fails, takes longer than the part's limit (60 s for
-Apple's model), or changes too much (`TextTidier.verdict`). A removed filler (`FillerWords`) or a removed word that is
-also one of the four words before or after it (a repeat) does not count. Of the other words, the edit may leave out at
-most a fifth and add at most a tenth (at least 2 either way), and may not leave out a run of more than 12 words or add
-a run of more than 3: an answer, a summary, a dropped passage or a sentence of the model's own fails. Words are runs of letters and digits with inner apostrophes, compared lowercased (`WordChanges`),
+Apple's model), or changes too much (`TextTidier.verdict`). A removed filler (`FillerWords`), or a removed word with
+another copy within four words of it that the edit keeps (a repeat), does not count towards the total. Of the other
+words, the edit may leave out at most a fifth and add at most a tenth (at least 2 either way). It may not leave out a
+run of more than 12 words, fillers and repeats included, or add a run of more than 3: an answer, a summary, a dropped
+passage or a sentence of the model's own fails. Words are runs of letters and digits with inner apostrophes, compared lowercased (`WordChanges`),
 so punctuation, capitals and line breaks never count. The changes reported (`WordChanges.between`, a shortest edit
 script over the words) are the words the edit added, with their place in the tidied text in UTF-16 offsets, and the
 words it removed there; the person reviews them before using the text, and the command says on standard error how
