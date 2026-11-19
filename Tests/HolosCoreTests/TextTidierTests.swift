@@ -133,68 +133,29 @@ import Testing
         #expect(try await tidier { _ in "One.\r\nTwo." }.tidy("one\ntwo").text == "One.\nTwo.")
     }
 
-    @Test func repliesLoseReasoningFencesLabelsAndIntroductions() {
+    @Test func repliesLoseReasoningFencesAndLabels() {
         let original = "we should ship it"
         #expect(TextTidier.cleanedReply("<think>\nhmm\n</think>\n\nWe should ship it.", original: original)
             == "We should ship it.")
         #expect(TextTidier.cleanedReply("```\nWe should ship it.\n```", original: original) == "We should ship it.")
         #expect(TextTidier.cleanedReply("Text: We should ship it.", original: original) == "We should ship it.")
-        #expect(TextTidier.cleanedReply("Here is the edited text:\n\nWe should ship it.", original: original)
-            == "We should ship it.")
     }
 
-    @Test func aFirstLineWithAnyOfTheSpeakersWordsIsKept() {
-        let tail = " " + (1 ... 60).map { "w\($0)" }.joined(separator: " ")
-        let tailEdit = "\n" + (1 ... 60).map { "w\($0)" }.joined(separator: " ")
-        for (said, wrote) in [("the new version has three changes", "The new version has 3 changes:"),
-                              ("OK here are my notes", "Okay, here are my notes:"),
-                              ("here's what happened", "Here is what happened:"),
-                              ("the text of the knew law says", "The text of the new law says:"),
-                              ("here is the text for the invitation", "Here is the text for the invitation:")] {
-            #expect(TextTidier.cleanedReply(wrote + tailEdit, original: said + tail) == wrote + tailEdit)
-        }
+    @Test func aReplyLineTheModelAddedIsLeftForTheVerdictAndThePerson() {
+        let part = "so the design team wants one more week to finish the mockups before we start building"
+        let reply = "Here is the edited text:\n\nThe design team wants one more week to finish the mockups before we "
+            + "start building."
+        #expect(TextTidier.cleanedReply(reply, original: part) == reply)
+        #expect(TextTidier.verdict(original: part, edited: reply) == "the model added words that were not said")
     }
 
-    @Test func linesTheModelAddedAtTheStartOrEndAreDropped() {
-        let part = (1 ... 50).map { "w\($0)" }.joined(separator: " ")
-        for reply in ["Here it is:\n" + part, "Sure! Here's your revised journal entry:\n\n" + part,
-                      "Voici le texte corrigé :\n" + part, "**Edited text:**\n" + part,
-                      part + "\n\nHope this helps!", part + "\n\nAll done!\nLet me know."] {
-            #expect(TextTidier.cleanedReply(reply, original: part) == part)
-        }
-    }
-
-    @Test func aSentenceTheModelMovedToTheEndIsNotDropped() {
-        let original = "Thanks for the draft. It looks great. See you at noon."
-        let reply = "It looks great.\nThanks for the draft.\nSee you at noon."
-        #expect(TextTidier.cleanedReply(reply, original: original) == reply)
-    }
-
-    @Test func aFirstOrLastLineTheModelRespelledOrMovedIsKept() {
-        let body = "the report is attached and the numbers look right to me so please send it on to the client today"
-        let cases: [(String, String)] = [
-            ("hey, " + body + " cheers\nvlad", "Hi,\n\nThe report is attached and the numbers look right to me, so "
-                + "please send it on to the client today.\n\nCheers,\nVlad"),
-            (body + " thanks\njon", "The report is attached and the numbers look right to me, so please send it on to "
-                + "the client today.\n\nThanks,\nJohn"),
-            ("Oh and happy um birthday. " + body, "Happy birthday!\n\nThe report is attached and the numbers look "
-                + "right to me, so please send it on to the client today."),
-            ("Thanks uh for the draft. " + body, "The report is attached and the numbers look right to me, so please "
-                + "send it on to the client today.\n\nThanks for the draft."),
-            ("Thanks for the graft. " + body, "The report is attached and the numbers look right to me, so please send "
-                + "it on to the client today.\n\nThanks for the draft."),
-        ]
-        for (original, reply) in cases {
-            #expect(TextTidier.cleanedReply(reply, original: original) == reply)
-        }
-    }
-
-    @Test func replyLineEndingsAreNormalizedBeforeCleaning() {
-        #expect(TextTidier.cleanedReply("Things:  \r\n* milk", original: "things milk") == "Things:\n- milk")
+    @Test func aTextLabelTheSpeakerSaidStays() {
+        #expect(TextTidier.cleanedReply("Text: buy milk.", original: "Text: buy milk") == "Text: buy milk.")
+        #expect(TextTidier.cleanedReply("Text: Buy milk.", original: "buy milk") == "Buy milk.")
     }
 
     @Test func replyLinesBecomePlainText() {
-        #expect(TextTidier.cleanedReply("Things:  \n*   milk\n• eggs\n  * bread", original: "things milk eggs bread")
+        #expect(TextTidier.cleanedReply("Things:  \n*   milk\n• eggs\n  * bread", original: "")
             == "Things:\n- milk\n- eggs\n  - bread")
     }
 
@@ -207,10 +168,29 @@ import Testing
             == "the model left out too many words")
     }
 
+    @Test func aSummaryOfAPassageFailsEvenWhenItKeepsSomeOfItsWords() {
+        let around = "We met on Tuesday to go over the plan for the spring launch, and most of it is on track. The site "
+            + "is ready, the emails are written, and the press list is done. "
+        let passage = "The problem is that the vendor sent the invoice to the wrong address and the finance team paid "
+            + "it twice, so now we have to ask the vendor to refund the second payment and the bank to reverse the "
+            + "fee, and the auditors want a note on the whole thing by Friday. "
+        let summary = "The vendor was paid twice, so we need a refund and a note for the auditors by Friday. "
+        let original = String(repeating: around, count: 6) + passage + String(repeating: around, count: 6)
+        let edited = String(repeating: around, count: 6) + summary + String(repeating: around, count: 6)
+        #expect(TextTidier.verdict(original: original, edited: edited) == "the model left out too many words")
+    }
+
+    @Test func fillersAndFalseStartsSpreadThroughTheTextPass() {
+        let original = "So um I was thinking that we, uh, we could maybe move the launch. I mean, the launch could "
+            + "move to May. Um, because the design, the design team needs, like, one more week."
+        let edited = "I was thinking that we could move the launch to May, because the design team needs one more week."
+        #expect(TextTidier.verdict(original: original, edited: edited) == nil)
+    }
+
     @Test func aRepeatIsExcusedOnlyWhileTheEditKeepsAnotherCopy() {
-        let original = "we will not not go and then stay a while"
-        #expect(TextTidier.verdict(original: original, edited: "we will not and then stay a while") == nil)
-        #expect(TextTidier.verdict(original: original, edited: "we will and then stay a while")
+        let original = "we will not not go and then stay"
+        #expect(TextTidier.verdict(original: original, edited: "we will not and then stay") == nil)
+        #expect(TextTidier.verdict(original: original, edited: "we will and then stay")
             == "the model left out too many words")
     }
 

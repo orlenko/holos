@@ -1257,24 +1257,24 @@ John,") stays with the text after it. Each part is exactly the text as given, it
 line breaks included, and the whitespace that followed it stays between the parts in the result, so a part that keeps
 its own text comes back unchanged. Each part is one request under the same instructions, which carry three worked
 before-and-after examples of pause periods: without them the models kept most of those periods. A reply loses a
-reasoning block, code fences and a "Text:" label, and up to two first and two last lines the model added (its "Here
-is the edited text:" or "Hope this helps!", in any language): every word of the line is new in the edit, none of them
-is a word the edit removed from the part (a sentence moved or respelled), and the part's own first or last word that
-is not a filler is still there. Anything in doubt stays, for the check below. The reply's line breaks become `\n`, its
-lines lose trailing spaces, `*` or `•` bullets become `- `, and the edit gets the text's own line ending (`\r\n` or
-`\n`). The whitespace before the first word and after the last is kept.
+reasoning block, code fences and a leading "Text:" label (the prompt's own, unless the part starts with it too), and
+nothing else: a line the model added ("Here is the edited text:") is left for the check below and for the person, who
+sees it marked as added. The reply's line breaks become `\n`, its lines lose trailing spaces, `*` or `•` bullets
+become `- `, and the edit gets the text's own line ending (`\r\n` or `\n`). The whitespace before the first word and
+after the last is kept.
 
-A part keeps its own text, and the result says why, when the model fails, takes longer than the part's limit (60 s for
-Apple's model), or changes too much (`TextTidier.verdict`). A removed filler (`FillerWords`), or a removed word with
-another copy within four words of it that the edit keeps (a repeat), does not count towards the total. Of the other
-words, the edit may leave out at most a fifth and add at most a tenth (at least 2 either way). It may not leave out a
-run of more than 12 words, fillers and repeats included, or add a run of more than 3: an answer, a summary, a dropped
-passage or a sentence of the model's own fails. Words are runs of letters and digits with inner apostrophes, compared lowercased (`WordChanges`),
-so punctuation, capitals and line breaks never count. The changes reported (`WordChanges.between`, a shortest edit
-script over the words) are the words the edit added, with their place in the tidied text in UTF-16 offsets, and the
-words it removed there; the person reviews them before using the text, and the command says on standard error how
-many there are. It exits 1 when no model could run or every part kept its own text. Cancelling a tidy-up returns
-nothing.
+A part keeps its own text, and the result says why, when the model fails, takes longer than the part's limit (60 s
+for Apple's model), or changes too much (`TextTidier.verdict`, a coarse guard against an edit that is not one: an
+answer, a summary, a dropped passage, a sentence of the model's own). A removed filler (`FillerWords`), or a removed
+word with another copy within four words of it that the edit keeps (a repeat), does not count towards the total. Of
+the other words, the edit may leave out at most a third (rambling speech loses its "I mean" restarts) and add at
+most a tenth (at least 2 either way). It may not leave out more than 12 of any 20 words in a row, every removed word
+counted there, or add a run of more than 3 words. Words are runs of letters and digits with inner apostrophes,
+compared lowercased (`WordChanges`), so punctuation, capitals and line breaks never count. The changes reported
+(`WordChanges.between`, a shortest edit script over the words) are the words the edit added, with their place in the
+tidied text in UTF-16 offsets, and the words it removed there; the person reviews them before using the text, and
+the command says on standard error how many there are. It exits 1 when no model could run or every part kept its own
+text. Cancelling a tidy-up returns nothing.
 
 ### First-launch setup
 

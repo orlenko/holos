@@ -168,9 +168,9 @@ public struct TextTidier: Sendable {
     }
 
     /// The edit inside a reply: without a reasoning block (`<think>…</think>`), surrounding code fences, or a leading
-    /// "Text:" label, and without up to two first and two last lines the model added (`isAdded`: its "Here is the
-    /// edited text:" or "Hope this helps!"). Its line breaks become `\n`, its lines lose trailing spaces, and `*` or
-    /// `•` bullets become `- `.
+    /// "Text:" label (the prompt's own, unless `original` starts with it too). Nothing else the model wrote is taken
+    /// out: a line it added ("Here is the edited text:") is left for `verdict` and for the person, who sees it marked
+    /// as added. Its line breaks become `\n`, its lines lose trailing spaces, and `*` or `•` bullets become `- `.
     public static func cleanedReply(_ reply: String, original: String) -> String {
         var text = trimmed(reply.replacingOccurrences(of: "\r\n", with: "\n").replacing(thinkBlock, with: ""))
         if text.hasPrefix("```") {
@@ -179,39 +179,8 @@ public struct TextTidier: Sendable {
             if lines.last.map(trimmed) == "```" { lines.removeLast() }
             text = trimmed(lines.joined(separator: "\n"))
         }
-        if text.hasPrefix("Text:") { text = trimmed(String(text.dropFirst(5))) }
-        var lines = text.components(separatedBy: "\n").map(plainLine)
-        let said = WordChanges.words(in: original).map(\.word)
-        for last in [false, true] {
-            for _ in 0 ..< 2 {
-                guard let index = last ? lines.lastIndex(where: hasWords) : lines.firstIndex(where: hasWords),
-                      isAdded(line: index, of: lines, said: said, last: last) else { break }
-                lines.remove(at: index)
-            }
-        }
-        return trimmed(lines.joined(separator: "\n"))
-    }
-
-    private static func hasWords(_ line: String) -> Bool { !WordChanges.words(in: line).isEmpty }
-
-    /// Whether `lines[line]`, the first line with words (or the last, when `last`), is one the model added rather than
-    /// the speaker's own, edited or moved. In the shortest edit script from `said` to the words of `lines`, every word
-    /// of the line is an insertion, none of its words is one the script removes from `said` (a word the model moved
-    /// or respelled), and `said`'s own first word that is not a filler (last, when `last`) is not removed (the model
-    /// did not rewrite the speaker's opening or closing). Anything in doubt stays, for `verdict` to judge.
-    private static func isAdded(line: Int, of lines: [String], said: [String], last: Bool) -> Bool {
-        let own = WordChanges.words(in: lines[line]).map(\.word)
-        let edit = WordChanges.words(in: lines.joined(separator: "\n")).map(\.word)
-        let difference = edit.difference(from: said)
-        let inserted = Set(offsets(difference.insertions))
-        let removed = Set(offsets(difference.removals))
-        let start = lines[..<line].reduce(0) { $0 + WordChanges.words(in: $1).count }
-        guard (start ..< start + own.count).allSatisfy(inserted.contains) else { return false }
-        let removedWords = Set(removed.map { said[$0] })
-        guard !own.contains(where: removedWords.contains) else { return false }
-        let spoken = said.indices.filter { !FillerWords.isFiller(said[$0], language: nil) }
-        guard let edge = last ? spoken.last : spoken.first else { return true }
-        return !removed.contains(edge)
+        if text.hasPrefix("Text:"), !trimmed(original).hasPrefix("Text:") { text = trimmed(String(text.dropFirst(5))) }
+        return text.components(separatedBy: "\n").map(plainLine).joined(separator: "\n")
     }
 
     /// A reply line as plain text: no trailing spaces (Markdown's line break), and a bullet written `*` or `•`, with
@@ -224,12 +193,13 @@ public struct TextTidier: Sendable {
         return line
     }
 
-    /// Nil when `edited` is an acceptable tidy-up of `original`; otherwise why not, in words for the person. Removing
-    /// fillers and repeated words is the edit's job, so they do not count towards the total: a removed filler
-    /// (`FillerWords`), or a removed word with another copy within four words of it that the edit keeps. Of the other
-    /// words, the edit may leave out at most a fifth and add at most a tenth (at least 2 either way). It may not leave
-    /// out a run of more than 12 words (fillers and repeats included) or add a run of more than 3: an answer, a
-    /// summary, a dropped passage or a sentence of the model's own fails.
+    /// Nil when `edited` is an acceptable tidy-up of `original`; otherwise why not, in words for the person. It is a
+    /// coarse guard against an edit that is not one (an answer, a summary, a dropped passage, a sentence of the model's
+    /// own); the person reviews the words an edit changed (`WordChanges`). Removing fillers and repeated words is the
+    /// edit's job, so they do not count towards the total: a removed filler (`FillerWords`), or a removed word with
+    /// another copy within four words of it that the edit keeps. Of the other words, the edit may leave out at most a
+    /// third (rambling speech loses its "I mean" restarts) and add at most a tenth (at least 2 either way). It may not
+    /// leave out more than 12 of any 20 words in a row (every removed word counts there), or add a run of more than 3.
     public static func verdict(original: String, edited: String) -> String? {
         let before = WordChanges.words(in: original).map(\.word)
         let after = WordChanges.words(in: edited).map(\.word)
@@ -244,13 +214,24 @@ public struct TextTidier: Sendable {
             return !nearby.contains { $0 != offset && before[$0] == word && !removedSet.contains($0) }
         }
         let inserted = offsets(difference.insertions)
-        if counted.count > max(2, before.count / 5) || longestRun(removed) > 12 {
+        if counted.count > max(2, before.count / 3) || densest(removed, window: 20) > 12 {
             return "the model left out too many words"
         }
         if inserted.count > max(2, before.count / 10) || longestRun(inserted) > 3 {
             return "the model added words that were not said"
         }
         return nil
+    }
+
+    /// The most of `offsets` (increasing) that fall in any `window` consecutive positions.
+    private static func densest(_ offsets: [Int], window: Int) -> Int {
+        var most = 0
+        var first = 0
+        for (index, offset) in offsets.enumerated() {
+            while offsets[first] <= offset - window { first += 1 }
+            most = max(most, index - first + 1)
+        }
+        return most
     }
 
     private static func offsets(_ changes: [CollectionDifference<String>.Change]) -> [Int] {
