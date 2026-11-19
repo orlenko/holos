@@ -6,6 +6,7 @@ import FoundationModels
 import HolosAudio
 import HolosCore
 import HolosDiarization
+import HolosLlama
 import HolosMeeting
 import HolosSpeech
 import HolosSynthesis
@@ -40,7 +41,7 @@ struct Doctor: AsyncParsableCommand {
             speakerModels: speakerModels.doctorValue, deepTranscriptionModel: whisperModel,
             naturalVoices: Dictionary(uniqueKeysWithValues: NaturalVoicePack.allCases.map {
                 ($0.rawValue, NaturalVoiceModels.status(pack: $0))
-            }))
+            }), tidyModel: TidyModel.status())
         if json { try Console.json(report); return }
         Console.output("Voice is Local — local capability report")
         Console.output("macOS: \(report.os)")
@@ -60,6 +61,7 @@ struct Doctor: AsyncParsableCommand {
         for pack in NaturalVoicePack.allCases {
             Console.output("Natural voices (\(pack.languageName)): \(report.naturalVoices?[pack.rawValue]?.summary ?? "unknown")")
         }
+        Console.output("Tidy Up model (\(TidyModel.displayName)): \(report.tidyModel?.summary ?? "unknown")")
         let recognizers = RecognizerLocales(speech: speech.supportedLocales, dictation: dictation.supportedLocales)
         if let backend = recognizers.knownBackend(for: locale) {
             Console.output("Install transcription assets with: voiceislocal setup --locale \(locale)"
@@ -71,6 +73,9 @@ struct Doctor: AsyncParsableCommand {
         if speakerModels != .verified { Console.output("Install speaker models with: voiceislocal setup --speakers") }
         if whisperModel == .notInstalled {
             Console.output("Install the deep transcription model with: voiceislocal setup --whisper (about 1.6 GB)")
+        }
+        if report.tidyModel == .notInstalled {
+            Console.output("Install the Tidy Up model with: voiceislocal setup --tidy-model (about 5.7 GB)")
         }
     }
 }
@@ -89,6 +94,10 @@ struct Setup: AsyncParsableCommand {
             Hugging Face) for English (about \(NaturalVoicePack.english.downloadSize)), or for French with \
             --language fr (about \(NaturalVoicePack.french.downloadSize)), into the same folder, and prepares them \
             for this Mac (the first time takes a few minutes). \
+            --tidy-model downloads Tidy Up's model (\(TidyModel.displayName), a GGUF file of about 5.7 GB from \
+            Hugging Face, pinned and checked by SHA-256) into the same folder; an interrupted download resumes. With \
+            --from FILE it checks and copies a copy of that file already on this Mac instead. \
+            --remove-tidy-model deletes it. \
             --force downloads any of them again in any case.
             """)
     @OptionGroup var recognition: RecognitionOptions
@@ -97,17 +106,25 @@ struct Setup: AsyncParsableCommand {
     var whisper = false
     @Flag(help: "Download and prepare the natural Reading voices (network; English unless --language fr).")
     var naturalVoices = false
+    @Flag(help: "Download and check Tidy Up's model (network, about 5.7 GB).") var tidyModel = false
+    @Option(help: ArgumentHelp("With --tidy-model: copy this model file, already on this Mac, instead of downloading.",
+                               valueName: "file"))
+    var from: String?
+    @Flag(help: "Delete Tidy Up's model and any unfinished download.") var removeTidyModel = false
     @Option(help: ArgumentHelp("With --natural-voices: en (the default) or fr.", valueName: "language"))
     var language: String?
-    @Flag(help: "With --speakers, --whisper, or --natural-voices: download and install the models again even when they are installed.")
+    @Flag(help: "With --speakers, --whisper, --natural-voices, or --tidy-model: download and install the models again even when they are installed.")
     var force = false
 
     func validate() throws {
-        let chosen = [speakers, whisper, naturalVoices].filter { $0 }.count
-        if force && chosen == 0 {
-            throw ValidationError("--force applies only with --speakers, --whisper, or --natural-voices.")
+        let chosen = [speakers, whisper, naturalVoices, tidyModel, removeTidyModel].filter { $0 }.count
+        if force && (chosen == 0 || removeTidyModel) {
+            throw ValidationError("--force applies only with --speakers, --whisper, --natural-voices, or --tidy-model.")
         }
-        if chosen > 1 { throw ValidationError("Choose one of --speakers, --whisper, and --natural-voices.") }
+        if chosen > 1 {
+            throw ValidationError("Choose one of --speakers, --whisper, --natural-voices, --tidy-model, and --remove-tidy-model.")
+        }
+        if from != nil && !tidyModel { throw ValidationError("--from applies only with --tidy-model.") }
         if language != nil && !naturalVoices { throw ValidationError("--language applies only with --natural-voices.") }
         if let language, NaturalVoicePack.allCases.first(where: { $0.languageCode == language }) == nil {
             throw ValidationError("--language must be en or fr.")
@@ -118,6 +135,20 @@ struct Setup: AsyncParsableCommand {
         if naturalVoices {
             let pack = NaturalVoicePack.allCases.first { $0.languageCode == (language ?? "en") } ?? .english
             try await NaturalVoiceSetup.run(pack: pack, force: force)
+            return
+        }
+        if tidyModel {
+            let source = from.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+            let progress = ProgressPrinter(label: "Tidy Up model")
+            try await TidyModelInstall.setUp(force: force, source: source, notice: { Console.error($0) },
+                                             progress: progress.report)
+            Console.output(TidyModel.readyMessage)
+            Console.output(TidyModel.creditsLine)
+            return
+        }
+        if removeTidyModel {
+            try TidyModelInstall.remove()
+            Console.output("Removed: Tidy Up model.")
             return
         }
         if speakers {

@@ -56,13 +56,23 @@ while [ "$search_dir" != / ] && [ -z "$sparkle_source" ]; do
     [ ! -d "$candidate" ] || sparkle_source=$candidate
     search_dir=$(dirname "$search_dir")
 done
+# The tool links llama.cpp (Tidy Up, docs/design.md "Tidy Up"): the framework it was linked against is beside it.
+llama_source="$holos_app_bin_dir/llama.framework"
 [ -n "$sparkle_source" ] || { printf 'No Sparkle.framework in the package artifacts above %s.\n' "$holos_app_bin_dir" >&2; exit 1; }
+[ -d "$llama_source" ] || { printf 'No llama.framework in %s.\n' "$holos_app_bin_dir" >&2; exit 1; }
 rm -rf "$holos_app_bundle/Contents/Frameworks"
 mkdir -p "$holos_app_bundle/Contents/Frameworks"
 ditto "$sparkle_source" "$holos_app_bundle/Contents/Frameworks/Sparkle.framework"
+ditto "$llama_source" "$holos_app_bundle/Contents/Frameworks/llama.framework"
+codesign --force --sign - "$holos_app_bundle/Contents/Frameworks/llama.framework"
 # The recorder and maintenance commands the app starts (docs/meeting/recorder.md §4.1): signed on its own first,
 # then sealed into the bundle's signature.
 cp "$holos_app_bin_dir/voiceislocal" "$holos_app_bundle/Contents/MacOS/voiceislocal"
+# Only the bundle's own Frameworks folder: the build folder's rpath goes, so the tool never loads a library from it.
+otool -l "$holos_app_bundle/Contents/MacOS/voiceislocal" | sed -n 's/^ *path \(\/.*\) (offset [0-9]*)$/\1/p' |
+    while IFS= read -r rpath; do
+        install_name_tool -delete_rpath "$rpath" "$holos_app_bundle/Contents/MacOS/voiceislocal"
+    done
 codesign --force --sign - --identifier ca.orlenko.holos.cli "$holos_app_bundle/Contents/MacOS/voiceislocal"
 plutil -lint "$holos_app_bundle/Contents/Info.plist"
 codesign --force --sign - --identifier ca.orlenko.holos.app "$holos_app_bundle"

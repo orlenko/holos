@@ -39,6 +39,7 @@ lists Holos targets, then notable system or package frameworks.
 | [HolosMeeting](Sources/HolosMeeting/README.md) | Recorder workflow and state machine, `MeetingController`, post-processing, `ReviewSession`, summaries, people and voice profiles, import, catalog | AppKit, FluidAudio, WhisperKit, evaluation code, new path literals inside a session (existing ones: see below) | Core, Storage, Audio, Speech, Speakers; AVFoundation, Vision, NaturalLanguage |
 | [HolosDiarization](Sources/HolosDiarization/README.md) | The FluidAudio diarizer adapter and model install/verification | Being linked by the app | Core; FluidAudio |
 | [HolosWhisper](Sources/HolosWhisper/README.md) | WhisperKit deep transcription and model install | Being linked by the app | Core; WhisperKit, CoreML |
+| [HolosLlama](Sources/HolosLlama/README.md) | Tidy Up on Qwen through llama.cpp, and the model's install | Being linked by the app | Core; llama.cpp |
 | [HolosPocket](Sources/HolosPocket/README.md) | The Pocket TTS natural-voice backend (FluidAudio) and its pinned download and check | Being linked by the app; which voices are offered | Core, Synthesis; FluidAudio |
 | [HolosEvaluation](Sources/HolosEvaluation/README.md) | The reference evaluation behind `voiceislocal eval`: cloud and local runs, scoring, review | Being linked by the app; anything the recording path needs | Core, Storage, Audio, Speakers, Meeting; AVFoundation, CryptoKit |
 | [HolosAppModel](Sources/HolosAppModel/README.md) | The app's own decisions without AppKit (settings search, setup assistant flow, permission buttons, launch, Copy Result) | AppKit, controllers, anything another library or the CLI needs | Core |
@@ -70,8 +71,8 @@ Known exceptions today (not precedents; do not add to them):
   can drive it. `HolosApp` gets the view and the wiring only.
 - A CLI command: the logic as a `*Command` type (with `Request`/`Outcome`) in the library; `HolosCLI` parses and
   prints.
-- Anything that needs FluidAudio or WhisperKit: `HolosDiarization`/`HolosWhisper`/`HolosPocket`, reached by the app
-  only through a `voiceislocal` child process.
+- Anything that needs FluidAudio, WhisperKit or llama.cpp: `HolosDiarization`/`HolosWhisper`/`HolosPocket`/
+  `HolosLlama`, reached by the app only through a `voiceislocal` child process.
 - Evaluation and cloud comparison code: `HolosEvaluation` (of the products, only `HolosCLI` links it).
 - An app-only decision that needs no AppKit (what a settings row, the Setup Assistant or a menu item does):
   `HolosAppModel`, tested in `HolosAppModelTests` without building the app.
@@ -274,11 +275,11 @@ against this list. A `README.md` under these folders does not count.
   `Sources/HolosMeeting/BackgroundJobs/*{Cleanup,AudioCleanup}*.swift`,
   `Sources/HolosContent/ReadingLibrary+Deletion.swift`, `Sources/HolosAppModel/ResultRetention.swift`,
   `Sources/HolosWhisper/WhisperModels.swift`, `Sources/HolosDiarization/{FluidModels,ModelPaths,PinnedModels}.swift`,
-  `Sources/HolosSynthesis/{NaturalVoiceModels,NaturalVoicePackFiles}.swift`
+  `Sources/HolosSynthesis/{NaturalVoiceModels,NaturalVoicePackFiles}.swift`, `Sources/HolosLlama/TidyModelInstall.swift`
 - Updates: `Sources/HolosApp/HolosApp+Updates.swift`, `Sources/HolosAppModel/UpdateCheckConsent.swift`
 - Signing, release, dependency pins: `scripts/{release,release-app,build-app,build,stamp-build-info}.sh`,
   `Resources/*.entitlements`, `Package.resolved`
-- Network: `Sources/HolosEvaluation/{Cloud*,EvalCloudCommand}.swift`,
+- Network: `Sources/HolosEvaluation/{Cloud*,EvalCloudCommand}.swift`, `Sources/HolosLlama/TidyModelInstall.swift`,
   `Sources/HolosApp/Reading/NaturalVoiceDownload.swift`
 
 **Triggers.** A change is also tier B when it adds or changes work that runs on a timer, by polling or while the app

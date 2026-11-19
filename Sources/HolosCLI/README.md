@@ -13,7 +13,7 @@ that needs FluidAudio or WhisperKit, and for recording (unless the app's in-proc
 **Must not own:** workflow logic. Most `session` subcommands build a `Request`, call the library's `*Command.run`
 (`SessionSummarizeCommand`, `SessionDiarizeCommand`, … in `HolosMeeting`) and print the `Outcome`; `words` calls
 `WordListCommand` and `pronunciations` `PronunciationCommand`, both in `HolosStorage`; `tidy` runs `TidyCommand`
-(`HolosDictation`). The `speakers` edits (`rename`, `merge`, `assign`, `split`, `exclude`, `undo`,
+(`HolosDictation`) on the tidier `HolosLlama` (Qwen) or `HolosDictation` (Apple's model) makes. The `speakers` edits (`rename`, `merge`, `assign`, `split`, `exclude`, `undo`,
 `link`, `me`, `reject`) resolve their selectors, then run `SpeakerEditCommand` and print what it reports as it goes.
 The `eval` commands (except `list`, which only prints the saved runs) run `Eval*Command` in `HolosEvaluation` the same
 way; `eval cloud` asks the consent question itself (the library takes the answer through a callback), and

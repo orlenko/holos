@@ -3,6 +3,7 @@ import Foundation
 import HolosContent
 import HolosCore
 import HolosDictation
+import HolosLlama
 
 /// `voiceislocal tidy` (docs/design.md "Tidy Up").
 struct Tidy: AsyncParsableCommand {
@@ -14,22 +15,24 @@ struct Tidy: AsyncParsableCommand {
             false starts. It keeps the speaker's words otherwise: a part whose edit leaves out or adds too many words \
             keeps its own text, and so does a part the model fails on; each is named on standard error. Nothing \
             leaves this Mac and nothing is copied. The tidied text goes to standard output (with --json, the text, \
-            each part, and the words changed). Apple's on-device model needs Apple Intelligence turned on and tidies \
-            English and French text. Standard error says how many words changed. Exits 0 when the text was tidied, \
+            each part, and the words changed). Qwen (\(TidyModel.displayName), installed with voiceislocal setup \
+            --tidy-model) tidies most languages written with spaces between words; without it, Apple's on-device model, which needs Apple \
+            Intelligence turned on, tidies English and French text. Standard error says how many words changed. Exits 0 when the text was tidied, \
             even if some parts kept their own text, and 1 when no model could run or no part was tidied.
             """)
 
     @Argument(help: "A UTF-8 text file, or - (or nothing) for standard input.") var file: String?
-    @Option(help: "The model: apple.") var model: TidyCommand.Engine = .apple
+    @Option(help: "The model: qwen or apple. Default: qwen when it is installed, else apple.")
+    var model: TidyCommand.Engine?
+    /// A GGUF file to tidy with instead of the installed Qwen file (development).
+    @Option(help: .hidden) var modelFile: String?
     @Flag(help: "Print the result as JSON.") var json = false
 
     func run() async throws {
         let text = try input()
-        if let reason = OnDeviceTidy.unavailableReason(for: text) {
-            Console.error("Cannot tidy with Apple's model: \(reason).")
-            throw ExitCode(1)
-        }
-        let outcome = try await TidyCommand.run(text, engine: model, tidier: OnDeviceTidy.tidier()) { done, total in
+        let engine = model ?? (modelFile != nil || TidyModel.status() == .installed ? .qwen : .apple)
+        let tidier = try makeTidier(engine, for: text)
+        let outcome = try await TidyCommand.run(text, engine: engine, tidier: tidier) { done, total in
             guard total > 1, done < total else { return }
             Console.error("Tidying part \(done + 1) of \(total)…")
         }
@@ -43,6 +46,25 @@ struct Tidy: AsyncParsableCommand {
             throw ExitCode(1)
         }
         Console.error(Self.changeSummary(outcome.changes))
+    }
+
+    private func makeTidier(_ engine: TidyCommand.Engine, for text: String) throws -> TextTidier {
+        switch engine {
+        case .apple:
+            if let reason = OnDeviceTidy.unavailableReason(for: text) {
+                Console.error("Cannot tidy with Apple's model: \(reason).")
+                throw ExitCode(1)
+            }
+            return OnDeviceTidy.tidier()
+        case .qwen:
+            let url = modelFile.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) } ?? TidyModel.file()
+            guard modelFile != nil || TidyModel.status() == .installed else {
+                Console.error(TidyModel.missingModelMessage)
+                throw ExitCode(1)
+            }
+            Console.error("Loading \(TidyModel.displayName)…")
+            return QwenTidy.tidier(model: try LlamaModel(file: url))
+        }
     }
 
     /// At most 1 MB of UTF-8 text from `file` or standard input.

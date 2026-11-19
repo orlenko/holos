@@ -59,6 +59,14 @@ let package = Package(
         .target(name: "HolosWhisper", dependencies: [
             "HolosCore", .product(name: "WhisperKit", package: "WhisperKit"),
         ], exclude: ["README.md"]),
+        // Tidy Up on Qwen (docs/design.md "Tidy Up"): llama.cpp's prebuilt framework, pinned by its SHA-256. A
+        // dynamic framework: the build scripts copy it into the app's Contents/Frameworks, where the tool finds it.
+        .binaryTarget(
+            name: "llama",
+            url: "https://github.com/ggml-org/llama.cpp/releases/download/b12359/llama-b12359-xcframework.zip",
+            checksum: "25eebedbbdef004c2da2bf4fd8daa77324d6db91bbff24d19d9da0942cbfd1b9"),
+        // Only the command-line tool links it; the app tidies through voiceislocal.
+        .target(name: "HolosLlama", dependencies: ["HolosCore", "llama"], exclude: ["README.md"]),
         // Natural voices for Reading (docs/design.md "Natural voices"): Kyutai Pocket TTS through FluidAudio. Only the
         // command-line tool links it; the app renders natural parts through voiceislocal.
         .target(name: "HolosPocket", dependencies: [
@@ -79,9 +87,11 @@ let package = Package(
             "HolosCore", "HolosSpeech", "HolosSynthesis", "HolosStorage", "HolosAudio", "HolosContent",
             "HolosMeeting", "HolosSpeakers", "HolosDiarization", "HolosDictation", "HolosWhisper",
             .target(name: "HolosEvaluation", condition: .when(traits: ["Evaluation"])),
-            "HolosPocket", "HolosSpelling",
+            "HolosPocket", "HolosSpelling", "HolosLlama",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
         ], exclude: ["README.md"], linkerSettings: [.unsafeFlags([
+            // llama.framework (Tidy Up) beside the app's other frameworks, as the app finds Sparkle.
+            "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks",
             "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", cliInfoPlist,
         ])]),
         // Helpers only test targets depend on (Tests/HolosTestSupport/README.md).
@@ -121,6 +131,7 @@ let package = Package(
             "HolosWhisper", "HolosMeeting", "HolosEvaluation", "HolosCore", "HolosSynthesis", "HolosAudio",
             "HolosStorage", .product(name: "WhisperKit", package: "WhisperKit"),
         ]),
+        .testTarget(name: "HolosLlamaTests", dependencies: ["HolosLlama", "HolosCore"]),
         .testTarget(name: "HolosPocketTests", dependencies: ["HolosPocket", "HolosSynthesis", "HolosCore", "HolosTestSupport"]),
         .testTarget(name: "HolosDiarizationTests", dependencies: [
             "HolosDiarization", "HolosSpeakers", "HolosSynthesis", "HolosAudio", "HolosCore",
