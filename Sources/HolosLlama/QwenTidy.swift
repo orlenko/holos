@@ -4,8 +4,10 @@ import HolosCore
 /// Tidy Up on Qwen3.5 9B (docs/design.md "Tidy Up"): the model in `TidyModel`'s file, through `LlamaModel`, in the
 /// model's chat format with its thinking turned off.
 public enum QwenTidy {
-    /// Words per part: a part this long, the instructions and the reply's tokens (`maxTokens`) fit the 8,192-token
-    /// context, for English, other languages written with spaces, and text full of numbers.
+    /// Words per part: a part this long, the instructions (about 250 tokens) and the reply's tokens (`maxTokens`) fit
+    /// `LlamaModel`'s 16,384-token context while the part is at most about 6,300 tokens: about 5 tokens a word, which
+    /// covers English, most European and Indian languages, Armenian and Georgian. A part that does not fit (Amharic,
+    /// text made of numbers) keeps its own text.
     public static let partWords = 1200
     /// How long a part may take before it keeps its own text. A 250-word part took 12 s on an M6 Mac mini.
     public static let partTimeout: Duration = .seconds(300)

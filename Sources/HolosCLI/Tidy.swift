@@ -16,7 +16,7 @@ struct Tidy: AsyncParsableCommand {
             keeps its own text, and so does a part the model fails on; each is named on standard error. Nothing \
             leaves this Mac and nothing is copied. The tidied text goes to standard output (with --json, the text, \
             each part, and the words changed). Qwen (\(TidyModel.displayName), installed with voiceislocal setup \
-            --tidy-model) tidies languages written with spaces between words; without it, Apple's on-device model, which needs Apple \
+            --tidy-model) tidies most languages written with spaces between words; without it, Apple's on-device model, which needs Apple \
             Intelligence turned on, tidies English and French text. Standard error says how many words changed. Exits 0 when the text was tidied, \
             even if some parts kept their own text, and 1 when no model could run or no part was tidied.
             """)

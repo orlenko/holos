@@ -25,7 +25,7 @@ public final class LlamaModel: @unchecked Sendable {
     }
 
     /// Loads `file` with every layer on the GPU and a context of `contextTokens`. llama.cpp's own log stays quiet.
-    public init(file: URL, contextTokens: Int = 8192) throws {
+    public init(file: URL, contextTokens: Int = 16384) throws {
         Self.backend
         var modelParameters = llama_model_default_params()
         modelParameters.n_gpu_layers = 999
@@ -56,9 +56,9 @@ public final class LlamaModel: @unchecked Sendable {
         llama_backend_init()
     }()
 
-    /// A prompt in the model's chat format: `template` pieces, whose special tokens (`<|im_start|>`) are parsed as
-    /// such, around `content`, the person's text, which is tokenized as plain text (a `<|im_end|>` typed in it stays
-    /// text).
+    /// A prompt in the model's chat format: `before` and `after`, whose special tokens (`<|im_start|>`) are parsed as
+    /// such, around `content`, the person's text, which is tokenized without them (a `<|im_end|>` typed in it stays
+    /// text; tokens llama.cpp always matches, such as Qwen's `<think>`, do not).
     public struct Prompt: Sendable {
         public var before: String
         public var content: String

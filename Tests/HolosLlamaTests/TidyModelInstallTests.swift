@@ -81,6 +81,35 @@ struct TidyModelInstallTests {
         #expect(try Data(contentsOf: TidyModel.file(root: root)) == content)
     }
 
+    @Test func aRestartThatCannotStartKeepsTheUnfinishedDownload() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try content.prefix(3000).write(to: TidyModel.partialFile(root: root))
+        // Refuses the range, then fails before sending anything (a captive portal's page is refused unwritten).
+        let refuse: TidyModelInstall.Fetch = { offset, _ in
+            guard offset == 0 else { return false }
+            throw HolosError.unavailable("portal")
+        }
+        await #expect(throws: HolosError.self) {
+            try await TidyModelInstall.setUp(force: false, source: nil, root: root, pin: pin, fetch: refuse,
+                                             notice: { _ in }, progress: { _ in })
+        }
+        #expect(try Data(contentsOf: TidyModel.partialFile(root: root)) == content.prefix(3000))
+    }
+
+    @Test func installingFromAFileDeletesAnUnfinishedDownload() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("elsewhere.gguf")
+        try content.write(to: source)
+        try content.prefix(10).write(to: TidyModel.partialFile(root: root))
+        try await TidyModelInstall.setUp(force: false, source: source, root: root, pin: pin,
+                                         fetch: { _, _ in true }, notice: { _ in }, progress: { _ in })
+        #expect(!FileManager.default.fileExists(atPath: TidyModel.partialFile(root: root).path))
+        #expect(!FileManager.default.fileExists(atPath: TidyModel.copyFile(root: root).path))
+        #expect(try Data(contentsOf: TidyModel.file(root: root)) == content)
+    }
+
     @Test func aDownloadStoppedWhileCheckingIsCheckedWithoutFetchingAgain() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

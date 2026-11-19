@@ -69,6 +69,9 @@ public enum TidyModelInstall {
         let file = TidyModel.file(root: root)
         try removeIfPresent(file)
         try FileManager.default.moveItem(at: partial, to: file)
+        // The other way's leftovers: an unfinished download once a copy is installed, or a copy that was stopped.
+        try removeIfPresent(TidyModel.partialFile(root: root))
+        try removeIfPresent(TidyModel.copyFile(root: root))
         log.info("Tidy Up model installed")
         progress(1)
     }
@@ -120,11 +123,18 @@ public enum TidyModelInstall {
         try handle.seek(toOffset: UInt64(offset))
         if try await !fetch(offset, write) {
             guard offset > 0 else { throw HolosError.unavailable("The Tidy Up model download could not start.") }
-            // The server cannot resume: start again from the first byte.
+            // The server cannot resume: start again from the first byte. The kept part goes only when the first new
+            // bytes arrive, so a download that cannot start at all leaves it for another try.
             notice("The download cannot resume here; downloading it from the start.")
-            try handle.truncate(atOffset: 0)
-            written = 0
-            guard try await fetch(0, write) else {
+            var started = false
+            guard try await fetch(0, { chunk in
+                if !started {
+                    try handle.truncate(atOffset: 0)
+                    written = 0
+                    started = true
+                }
+                try write(chunk)
+            }) else {
                 throw HolosError.unavailable("The Tidy Up model download could not start.")
             }
         }
@@ -167,7 +177,9 @@ public enum TidyModelInstall {
         case 206 where http?.value(forHTTPHeaderField: "Content-Range")?.hasPrefix("bytes \(offset)-") == true
             && response.expectedContentLength == remaining:
             break
-        case 200 where offset > 0:
+        case 200 where offset > 0 && response.expectedContentLength == TidyModel.size:
+            // The whole file, from a server that cannot resume; anything else (a captive portal's page) is refused
+            // below, and the unfinished download stays.
             return false
         case 200 where response.expectedContentLength == remaining:
             break
