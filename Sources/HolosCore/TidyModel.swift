@@ -7,6 +7,7 @@ import Foundation
 /// Layout, under `root` (`<supportRoot>/Models/tidy`):
 /// - `<fileName>`: the installed model, moved here only once its size and SHA-256 matched.
 /// - `<fileName>.download`: an unfinished download, kept so the next install resumes it.
+/// - `<fileName>.copy`: a file being copied in from elsewhere on the Mac (`setup --tidy-model --from`) and checked.
 /// - `.install.lock`: held by the one process installing or removing the model.
 public enum TidyModel {
     /// The name people read.
@@ -47,6 +48,8 @@ public enum TidyModel {
     public static func file(root: URL = root) -> URL { root.appendingPathComponent(fileName) }
     /// `<root>/<fileName>.download`: an unfinished download.
     public static func partialFile(root: URL = root) -> URL { root.appendingPathComponent(fileName + ".download") }
+    /// `<root>/<fileName>.copy`: a copy of a file from elsewhere on the Mac, until it is checked.
+    public static func copyFile(root: URL = root) -> URL { root.appendingPathComponent(fileName + ".copy") }
     public static func lockFile(root: URL) -> URL { root.appendingPathComponent(".install.lock") }
 
     /// `.installed` when the file is in place with the pinned size (its SHA-256 was checked before it was moved

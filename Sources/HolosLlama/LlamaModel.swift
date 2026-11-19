@@ -56,14 +56,29 @@ public final class LlamaModel: @unchecked Sendable {
         llama_backend_init()
     }()
 
-    /// The model's reply to `prompt` (already in the model's chat format, special tokens written out), at most
-    /// `maxTokens` tokens. Throws `CancellationError` when the task is cancelled; the decoding stops at the next token.
-    public func generate(prompt: String, maxTokens: Int) async throws -> String {
+    /// A prompt in the model's chat format: `template` pieces, whose special tokens (`<|im_start|>`) are parsed as
+    /// such, around `content`, the person's text, which is tokenized as plain text (a `<|im_end|>` typed in it stays
+    /// text).
+    public struct Prompt: Sendable {
+        public var before: String
+        public var content: String
+        public var after: String
+        public init(before: String, content: String, after: String) {
+            self.before = before; self.content = content; self.after = after
+        }
+    }
+
+    /// The model's reply to `prompt`, at most `maxTokens(contentTokens)` tokens, where `contentTokens` is the number of
+    /// tokens in `prompt.content`. Throws `Failure.tooLong` when the prompt and that many tokens do not fit the
+    /// context, and `CancellationError` when the task is cancelled; the decoding stops at the next token.
+    public func generate(_ prompt: Prompt, maxTokens: @escaping @Sendable (Int) -> Int) async throws -> String {
         let cancelled = Mutex(false)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 queue.async { [self] in
-                    continuation.resume(with: Result { try run(prompt: prompt, maxTokens: maxTokens, cancelled: cancelled) })
+                    continuation.resume(with: Result {
+                        try run(prompt: prompt, maxTokens: maxTokens, cancelled: cancelled)
+                    })
                 }
             }
         } onCancel: {
@@ -72,9 +87,11 @@ public final class LlamaModel: @unchecked Sendable {
     }
 
     /// On `queue` (invariant 1).
-    private func run(prompt: String, maxTokens: Int, cancelled: borrowing Mutex<Bool>) throws -> String {
+    private func run(prompt: Prompt, maxTokens: (Int) -> Int, cancelled: borrowing Mutex<Bool>) throws -> String {
         llama_memory_clear(llama_get_memory(context), true)
-        var tokens = tokenize(prompt)
+        let content = tokenize(prompt.content, special: false)
+        var tokens = tokenize(prompt.before, special: true) + content + tokenize(prompt.after, special: true)
+        let maxTokens = maxTokens(content.count)
         guard tokens.count + maxTokens <= contextTokens else {
             throw Failure.tooLong(tokens: tokens.count + maxTokens, context: contextTokens)
         }
@@ -98,20 +115,22 @@ public final class LlamaModel: @unchecked Sendable {
             var token = llama_sampler_sample(sampler, context, -1)
             if llama_vocab_is_eog(vocab, token) { break }
             reply.append(piece(token))
-            let status = llama_decode(context, llama_batch_get_one(&token, 1))
+            let status = withUnsafeMutablePointer(to: &token) { llama_decode(context, llama_batch_get_one($0, 1)) }
             guard status == 0 else { throw Failure.decode(status) }
         }
         return String(decoding: reply, as: UTF8.self)
     }
 
-    /// `text`'s tokens, special tokens (`<|im_start|>`) parsed as such; no beginning-of-text token is added.
-    func tokenize(_ text: String) -> [llama_token] {
+    /// `text`'s tokens, with special tokens (`<|im_start|>`) parsed as such only when `special`; no beginning-of-text
+    /// token is added.
+    func tokenize(_ text: String, special: Bool) -> [llama_token] {
+        guard !text.isEmpty else { return [] }
         let length = Int32(text.utf8.count)
         var tokens = [llama_token](repeating: 0, count: Int(length) + 8)
-        var count = llama_tokenize(vocab, text, length, &tokens, Int32(tokens.count), false, true)
+        var count = llama_tokenize(vocab, text, length, &tokens, Int32(tokens.count), false, special)
         if count < 0 {
             tokens = [llama_token](repeating: 0, count: Int(-count))
-            count = llama_tokenize(vocab, text, length, &tokens, Int32(tokens.count), false, true)
+            count = llama_tokenize(vocab, text, length, &tokens, Int32(tokens.count), false, special)
         }
         return Array(tokens.prefix(Int(max(0, count))))
     }

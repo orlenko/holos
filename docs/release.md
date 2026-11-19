@@ -243,8 +243,8 @@ The app is not sandboxed. Both entitlement files contain one entitlement,
 `com.apple.security.device.audio-input`: under the hardened runtime a process can open the microphone only with it,
 and both the app (dictation, in-process recording) and the `voiceislocal` recorder the app starts open the
 microphone. Accessibility, the CGEvent tap (and Input Monitoring, only where macOS asks for it), speech recognition, and ScreenCaptureKit system audio
-need no entitlement outside the sandbox. Both binaries link only system libraries (FluidAudio and
-swift-argument-parser are linked statically), so library validation needs no exception. The app also loads
+need no entitlement outside the sandbox. Apart from the two frameworks below, both binaries link only system libraries
+(FluidAudio and swift-argument-parser are linked statically), so library validation needs no exception. The app loads
 `Sparkle.framework` from `Contents/Frameworks`, which the script signs with the same identity before the app, so
 library validation accepts it (same Team ID). The bundled `voiceislocal` loads `llama.framework` (llama.cpp, for
 Tidy Up) from the same folder, signed the same way; the script deletes the tool's rpaths into the build folder, so

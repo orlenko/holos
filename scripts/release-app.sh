@@ -230,14 +230,11 @@ cp THIRD_PARTY_NOTICES.md "$app_bundle/Contents/Resources/THIRD_PARTY_NOTICES.md
 cp "$bin_dir/HolosApp" "$app_executable"
 cp "$bin_dir/voiceislocal" "$cli_executable"
 # The tool's rpaths into the build folder go: it loads llama.framework only from the bundle's Frameworks folder.
-otool -l "$cli_executable" | awk '$1 == "path" && $2 !~ /^@/ {print $2}' |
+otool -l "$cli_executable" | sed -n 's/^ *path \(\/.*\) (offset [0-9]*)$/\1/p' |
     while IFS= read -r rpath; do install_name_tool -delete_rpath "$rpath" "$cli_executable"; done
-llama_source=
-for candidate in "$PWD"/.build/artifacts/*/llama/llama.xcframework/macos-arm64_x86_64/llama.framework; do
-    [ ! -d "$candidate" ] || llama_source=$candidate
-done
-[ -n "$llama_source" ] || fail "No llama.framework in .build/artifacts; the release build should have fetched it."
-ditto "$llama_source" "$llama_framework"
+# The framework the tool was linked against, which the build puts beside it.
+[ -d "$bin_dir/llama.framework" ] || fail "No llama.framework in $bin_dir; the release build should have put it there."
+ditto "$bin_dir/llama.framework" "$llama_framework"
 # Sparkle without its XPC services, which only sandboxed apps use.
 ditto "$sparkle_artifact/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" "$sparkle_framework"
 rm -rf "$sparkle_framework/XPCServices" "$sparkle_framework/Versions/B/XPCServices"

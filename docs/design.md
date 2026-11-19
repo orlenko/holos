@@ -1252,17 +1252,21 @@ words it changed. The model is Qwen3.5 9B when it is installed, else Apple's on-
 French text, as the fix does.
 
 Qwen (`QwenTidy`, HolosLlama) gave the best paragraphs and lists when the two were compared on long dictation, and
-tidies text in many languages. It runs with llama.cpp (a prebuilt framework that Package.swift pins by SHA-256) on
-the GPU, in only the `voiceislocal` tool: the app tidies through that tool, and the build scripts copy the framework
-into the app's `Contents/Frameworks` and sign it. The model is one GGUF file of about 5.7 GB (`TidyModel`: Unsloth's
-Q4_K_M quantization, pinned by Hugging Face commit, size and SHA-256), installed in `<supportRoot>/Models/tidy` by
-`voiceislocal setup --tidy-model`. The download resumes from the unfinished `.download` file, and the file is moved
-into place only once its SHA-256 matches; a damaged download is deleted. With `--from FILE`, setup checks the size
-and SHA-256 of a copy already on the Mac and copies it; the person's own file is never moved or deleted. `setup
---remove-tidy-model` deletes the model and any unfinished download. One process at a time installs or removes it (a
-lock file), and `doctor --json` reports it as `tidyModel` ("downloading" while a process holds the lock). Each
-request is the model's chat format with its thinking turned off, decoded greedily from an empty context of 8,192
-tokens, so a part is up to 1,200 words and may take 5 minutes; a 250-word part takes about 12 s on an M-series Mac.
+tidies languages written with spaces between words (the check counts words by them). It runs with llama.cpp (a
+prebuilt framework that Package.swift pins by SHA-256) on the GPU, in only the `voiceislocal` tool: the app tidies
+through that tool, and the build scripts copy the framework into the app's `Contents/Frameworks` and sign it. The
+model is one GGUF file of about 5.7 GB (`TidyModel`: Unsloth's Q4_K_M quantization, pinned by Hugging Face commit,
+size and SHA-256), installed in `<supportRoot>/Models/tidy` by `voiceislocal setup --tidy-model`. The download
+resumes from the unfinished `.download` file (from the start when the server cannot resume; a response is checked
+before any of it is written), and the file is moved into place only once its SHA-256 matches; a damaged download is
+deleted. With `--from FILE` (a link is followed), setup copies a file already on the Mac under its own name and
+checks its size and SHA-256; the person's own file is never moved or deleted, and a file that is not the model
+leaves an unfinished download as it was. `setup --remove-tidy-model` deletes the model and any unfinished download.
+One process at a time installs or removes it (a lock file), and `doctor --json` reports it as `tidyModel`
+("downloading" while a process holds the lock). Each request is the model's chat format with its thinking turned off
+(the person's text is never read as the format's own markers), decoded greedily from an empty context of 8,192
+tokens, so a part is up to 1,200 words, and a reply may take one and a half times the part's tokens and 256 more,
+and 5 minutes; a 250-word part takes about 12 s on an M-series Mac.
 
 `TextTidier` (HolosCore) sends the text in parts, so the instructions, a part and its edit fit the model's context
 (1,200 words for Qwen, 600 for Apple's model). A part ends at the strongest break after one of the last two thirds

@@ -11,7 +11,7 @@ public enum TidyModelInstall {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "tidy")
 
     /// Appends the bytes of the model file from `offset` on, by calling `write` with each chunk in order. Returns
-    /// whether the source honoured `offset` (false: it sent the file from the start).
+    /// false, having written nothing, when the source cannot start at `offset` (a server that ignores the range).
     public typealias Fetch = @Sendable (_ offset: Int64, _ write: (Data) throws -> Void) async throws -> Bool
 
     /// The file that counts as the model: its size and SHA-256 (tests use a small one).
@@ -46,9 +46,11 @@ public enum TidyModelInstall {
             progress(1)
             return
         }
-        let partial = TidyModel.partialFile(root: root)
+        // A copy is checked under its own name, so a file that turns out not to be the model never costs the person an
+        // unfinished download.
+        let partial = source == nil ? TidyModel.partialFile(root: root) : TidyModel.copyFile(root: root)
         if let source {
-            try copy(source, to: partial, size: pin.size, notice: notice, progress: { progress(0.5 * $0) })
+            try copy(source, to: partial, root: root, size: pin.size, notice: notice, progress: { progress(0.5 * $0) })
         } else {
             if force { try removeIfPresent(partial) }
             try await download(to: partial, size: pin.size, fetch: fetch, notice: notice,
@@ -83,6 +85,7 @@ public enum TidyModelInstall {
         defer { lock.release() }
         try removeIfPresent(TidyModel.file(root: root))
         try removeIfPresent(TidyModel.partialFile(root: root))
+        try removeIfPresent(TidyModel.copyFile(root: root))
     }
 
     // MARK: - Transfer
@@ -102,20 +105,28 @@ public enum TidyModelInstall {
             manager.createFile(atPath: partial.path, contents: nil, attributes: [.posixPermissions: 0o600])
             offset = 0
         }
+        // Complete already (a run stopped while checking it): only the check is left.
+        guard offset < size else { progress(1); return }
         notice(offset > 0 ? "Resuming the Tidy Up model download (\(TidyModel.displayName), about 5.7 GB)…"
             : "Downloading the Tidy Up model (\(TidyModel.displayName), about 5.7 GB)…")
         let handle = try FileHandle(forWritingTo: partial)
         defer { try? handle.close() }
-        try handle.seekToEnd()
         var written = offset
-        let resumed = try await fetch(offset) { chunk in
+        let write: (Data) throws -> Void = { chunk in
             try handle.write(contentsOf: chunk)
             written += Int64(chunk.count)
             progress(Double(written) / Double(size))
         }
-        if !resumed, offset > 0 {
-            // The server sent the whole file after the kept part: start again with it alone.
-            throw HolosError.incomplete("The download could not resume. Run voiceislocal setup --tidy-model --force.")
+        try handle.seek(toOffset: UInt64(offset))
+        if try await !fetch(offset, write) {
+            guard offset > 0 else { throw HolosError.unavailable("The Tidy Up model download could not start.") }
+            // The server cannot resume: start again from the first byte.
+            notice("The download cannot resume here; downloading it from the start.")
+            try handle.truncate(atOffset: 0)
+            written = 0
+            guard try await fetch(0, write) else {
+                throw HolosError.unavailable("The Tidy Up model download could not start.")
+            }
         }
         try handle.synchronize()
         guard written == size else {
@@ -124,9 +135,16 @@ public enum TidyModelInstall {
         }
     }
 
-    /// Copies `source` to `partial` when its size is the model's.
-    static func copy(_ source: URL, to partial: URL, size expected: Int64, notice: @Sendable (String) -> Void,
-                     progress: @escaping @Sendable (Double) -> Void) throws {
+    /// Copies `source` (a link is followed) to `partial` when its size is the model's and it is not one of the model's
+    /// own files in `root`.
+    static func copy(_ source: URL, to partial: URL, root: URL, size expected: Int64,
+                     notice: @Sendable (String) -> Void, progress: @escaping @Sendable (Double) -> Void) throws {
+        let source = source.resolvingSymlinksInPath()
+        let own = [TidyModel.file(root: root), TidyModel.partialFile(root: root), TidyModel.copyFile(root: root)]
+            .map { $0.resolvingSymlinksInPath().standardizedFileURL.path }
+        guard !own.contains(source.standardizedFileURL.path) else {
+            throw HolosError.invalidInput("That file is one of the Tidy Up model's own files; give a copy kept elsewhere.")
+        }
         let size = (try FileManager.default.attributesOfItem(atPath: source.path)[.size] as? Int64) ?? -1
         guard size == expected else {
             throw HolosError.invalidInput("That file is not \(TidyModel.fileName) as published (its size differs).")
@@ -137,13 +155,25 @@ public enum TidyModelInstall {
         progress(1)
     }
 
-    /// The default `Fetch`: the pinned file from Hugging Face, from `offset` on.
+    /// The default `Fetch`: the pinned file from Hugging Face, from `offset` on. A response is checked before any of
+    /// it is written: the status, and the range or length it says it holds.
     public static let huggingFace: Fetch = { offset, write in
         var request = URLRequest(url: TidyModel.downloadURL)
         if offset > 0 { request.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range") }
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
-        guard let http = response as? HTTPURLResponse, [200, 206].contains(http.statusCode) else {
-            throw HolosError.unavailable("Hugging Face did not send the Tidy Up model (\((response as? HTTPURLResponse)?.statusCode ?? 0)).")
+        let http = response as? HTTPURLResponse
+        let remaining = TidyModel.size - offset
+        switch http?.statusCode {
+        case 206 where http?.value(forHTTPHeaderField: "Content-Range")?.hasPrefix("bytes \(offset)-") == true
+            && response.expectedContentLength == remaining:
+            break
+        case 200 where offset > 0:
+            return false
+        case 200 where response.expectedContentLength == remaining:
+            break
+        default:
+            throw HolosError.unavailable("Hugging Face did not send the Tidy Up model (HTTP \(http?.statusCode ?? 0), "
+                + "\(response.expectedContentLength) bytes). Check the network connection, then try again.")
         }
         var buffer = Data()
         buffer.reserveCapacity(1 << 20)
@@ -156,7 +186,7 @@ public enum TidyModelInstall {
             }
         }
         if !buffer.isEmpty { try write(buffer) }
-        return http.statusCode == 206 || offset == 0
+        return true
     }
 
     /// SHA-256 of `url` in lowercase hex, read in 8 MB blocks; `progress` from 0 to 1. Throws when cancelled.
@@ -192,11 +222,15 @@ private final class InstallLock {
     init(path: String) throws {
         fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw HolosError.io("Cannot open the Tidy Up model's install lock.") }
-        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
-            close(fd)
-            throw HolosError.unavailable("The Tidy Up model is being installed by another process; wait for it to "
-                + "finish, then try again.")
+        // A status check holds a shared lock for an instant; wait that out, but not another install.
+        for attempt in 0..<20 {
+            if flock(fd, LOCK_EX | LOCK_NB) == 0 { return }
+            guard errno == EWOULDBLOCK else { break }
+            if attempt < 19 { usleep(50_000) }
         }
+        close(fd)
+        throw HolosError.unavailable("The Tidy Up model is being installed by another process; wait for it to "
+            + "finish, then try again.")
     }
 
     func release() {

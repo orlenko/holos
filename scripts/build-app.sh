@@ -49,20 +49,17 @@ cp THIRD_PARTY_NOTICES.md "$holos_app_bundle/Contents/Resources/THIRD_PARTY_NOTI
 cp "$holos_app_bin_dir/HolosApp" "$holos_app_bundle/Contents/MacOS/HolosApp"
 # The app links Sparkle (in-app updates), so it needs the framework to start even though this build never checks.
 # The framework comes from the package artifacts of the build folder that made the binaries (a --scratch-path too).
-# The tool links llama.cpp (Tidy Up, docs/design.md "Tidy Up") the same way.
 sparkle_source=
-llama_source=
 search_dir=$holos_app_bin_dir
-while [ "$search_dir" != / ] && { [ -z "$sparkle_source" ] || [ -z "$llama_source" ]; }; do
+while [ "$search_dir" != / ] && [ -z "$sparkle_source" ]; do
     candidate="$search_dir/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
-    [ -n "$sparkle_source" ] || [ ! -d "$candidate" ] || sparkle_source=$candidate
-    for candidate in "$search_dir"/artifacts/*/llama/llama.xcframework/macos-arm64_x86_64/llama.framework; do
-        [ -n "$llama_source" ] || [ ! -d "$candidate" ] || llama_source=$candidate
-    done
+    [ ! -d "$candidate" ] || sparkle_source=$candidate
     search_dir=$(dirname "$search_dir")
 done
+# The tool links llama.cpp (Tidy Up, docs/design.md "Tidy Up"): the framework it was linked against is beside it.
+llama_source="$holos_app_bin_dir/llama.framework"
 [ -n "$sparkle_source" ] || { printf 'No Sparkle.framework in the package artifacts above %s.\n' "$holos_app_bin_dir" >&2; exit 1; }
-[ -n "$llama_source" ] || { printf 'No llama.framework in the package artifacts above %s.\n' "$holos_app_bin_dir" >&2; exit 1; }
+[ -d "$llama_source" ] || { printf 'No llama.framework in %s.\n' "$holos_app_bin_dir" >&2; exit 1; }
 rm -rf "$holos_app_bundle/Contents/Frameworks"
 mkdir -p "$holos_app_bundle/Contents/Frameworks"
 ditto "$sparkle_source" "$holos_app_bundle/Contents/Frameworks/Sparkle.framework"
@@ -72,7 +69,7 @@ codesign --force --sign - "$holos_app_bundle/Contents/Frameworks/llama.framework
 # then sealed into the bundle's signature.
 cp "$holos_app_bin_dir/voiceislocal" "$holos_app_bundle/Contents/MacOS/voiceislocal"
 # Only the bundle's own Frameworks folder: the build folder's rpath goes, so the tool never loads a library from it.
-otool -l "$holos_app_bundle/Contents/MacOS/voiceislocal" | awk '$1 == "path" && $2 !~ /^@/ {print $2}' |
+otool -l "$holos_app_bundle/Contents/MacOS/voiceislocal" | sed -n 's/^ *path \(\/.*\) (offset [0-9]*)$/\1/p' |
     while IFS= read -r rpath; do
         install_name_tool -delete_rpath "$rpath" "$holos_app_bundle/Contents/MacOS/voiceislocal"
     done
