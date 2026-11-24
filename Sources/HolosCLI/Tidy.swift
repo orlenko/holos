@@ -4,6 +4,7 @@ import HolosContent
 import HolosCore
 import HolosDictation
 import HolosLlama
+import HolosMeeting
 
 /// `voiceislocal tidy` (docs/design.md "Tidy Up").
 struct Tidy: AsyncParsableCommand {
@@ -26,15 +27,25 @@ struct Tidy: AsyncParsableCommand {
     var model: TidyCommand.Engine?
     /// A GGUF file to tidy with instead of the installed Qwen file (development).
     @Option(help: .hidden) var modelFile: String?
+    @Flag(help: .hidden) var meetingSnapshot = false
     @Flag(help: "Print the result as JSON.") var json = false
 
     func run() async throws {
-        let text = try input()
-        let engine = model ?? (modelFile != nil || TidyModel.status() == .installed ? .qwen : .apple)
+        let snapshot = meetingSnapshot
+            ? try HolosJSON.decoder().decode(MeetingTidySnapshot.self, from: inputData(limit: 8_000_000)) : nil
+        let text = try snapshot?.original ?? input()
+        let engine = model ?? (meetingSnapshot || modelFile != nil || TidyModel.status() == .installed ? .qwen : .apple)
         let tidier = try makeTidier(engine, for: text)
-        let outcome = try await TidyCommand.run(text, engine: engine, tidier: tidier) { done, total in
+        let progress: @Sendable (Int, Int) -> Void = { done, total in
             guard total > 1, done < total else { return }
             Console.error("Tidying part \(done + 1) of \(total)…")
+        }
+        let outcome: TidyCommand.Outcome
+        if let snapshot {
+            let tidied = try await snapshot.tidy(using: tidier, progress: progress)
+            outcome = TidyCommand.Outcome(engine: engine, text: tidied.text, parts: tidied.parts, changes: [])
+        } else {
+            outcome = try await TidyCommand.run(text, engine: engine, tidier: tidier, progress: progress)
         }
         for (index, part) in outcome.parts.enumerated() {
             guard let reason = part.kept else { continue }
@@ -49,6 +60,9 @@ struct Tidy: AsyncParsableCommand {
     }
 
     private func makeTidier(_ engine: TidyCommand.Engine, for text: String) throws -> TextTidier {
+        if meetingSnapshot && engine != .qwen && engine != .qwen4b {
+            throw ValidationError("Meeting cleanup uses Qwen3.5 9B or 4B.")
+        }
         if let variant = engine.downloadable {
             let url = modelFile.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) } ?? variant.file()
             guard modelFile != nil || variant.status() == .installed else {
@@ -57,6 +71,7 @@ struct Tidy: AsyncParsableCommand {
                 throw ExitCode(1)
             }
             Console.error("Loading \(variant.displayName)…")
+            if meetingSnapshot { return try QwenTidy.meetingTidier(file: url) }
             return try QwenTidy.tidier(variant: variant, file: url)
         }
         if let reason = OnDeviceTidy.unavailableReason(for: text) {
@@ -68,21 +83,26 @@ struct Tidy: AsyncParsableCommand {
 
     /// At most 1 MB of UTF-8 text from `file` or standard input.
     private func input() throws -> String {
+        let data = try inputData(limit: Self.maximumBytes)
+        guard let text = DocumentText.decode(data), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ValidationError("The text is empty or is not UTF-8.")
+        }
+        return text
+    }
+
+    private func inputData(limit: Int) throws -> Data {
         let data: Data
         if let file, file != "-" {
             let url = URL(fileURLWithPath: (file as NSString).expandingTildeInPath)
             let handle = try FileHandle(forReadingFrom: url)
             defer { try? handle.close() }
-            data = try handle.read(upToCount: Self.maximumBytes + 1) ?? Data()
+            data = try handle.read(upToCount: limit + 1) ?? Data()
         } else {
             guard isatty(STDIN_FILENO) == 0 else { throw ValidationError("Give a file, or pipe the text on standard input.") }
-            data = try FileHandle.standardInput.read(upToCount: Self.maximumBytes + 1) ?? Data()
+            data = try FileHandle.standardInput.read(upToCount: limit + 1) ?? Data()
         }
-        guard data.count <= Self.maximumBytes else { throw ValidationError("The text is larger than 1 MB.") }
-        guard let text = DocumentText.decode(data), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ValidationError("The text is empty or is not UTF-8.")
-        }
-        return text
+        guard data.count <= limit else { throw ValidationError("The input is larger than \(limit / 1_000_000) MB.") }
+        return data
     }
 
     static let maximumBytes = 1_000_000

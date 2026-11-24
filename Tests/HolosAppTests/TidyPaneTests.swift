@@ -22,7 +22,7 @@ struct TidyPaneTests {
 
     static func actions(status: DeepModelStatus, calls: Calls = Calls(), last: String? = nil) -> TidyPane.Actions {
         TidyPane.Actions(
-            tidy: { text, engine, completion in
+            tidy: { text, _, engine, completion in
                 calls.tidied.append(text)
                 calls.engines.append(engine)
                 calls.completion = completion

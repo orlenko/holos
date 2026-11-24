@@ -317,15 +317,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         speakersMenu.addItem(undoItem)
         speakersPopUp.menu = speakersMenu
 
-        let exportMenu = NSMenu()
-        exportMenu.addItem(NSMenuItem(title: "Export", action: nil, keyEquivalent: ""))
-        let save = NSMenuItem(title: "Save As…", action: #selector(saveAs), keyEquivalent: "")
-        save.target = self
-        exportMenu.addItem(save)
-        let copy = NSMenuItem(title: "Copy as Markdown", action: #selector(copyMarkdown), keyEquivalent: "")
-        copy.target = self
-        exportMenu.addItem(copy)
-        exportPopUp.menu = exportMenu
+        exportPopUp.menu = makeExportMenu()
 
         sidebar.onName = { [weak self] speakerID, text in
             self?.perform { review in try await review.setName(text, speakerID: speakerID) }
@@ -1286,7 +1278,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
 
     // MARK: - Export
 
-    @objc private func saveAs() {
+    @objc func saveAs() {
         let panel = NSSavePanel()
         let formats = NSPopUpButton()
         formats.addItems(withTitles: ["Markdown (.md)", "Plain text (.txt)", "JSON (.json)"])
@@ -1314,7 +1306,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         }
     }
 
-    @objc private func copyMarkdown() {
+    @objc func copyMarkdown() {
         perform { review in
             let data = try await review.render(.md)
             NSPasteboard.general.clearContents()

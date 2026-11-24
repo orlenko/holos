@@ -15,10 +15,22 @@ import HolosMeeting
 /// 3. The input fills the panel until a tidy-up is requested. Its progress, error or edit belongs to the right pane.
 @MainActor
 final class TidyPane: NSViewController, MainSectionContent {
+    struct MeetingInput: Sendable {
+        let title: String
+        let original: String
+        let encoded: Data
+
+        init(snapshot: MeetingTidySnapshot) throws {
+            title = snapshot.title
+            original = snapshot.original
+            encoded = try HolosJSON.encoder(pretty: false).encode(snapshot)
+        }
+    }
+
     struct Actions {
         /// Starts `voiceislocal tidy --json` on `text`; `completion` gets its result on the main actor. Nil when the
         /// tool cannot start, with the reason.
-        var tidy: (_ text: String, _ engine: TidyCommand.Engine?,
+        var tidy: (_ text: String, _ meeting: MeetingInput?, _ engine: TidyCommand.Engine?,
                    _ completion: @escaping @MainActor (CommandResult<TidyCommand.Outcome>) -> Void)
             -> Result<CommandHandle, Error>
         /// Starts `voiceislocal setup --tidy-model` (with `--from` a file already on this Mac); `progress` gets its
@@ -46,6 +58,7 @@ final class TidyPane: NSViewController, MainSectionContent {
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private let lastButton = NSButton(title: "Last Dictation", target: nil, action: nil)
     private let copyButton = NSButton(title: "Copy Tidied Text", target: nil, action: nil)
+    private let saveButton = NSButton(title: "Save Tidied Transcript…", target: nil, action: nil)
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private let resultStatus = NSTextField(wrappingLabelWithString: "")
     private let summaryLabel = NSTextField(wrappingLabelWithString: "")
@@ -58,6 +71,7 @@ final class TidyPane: NSViewController, MainSectionContent {
     private var generation = 0
     private var installing: String?
     private var review: TidyReview?
+    private var meetingInput: MeetingInput?
 
     init(actions: Actions) {
         self.actions = actions
@@ -87,7 +101,7 @@ final class TidyPane: NSViewController, MainSectionContent {
         for (button, action) in [(installButton, #selector(install)), (fromFileButton, #selector(installFromFile)),
                                  (removeButton, #selector(remove)), (tidyButton, #selector(tidy)),
                                  (cancelButton, #selector(cancel)), (lastButton, #selector(loadLast)),
-                                 (copyButton, #selector(copyTidied))] {
+                                 (copyButton, #selector(copyTidied)), (saveButton, #selector(saveTidiedTranscript))] {
             button.target = self
             button.action = action
         }
@@ -98,6 +112,7 @@ final class TidyPane: NSViewController, MainSectionContent {
         copyButton.toolTip = "Copy the tidied text, without the struck-through words"
         cancelButton.isHidden = true
         copyButton.isEnabled = false
+        saveButton.isHidden = true
 
         for label in [modelLabel, statusLabel, resultStatus, summaryLabel] {
             label.font = .systemFont(ofSize: 12)
@@ -124,8 +139,9 @@ final class TidyPane: NSViewController, MainSectionContent {
         spinner.heightAnchor.constraint(equalToConstant: 16).isActive = true
         resultPanel.orientation = .vertical
         resultPanel.alignment = .leading
-        for item in [status, result, summaryLabel, copyButton] { resultPanel.addArrangedSubview(item) }
-        for item in [status, result, summaryLabel] {
+        let exportActions = WrappingRowView(views: [copyButton, saveButton])
+        for item in [status, result, summaryLabel, exportActions] { resultPanel.addArrangedSubview(item) }
+        for item in [status, result, summaryLabel, exportActions] {
             item.widthAnchor.constraint(equalTo: resultPanel.widthAnchor).isActive = true
         }
 
@@ -202,8 +218,34 @@ final class TidyPane: NSViewController, MainSectionContent {
             showInputStatus("A tidy-up is running. Cancel it to tidy another text.")
             return
         }
+        if meetingInput != nil { setMeetingInput(nil) }
         inputView.string = text
         resetOutput()
+    }
+
+    func loadMeeting(_ input: MeetingInput) throws {
+        guard running == nil else { throw HolosError.unavailable("Cancel the active tidy-up before opening a meeting.") }
+        guard !input.original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw HolosError.unavailable("The meeting has no transcript to tidy.")
+        }
+        setMeetingInput(input)
+        inputView.string = input.original
+        resetOutput()
+    }
+
+    private func setMeetingInput(_ input: MeetingInput?) {
+        meetingInput = input
+        inputView.isEditable = input == nil
+        inputView.setAccessibilityLabel(input == nil ? "Text to tidy" : "Original meeting transcript")
+        lastButton.title = input == nil ? "Last Dictation" : "New Text"
+        (lastButton.superview as? WrappingRowView)?.viewsChanged()
+        for item in modelPicker.itemArray {
+            let model = item.representedObject as? String
+            item.isHidden = input != nil && model != "qwen" && model != "qwen4b"
+        }
+        let initialModel = input == nil ? nil : TidyCommand.Engine.qwen.rawValue
+        modelPicker.select(modelPicker.itemArray.first { ($0.representedObject as? String) == initialModel })
+        showModel()
     }
 
     // MARK: - Model
@@ -316,6 +358,7 @@ final class TidyPane: NSViewController, MainSectionContent {
 
     @objc private func loadLast() {
         guard running == nil else { return }
+        if meetingInput != nil { load(""); return }
         guard let text = actions.lastDictation(), !text.isEmpty else {
             showInputStatus("No dictation since Voice is Local started. History's Tidy Up… opens an earlier one.")
             return
@@ -339,7 +382,7 @@ final class TidyPane: NSViewController, MainSectionContent {
         generation += 1
         let ticket = generation
         let engine = selectedEngine ?? (actions.modelStatus(.qwen) == .installed ? .qwen : .apple)
-        switch actions.tidy(text, selectedEngine, { [weak self] result in
+        switch actions.tidy(text, meetingInput, selectedEngine, { [weak self] result in
             guard let self, self.generation == ticket else { return }
             self.running = nil
             self.finished(result)
@@ -370,7 +413,7 @@ final class TidyPane: NSViewController, MainSectionContent {
         lastButton.isEnabled = !on
         cancelButton.isHidden = !on
         (cancelButton.superview as? WrappingRowView)?.viewsChanged()
-        inputView.isEditable = !on
+        inputView.isEditable = !on && meetingInput == nil
         showModel()
     }
 
@@ -434,6 +477,8 @@ final class TidyPane: NSViewController, MainSectionContent {
     private func showResult(_ review: TidyReview?) {
         self.review = review
         copyButton.isEnabled = review != nil
+        saveButton.isHidden = review == nil || meetingInput == nil
+        (saveButton.superview as? WrappingRowView)?.viewsChanged()
         summaryLabel.isHidden = review == nil
         guard let review else {
             resultView.textStorage?.setAttributedString(NSAttributedString(string: ""))
@@ -465,5 +510,12 @@ final class TidyPane: NSViewController, MainSectionContent {
         guard let review, !review.text.isEmpty else { return }
         showInputStatus(actions.copy(review.text)
             ? "Copied the tidied text (without the struck-through words)." : "Clipboard write failed.")
+    }
+
+    @objc private func saveTidiedTranscript() {
+        guard let review, let meetingInput, let window = view.window else { return }
+        MeetingTidyExport.save(review.text, title: meetingInput.title, in: window) { [weak self] message in
+            self?.showInputStatus(message)
+        }
     }
 }
