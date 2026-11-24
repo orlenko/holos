@@ -145,6 +145,19 @@ public struct ExportWriteResult: Sendable, Equatable {
 }
 ```
 
+#### Tidy Transcript
+
+**Review → Export → Tidy Transcript…** opens an immutable copy of the review's transcript in Tidy Up. The left
+pane shows the original copy. **Model Options…** offers Qwen3.5 9B and 4B, with an optional download for each.
+Run one model, then select the other and run it on the same copy to compare.
+
+The model receives one contiguous speaker block at a time, with a fresh context for each request. Speaker
+headings, block start times, overlap labels and the meeting title are set by the app. Cleanup adjusts punctuation,
+capitalization and paragraph breaks. Blocks with numbers or comparison notation bypass the model and appear
+verbatim. A failed edit or a change to the spoken words keeps the block's original text.
+**Save Tidied Transcript…** writes a plain-text copy to a location outside the meeting
+folder. The source transcript, audio and speaker edits stay available in Review.
+
 ### 5.7 PR8: CLI speaker editing and re-export (wave 3)
 
 **Goal.** One edit API used by the CLI now and the review window later, `holos speakers`

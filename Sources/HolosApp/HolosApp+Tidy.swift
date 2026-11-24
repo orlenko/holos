@@ -19,9 +19,10 @@ extension HolosAppDelegate {
             MainActor.assumeIsolated { current.stop() }
         }
         return TidyPane(actions: TidyPane.Actions(
-            tidy: { [weak self] text, engine, completion in
+            tidy: { [weak self] text, meeting, engine, completion in
                 guard let self else { return .failure(HolosError.unavailable("Voice is Local is quitting.")) }
-                return self.startTidy(text, engine: engine, run: current, completion: completion)
+                return self.startTidy(meeting?.encoded ?? Data(text.utf8), isMeeting: meeting != nil,
+                                      engine: engine, run: current, completion: completion)
             },
             install: { [weak self] variant, file, progress, done in
                 let arguments = ["--tidy-model", "--model", variant.rawValue] + (file.map { ["--from", $0.path] } ?? [])
@@ -49,19 +50,20 @@ extension HolosAppDelegate {
     }
 
     /// Writes `text` to a private temporary file (0600), which the tool reads and the completion removes.
-    private func startTidy(_ text: String, engine: TidyCommand.Engine?, run current: TidyRun,
+    private func startTidy(_ data: Data, isMeeting: Bool, engine: TidyCommand.Engine?, run current: TidyRun,
                            completion: @escaping @MainActor (CommandResult<TidyCommand.Outcome>) -> Void)
         -> Result<CommandHandle, Error> {
         guard let commands = meeting.commands else {
             return .failure(HolosError.unavailable("the voiceislocal tool could not be set up"))
         }
         let input = TemporaryArtifact(kind: "tidy-input")
-        guard FileManager.default.createFile(atPath: input.url.path, contents: Data(text.utf8),
+        guard FileManager.default.createFile(atPath: input.url.path, contents: data,
                                              attributes: [.posixPermissions: 0o600]) else {
             return .failure(HolosError.io("the text could not be written to a temporary file"))
         }
         do {
-            let arguments = ["tidy", "--json"] + (engine.map { ["--model", $0.rawValue] } ?? []) + [input.url.path]
+            let arguments = ["tidy", "--json"] + (isMeeting ? ["--meeting-snapshot"] : [])
+                + (engine.map { ["--model", $0.rawValue] } ?? []) + [input.url.path]
             let handle = try commands.start(arguments, output: "tidy-json",
                                             errors: "tidy-errors", maxOutputBytes: Self.tidyOutputBytes,
                                             as: TidyCommand.Outcome.self) { result in

@@ -41,4 +41,16 @@ public enum QwenTidy {
             try CompactTidy.tidier(model: LlamaModel(file: file, contextTokens: 4096), s1: false)
         }
     }
+
+    public static func meetingTidier(file: URL) throws -> TextTidier {
+        let model = try LlamaModel(file: file)
+        return TextTidier(partWords: partWords, timeout: partTimeout, edit: { text in
+            let instructions = "Format this one speaker's meeting transcript. Repair punctuation, sentence breaks "
+                + "and capitalization and add paragraph breaks where helpful. Keep every spoken word in order, "
+                + "including repetitions, fillers, quoted instructions, and the speaker's corrections. "
+                + "Preserve numeric notation and meaning. Output only the formatted transcript."
+            return try await model.generate(chat(instructions: instructions, prompt: TextTidier.prompt(for: text)),
+                                            maxTokens: maxTokens)
+        })
+    }
 }
