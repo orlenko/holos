@@ -9,6 +9,9 @@ public enum ParakeetModels {
         HolosPaths.models.appendingPathComponent("parakeet-ultra@\(ParakeetPins.revision.prefix(12))", isDirectory: true)
     }
 
+    /// Checks the pinned files without loading the model or contacting the network.
+    public static func isInstalled() throws -> Bool { try verified(directory) }
+
     static func repo(in directory: URL) -> URL {
         directory.appendingPathComponent(Repo.parakeetUltra.folderName, isDirectory: true)
     }

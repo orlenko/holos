@@ -117,10 +117,6 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// A finalization status message kept for the result message (for example release during startup).
     private var forcedStopMessage: String?
 
-    var removeFillers: Bool {
-        get { UserDefaults.standard.object(forKey: "removeFillers") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "removeFillers") }
-    }
     /// Fixes each chunk with Apple's on-device model before it is written (Setup option); nil when off.
     private var fixPipeline: DictationFixPipeline?
     /// The recognizer's text for this dictation's result (before filler removal, corrections and the on-device fix),
@@ -207,6 +203,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private var shortcut: HotkeyChoice = .rightOption
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AccurateDictationWorker.removeAbandonedCaptures()
         applyAppearance()  // before any window opens
         if let raw = UserDefaults.standard.string(forKey: "shortcut"), let saved = HotkeyChoice(rawValue: raw) {
             shortcut = saved
@@ -310,15 +307,16 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         if reopenAfterQuit { reopenOnceExited() }
         enableTask?.cancel(); assetTask?.cancel(); overlayHideTask?.cancel(); resultExpiryTask?.cancel()
         setupRefreshTask?.cancel(); assistantRefreshTask?.cancel(); stopNaturalVoiceHelpers()
+        AccurateDictationWorker.discardHistoryAudioAtQuit(historyAudio?.writer)
+        historyAudio = nil
+        monitor?.stop(); controller?.cancel()
+        AccurateDictationWorker.finishCleanupAtQuit()
         history.stop()
-        // A dictation just recorded, deleted, or cleared must reach the file before the process exits; bounded, so a
-        // stuck disk never holds up the quit.
         switch history.flush(timeout: 5) {
         case .written: break
         case .failed: log.error("Quitting after a history write failed")
         case .timedOut: log.error("Quit before the history's last change was written")
         }
-        monitor?.stop(); controller?.cancel()
         for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         overlay.hide()
     }
@@ -410,22 +408,22 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         enableTask = Task { [weak self] in
             guard let self else { return }
             // Invariant 4: resolve the language and recognizer before configuring or enabling the controller.
-            await self.loadLanguages()
+            if !AccurateDictationSettings().enabled { await self.loadLanguages() }
             guard !Task.isCancelled, generation == self.enableGeneration else { return }
             let locale = self.locale, backend = self.dictationBackend
             do {
                 self.controller.locale = locale
                 self.controller.recognizers = self.recognizerLocales ?? .unknown
                 self.controller.contextualStrings = self.dictationVocabulary(language: locale)
-                let state = try await self.checkDictationAssets(locale: locale, backend: backend)
+                let state = try await self.requiredLiveAssets(locale: locale, backend: backend)
                 guard !Task.isCancelled, generation == self.enableGeneration else { return }
                 guard self.matchesDictationConfiguration(locale: locale, backend: backend) else {
                     self.enabling = false
                     self.enable()
                     return
                 }
-                self.assetState = state
-                guard state == "installed" else {
+                if let state { self.assetState = state }
+                guard state == nil || state == "installed" else {
                     self.enabling = false
                     self.show("Install the speech model for \(self.languageName) in Voice is Local Settings first.")
                     self.showSetupUnlessAssistant()
@@ -568,13 +566,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             historyOutcome = nil
             historyDraft = HistoryDraft(date: Date(),
                                         app: Self.historyAppName(typed: typedAppName, pid: fieldPID ?? originPID),
-                                        language: locale, terminal: dictationForTerminal)
+                                        language: locale, terminal: dictationForTerminal,
+                                        accurateRemoveFillers: AccurateDictationSettings().enabled ? removeFillers : nil)
             // Terms added with `voiceislocal words` since the last dictation count for this one.
             refreshWordList()
             // This dictation's corrections, fixed now; a refused begin leaves the one still stopping with its own.
             let previousCorrections = dictationCorrections
             dictationCorrections = corrections
-            if controller.begin() {
+            if controller.begin(afterRelease: makeAccurateDictationWorker()) {
                 // A pending opacity sample must not hide this dictation's own preview or result.
                 // A rejected begin leaves the timer running so the sample still hides on time.
                 opacitySampleTask?.cancel()
@@ -632,13 +631,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                              text: update.text.isEmpty ? "Speak now" : cleaned(update.text), listening: true)
             }
             latestCommitted = update.committedText
-            stream(cleanedForStreaming(update.committedText))
+            if controller.processingModel == nil { stream(cleanedForStreaming(update.committedText)) }
         case .finalizing:
             if let reason = update.message {
                 target = nil
                 insertionBlockReason = reason + " Use Copy Result."
             }
-            message = update.message ?? "Finishing locally…"
+            message = update.message ?? controller.processingModel.map { "Recognizing with \($0)…" } ?? "Finishing locally…"
             if let forced = update.message {  // a forced stop must stay visible through the result
                 resultNeedsAttention = true
                 forcedStopMessage = forced
@@ -647,7 +646,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 overlay.show(title: message, text: cleaned(update.text), attention: update.message != nil)
             }
             if !update.committedText.isEmpty { latestCommitted = update.committedText }
-            stream(cleanedForStreaming(update.committedText))
+            if controller.processingModel == nil { stream(cleanedForStreaming(update.committedText)) }
         case .result:
             let recognized = withoutFillers(update.text).trimmingCharacters(in: .whitespacesAndNewlines)
             let text = dictationCorrections.apply(to: recognized)
@@ -870,7 +869,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Writes whatever the final transcript adds beyond the streamed prefix, in a single attempt.
     private func withoutFillers(_ text: String) -> String {
-        removeFillers ? FillerWords.remove(from: text, language: locale) : text
+        (historyDraft?.accurateRemoveFillers ?? removeFillers) ? FillerWords.remove(from: text, language: locale) : text
     }
 
     /// Filler removal, then learned corrections (this dictation's): the text Holos shows and writes.
@@ -1079,6 +1078,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         var heard = heard.trimmingCharacters(in: .whitespacesAndNewlines)
         if heard.isEmpty { heard = latestCommitted.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let removeFillers = draft.accurateRemoveFillers ?? self.removeFillers
         let withoutFill = removeFillers ? FillerWords.remove(from: heard, language: draft.language) : heard
         let fillersRemoved = removeFillers && WordDiff.normalized(withoutFill) != WordDiff.normalized(heard)
         let swaps = dictationCorrections

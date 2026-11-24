@@ -60,7 +60,8 @@ extension HolosAppDelegate {
                 language: { [weak self] identifier in self?.changeLanguage(to: identifier) },
                 shortcut: { [weak self] choice in self?.changeShortcut(to: choice) },
                 retention: { [weak self] retention in self?.changeHistoryRetention(to: retention) },
-                appearance: { [weak self] choice in self?.changeAppearance(to: choice) }))
+                appearance: { [weak self] choice in self?.changeAppearance(to: choice) },
+                recognitionChanged: { [weak self] in self?.recognitionModeChanged() }))
         }
     }
 

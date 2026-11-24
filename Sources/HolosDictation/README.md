@@ -7,6 +7,8 @@ Dictation without the UI: one microphone utterance at a time, and Run Again over
   `DictationStatus` (`DictationPhase`: idle, preparing, listening, finalizing, result, failed). Capture and speech
   are injected (`DictationDependencies`), so tests run without a microphone or speech assets. Its startup and
   finalization timeouts are `DictationWatchdog`.
+- `AfterReleaseSpeech` supplies a capture-only session to the same controller. The app runs its installed
+  model in the CLI after release. `AccurateDictationCommand` recognizes the completed recording in bounded pieces.
 - `DictationSessionPolicy`: overlapping sleep/session suspension and restoring a previously enabled choice on return, independent of meetings. An explicit off choice cancels restoration.
 - `DictationRerun` (docs/design.md "Dictation audio and Run Again"): recognizes saved dictation audio as live
   dictation would, runs the current text steps, and compares with what History kept. `DictationPreferences` reads

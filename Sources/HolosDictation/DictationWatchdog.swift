@@ -25,7 +25,10 @@ final class DictationWatchdog {
 
     func startStartup(_ fire: @escaping @MainActor () -> Void) { start(startupTimeout, fire) }
 
-    func startFinalization(_ fire: @escaping @MainActor () -> Void) { start(finalizationTimeout, fire) }
+    func startFinalization(afterRelease: Bool, _ fire: @escaping @MainActor () -> Void) {
+        // A cold Core ML load can take minutes after a system update.
+        start(afterRelease ? max(finalizationTimeout, 600) : finalizationTimeout, fire)
+    }
 
     func cancel() {
         task?.cancel()

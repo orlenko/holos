@@ -10,6 +10,10 @@ import os
 /// the capture path only hands them over. The file is made on the first frame, so a dictation that heard nothing
 /// leaves none; `finish` closes it for the history to rename and link, `discard` deletes it. Nothing is logged but
 /// failures, never audio or text.
+///
+/// Invariants:
+/// 1. The encoder, converter and frame count are confined to the writer queue.
+/// 2. Ending the recording prevents every subsequent append. Recognition waits for each accepted frame's write.
 public final class DictationAudioWriter: DictationAudioRecording, @unchecked Sendable {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "history")
     public let url: URL
@@ -44,6 +48,18 @@ public final class DictationAudioWriter: DictationAudioRecording, @unchecked Sen
             } catch {
                 Self.log.error("Dictation audio could not be written: \(error.localizedDescription, privacy: .public)")
                 failed = true
+            }
+        }
+    }
+
+    /// Accurate dictation waits for each write so a stalled encoder cannot queue unbounded microphone audio.
+    public func appendForRecognition(_ frame: PCMFrame) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async { [self] in
+                continuation.resume(with: Result {
+                    guard !ended else { throw CancellationError() }
+                    if frame.frameCount > 0 { try write(frame) }
+                })
             }
         }
     }
@@ -174,21 +190,46 @@ public final class DictationAudioWriter: DictationAudioRecording, @unchecked Sen
 /// timeline starting at 0.
 public enum DictationAudioFile {
     public static func frames(of url: URL, pieceSeconds: Double = 0.1) throws -> [PCMFrame] {
-        let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
-        let rate = file.processingFormat.sampleRate
-        let step = AVAudioFrameCount(max(1, (rate * pieceSeconds).rounded()))
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: step) else {
-            throw HolosError.io("Cannot allocate an audio buffer.")
-        }
+        let reader = try Reader(url, pieceSeconds: pieceSeconds)
         var frames: [PCMFrame] = []
-        var position = 0
-        while file.framePosition < file.length {
-            try file.read(into: buffer, frameCount: step)
-            guard buffer.frameLength > 0 else { break }
-            frames.append(try PCMConversion.copy(buffer, startTime: Double(position) / rate))
-            position += Int(buffer.frameLength)
-        }
+        while let frame = try reader.next() { frames.append(frame) }
         return frames
+    }
+
+    /// Sequential, task-confined access to the same decoded frames without retaining the entire recording.
+    ///
+    /// Invariants:
+    /// 1. Only the owning task advances the file and reuses its buffer.
+    /// 2. A nonempty read advances the file position or fails the operation.
+    public final class Reader {
+        private let file: AVAudioFile
+        private let buffer: AVAudioPCMBuffer
+        public var hasMore: Bool { file.framePosition < file.length }
+
+        public init(_ url: URL, pieceSeconds: Double, requireMono16k: Bool = false) throws {
+            file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
+            let format = file.processingFormat
+            if requireMono16k, format.sampleRate != HistoryAudio.sampleRate || format.channelCount != 1 {
+                throw HolosError.invalidInput("Accurate Dictation requires 16 kHz mono audio.")
+            }
+            let size = min(Double(max(1, file.length)), max(1, (format.sampleRate * pieceSeconds).rounded()))
+            guard size.isFinite, size <= Double(UInt32.max),
+                  let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: UInt32(size)) else {
+                throw HolosError.io("Cannot allocate an audio buffer.")
+            }
+            self.buffer = buffer
+        }
+
+        public func next() throws -> PCMFrame? {
+            try Task.checkCancellation()
+            let position = file.framePosition
+            guard position < file.length else { return nil }
+            try file.read(into: buffer, frameCount: buffer.frameCapacity)
+            guard buffer.frameLength > 0, file.framePosition > position else {
+                throw HolosError.incomplete("Dictation audio ended early.")
+            }
+            return try PCMConversion.copy(buffer, startTime: Double(position) / file.processingFormat.sampleRate)
+        }
     }
 
     /// How long the file plays, in seconds.
