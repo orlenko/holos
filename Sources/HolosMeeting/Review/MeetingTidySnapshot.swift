@@ -56,13 +56,18 @@ public struct MeetingTidySnapshot: Sendable, Codable {
         guard WordChanges.words(in: original).map(\.word) == WordChanges.words(in: edited).map(\.word) else {
             return "the model changed the spoken words"
         }
-        guard original.matches(of: numericNotation).map(\.output) == edited.matches(of: numericNotation).map(\.output) else {
+        guard numericTokens(in: original) == numericTokens(in: edited) else {
             return "the model changed the notation of a number"
         }
         return nil
     }
 
-    private static var numericNotation: Regex<Substring> { /[+−-]?\p{Sc}?[0-9]+(?:[.:,\/-][0-9]+)*(?:%|‰)?/ }
+    private static func numericTokens(in text: String) -> [String] {
+        // Currency, signs, comparison operators, and units such as percent can sit next to a number or have a space.
+        // A bare decimal point is part of the value only when followed by digits.
+        let notation = /(?:(?:[+−<>≤≥≈~±-]|\p{Sc})[\p{Zs}\t]*){0,3}(?:\p{Nd}+(?:[.:,٫٬\/-]\p{Nd}+)*|[.,٫]\p{Nd}+)(?:[\p{Zs}\t]*(?:\p{Sc}|[%‰‱°]))?/
+        return text.matches(of: notation).map { String($0.output.filter { !$0.isWhitespace }) }
+    }
 
     private static func singleLine(_ text: String) -> String {
         text.split(whereSeparator: \.isNewline).joined(separator: " ")
