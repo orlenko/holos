@@ -4,9 +4,9 @@ import HolosCore
 enum CompactTidy {
     private static let user = "<|im_start|>user\n"
     private static let answer = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
-    private static let s1Instructions = """
-        You are a text normalizer for speech-to-text transcripts. The input begins with a control line specifying +        the styling, structure, and context settings; clean the transcript to match those settings and output only +        the cleaned text.
-        """
+    private static let s1Instructions = "You are a text normalizer for speech-to-text transcripts. "
+        + "The input begins with a control line specifying the styling, structure, and context settings; "
+        + "clean the transcript to match those settings and output only the cleaned text."
     private static let muesliInstructions = """
         Clean up speech-to-text transcription. Only make changes when there is a clear error. If the text is already correct, output it exactly as-is.
 
