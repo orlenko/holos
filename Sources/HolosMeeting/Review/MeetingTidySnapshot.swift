@@ -26,7 +26,7 @@ public struct MeetingTidySnapshot: Sendable, Codable {
 
     public var original: String { result(blocks.map { part($0, edited: $0.text) }).text }
 
-    /// Keeps blocks whose edit would change the spoken word sequence or notation used with a number.
+    /// Sends only blocks without numbers or comparison notation. Keeps edits that preserve the spoken word sequence.
     /// A cancellation discards the whole export.
     public func tidy(using tidier: TextTidier,
                      progress: @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> TextTidier.Result {
@@ -34,6 +34,10 @@ public struct MeetingTidySnapshot: Sendable, Codable {
         for (index, block) in blocks.enumerated() {
             try Task.checkCancellation()
             progress(index, blocks.count)
+            if block.text.contains(where: Self.isNumericNotation) {
+                parts.append(part(block, edited: block.text, kept: "it contains numbers or comparison notation"))
+                continue
+            }
             let edit = try await tidier.tidy(block.text)
             let reason = edit.parts.compactMap(\.kept).first ?? Self.refusal(original: block.text, edited: edit.text)
             parts.append(part(block, edited: reason == nil ? edit.text : block.text, kept: reason))
@@ -56,17 +60,19 @@ public struct MeetingTidySnapshot: Sendable, Codable {
         guard WordChanges.words(in: original).map(\.word) == WordChanges.words(in: edited).map(\.word) else {
             return "the model changed the spoken words"
         }
-        guard numericTokens(in: original) == numericTokens(in: edited) else {
-            return "the model changed the notation of a number"
+        guard !edited.contains(where: isNumericNotation) else {
+            return "the model added numbers or comparison notation"
         }
         return nil
     }
 
-    private static func numericTokens(in text: String) -> [String] {
-        // Currency, signs, comparison operators, and units such as percent can sit next to a number or have a space.
-        // A bare decimal point is part of the value only when followed by digits.
-        let notation = /(?:(?:[+−<>≤≥≈~±-]|\p{Sc})[\p{Zs}\t]*){0,3}(?:\p{Nd}+(?:[.:,٫٬\/-]\p{Nd}+)*|[.,٫]\p{Nd}+)(?:[\p{Zs}\t]*(?:\p{Sc}|[%‰‱°]))?/
-        return text.matches(of: notation).map { String($0.output.filter { !$0.isWhitespace }) }
+    private static func isNumericNotation(_ character: Character) -> Bool {
+        character.unicodeScalars.contains { scalar in
+            switch scalar.properties.generalCategory {
+            case .decimalNumber, .letterNumber, .otherNumber, .currencySymbol: true
+            default: "<>=≤≥≠≈≲≳~±+−%‰‱°".unicodeScalars.contains(scalar)
+            }
+        }
     }
 
     private static func singleLine(_ text: String) -> String {

@@ -153,8 +153,9 @@ Run one model, then select the other and run it on the same copy to compare.
 
 The model receives one contiguous speaker block at a time, with a fresh context for each request. Speaker
 headings, block start times, overlap labels and the meeting title are set by the app. Cleanup adjusts punctuation,
-capitalization and paragraph breaks. A failed edit or a change to spoken word order or numeric notation keeps
-that block's original text. **Save Tidied Transcript…** writes a plain-text copy to a location outside the meeting
+capitalization and paragraph breaks. Blocks with numbers or comparison notation bypass the model and appear
+verbatim. A failed edit or a change to the spoken words keeps the block's original text.
+**Save Tidied Transcript…** writes a plain-text copy to a location outside the meeting
 folder. The source transcript, audio and speaker edits stay available in Review.
 
 ### 5.7 PR8: CLI speaker editing and re-export (wave 3)
