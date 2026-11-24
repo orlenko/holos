@@ -29,4 +29,16 @@ public enum QwenTidy {
             try await model.generate(chat(instructions: instructions, prompt: prompt), maxTokens: maxTokens)
         }
     }
+
+    /// Loads a selected Tidy Up model with enough context for its own input and output bounds.
+    public static func tidier(variant: TidyModel.Variant, file: URL) throws -> TextTidier {
+        switch variant {
+        case .qwen, .qwen4b:
+            try tidier(model: LlamaModel(file: file))
+        case .s1Mini:
+            try CompactTidy.tidier(model: LlamaModel(file: file, contextTokens: 2048), s1: true)
+        case .muesli:
+            try CompactTidy.tidier(model: LlamaModel(file: file, contextTokens: 4096), s1: false)
+        }
+    }
 }

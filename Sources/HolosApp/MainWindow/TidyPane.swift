@@ -18,26 +18,27 @@ final class TidyPane: NSViewController, MainSectionContent {
     struct Actions {
         /// Starts `voiceislocal tidy --json` on `text`; `completion` gets its result on the main actor. Nil when the
         /// tool cannot start, with the reason.
-        var tidy: (_ text: String, _ completion: @escaping @MainActor (CommandResult<TidyCommand.Outcome>) -> Void)
+        var tidy: (_ text: String, _ engine: TidyCommand.Engine?,
+                   _ completion: @escaping @MainActor (CommandResult<TidyCommand.Outcome>) -> Void)
             -> Result<CommandHandle, Error>
         /// Starts `voiceislocal setup --tidy-model` (with `--from` a file already on this Mac); `progress` gets its
         /// latest line, `done` nil or the failure. False when it cannot start.
-        var install: (_ from: URL?, _ progress: @escaping @MainActor (String) -> Void,
+        var install: (_ variant: TidyModel.Variant, _ from: URL?, _ progress: @escaping @MainActor (String) -> Void,
                       _ done: @escaping @MainActor (String?) -> Void) -> Bool
         /// Runs `voiceislocal setup --remove-tidy-model`; `done` gets nil or the failure.
-        var remove: (_ done: @escaping @MainActor (String?) -> Void) -> Bool
+        var remove: (_ variant: TidyModel.Variant, _ done: @escaping @MainActor (String?) -> Void) -> Bool
         /// The newest dictation since launch, if any.
         var lastDictation: () -> String?
         /// Copies `text` to the clipboard (only ever on Copy Tidied Text).
         var copy: (_ text: String) -> Bool
-        /// Whether Qwen is installed (`TidyModel.status`).
-        var modelStatus: () -> DeepModelStatus = { TidyModel.status() }
+        var modelStatus: (TidyModel.Variant) -> DeepModelStatus = { $0.status() }
     }
 
     private let actions: Actions
     private let inputView: NSTextView
     private let resultView: NSTextView
     private let modelLabel = NSTextField(wrappingLabelWithString: "")
+    private let modelPicker = NSPopUpButton()
     private let installButton = NSButton(title: "Install Qwen…", target: nil, action: nil)
     private let fromFileButton = NSButton(title: "Use a File Already Downloaded…", target: nil, action: nil)
     private let removeButton = NSButton(title: "Remove Qwen…", target: nil, action: nil)
@@ -94,8 +95,6 @@ final class TidyPane: NSViewController, MainSectionContent {
         tidyButton.keyEquivalentModifierMask = .command
         tidyButton.toolTip = "Tidy the text with the model on this Mac (⌘↩)"
         lastButton.toolTip = "Put the newest dictation in the box, replacing what is there"
-        installButton.toolTip = "Download Qwen3.5 9B (about 5.7 GB) from Hugging Face; it runs on this Mac"
-        fromFileButton.toolTip = "Copy \(TidyModel.fileName), already on this Mac, instead of downloading it"
         copyButton.toolTip = "Copy the tidied text, without the struck-through words"
         cancelButton.isHidden = true
         copyButton.isEnabled = false
@@ -147,9 +146,19 @@ final class TidyPane: NSViewController, MainSectionContent {
         panelWidths = (full, split)
 
         let modelButton = NSButton(title: "Model Options…", target: self, action: #selector(toggleModelOptions(_:)))
+        modelPicker.addItem(withTitle: "Automatic")
+        for engine in TidyCommand.Engine.allCases {
+            let language = engine.downloadable?.englishOnly == true ? " (English)" : ""
+            modelPicker.addItem(withTitle: engine.displayName + language)
+            modelPicker.lastItem?.representedObject = engine.rawValue
+        }
+        modelPicker.setAccessibilityLabel("Tidy Up model")
+        modelPicker.target = self
+        modelPicker.action = #selector(modelChanged)
         let modelButtons = WrappingRowView(views: [installButton, fromFileButton, removeButton])
         modelOptions.orientation = .vertical
         modelOptions.alignment = .leading
+        modelOptions.addArrangedSubview(modelPicker)
         for item in [modelLabel, modelButtons] {
             modelOptions.addArrangedSubview(item)
             item.widthAnchor.constraint(equalTo: modelOptions.widthAnchor).isActive = true
@@ -199,37 +208,52 @@ final class TidyPane: NSViewController, MainSectionContent {
 
     // MARK: - Model
 
+    private var selectedEngine: TidyCommand.Engine? {
+        (modelPicker.selectedItem?.representedObject as? String).flatMap(TidyCommand.Engine.init(rawValue:))
+    }
+
+    private var selectedVariant: TidyModel.Variant? {
+        selectedEngine == nil ? .qwen : selectedEngine?.downloadable
+    }
+
+    @objc private func modelChanged() { showModel() }
+
     private func showModel() {
-        let status = actions.modelStatus()
+        let variant = selectedVariant
+        let status = variant.map(actions.modelStatus)
         let busy = installing != nil || running != nil
         if let installing {
             modelLabel.stringValue = installing
-        } else {
+        } else if let variant {
             switch status {
             case .installed:
-                modelLabel.stringValue = "\(TidyModel.displayName) tidies on this Mac."
+                modelLabel.stringValue = "\(variant.displayName) tidies on this Mac."
             case .downloading:
-                modelLabel.stringValue = "\(TidyModel.displayName) is being installed by another process."
-            case .notInstalled:
-                modelLabel.stringValue = "Apple's on-device model tidies (English and French; Apple Intelligence on). "
-                    + "\(TidyModel.displayName) makes better paragraphs and lists and knows more languages: about "
-                    + "5.7 GB, it runs on this Mac."
+                modelLabel.stringValue = "\(variant.displayName) is being installed by another process."
+            default:
+                let fallback = selectedEngine == nil ? "Automatic uses Apple's on-device model until Qwen is installed. " : ""
+                modelLabel.stringValue = fallback + "Download \(variant.displayName) (\(variant.downloadSize)) to use it on this Mac."
             }
+        } else {
+            modelLabel.stringValue = "Apple's on-device model tidies English and French with Apple Intelligence on."
         }
-        installButton.isHidden = status == .installed
-        fromFileButton.isHidden = status == .installed
+        installButton.title = variant == .qwen ? "Install Qwen…" : "Download Model…"
+        removeButton.title = variant == .qwen ? "Remove Qwen…" : "Remove Model…"
+        installButton.isHidden = variant == nil || status == .installed
+        fromFileButton.isHidden = installButton.isHidden
         removeButton.isHidden = status != .installed
         for button in [installButton, fromFileButton, removeButton] { button.isEnabled = !busy && status != .downloading }
         (installButton.superview as? WrappingRowView)?.viewsChanged()
+        modelPicker.isEnabled = !busy
         tidyButton.isEnabled = running == nil && installing == nil
     }
 
     @objc private func install() { startInstall(from: nil) }
 
     @objc private func installFromFile() {
-        guard let window = view.window else { return }
+        guard let window = view.window, let variant = selectedVariant else { return }
         let panel = NSOpenPanel()
-        panel.message = "Choose \(TidyModel.fileName). It is checked, then copied; your file stays where it is."
+        panel.message = "Choose \(variant.fileName). It is checked, then copied; your file stays where it is."
         panel.prompt = "Use File"
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
@@ -240,9 +264,9 @@ final class TidyPane: NSViewController, MainSectionContent {
     }
 
     private func startInstall(from file: URL?) {
-        guard installing == nil, running == nil else { return }
+        guard installing == nil, running == nil, let variant = selectedVariant else { return }
         installing = file == nil ? "Starting the download…" : "Checking \(file!.lastPathComponent)…"
-        let started = actions.install(file, { [weak self] line in
+        let started = actions.install(variant, file, { [weak self] line in
             guard let self, self.installing != nil else { return }
             self.installing = line
             self.showModel()
@@ -250,23 +274,23 @@ final class TidyPane: NSViewController, MainSectionContent {
             guard let self else { return }
             self.installing = nil
             self.showModel()
-            self.modelLabel.stringValue = failure.map { "Qwen was not installed: \($0)" } ?? self.modelLabel.stringValue
+            self.modelLabel.stringValue = failure.map { "\(variant.displayName) was not installed: \($0)" }
+                ?? self.modelLabel.stringValue
         })
         if !started {
             installing = nil
             showModel()
-            modelLabel.stringValue = "Qwen cannot be installed: the voiceislocal tool could not start."
+            modelLabel.stringValue = "The download could not start because the voiceislocal tool is unavailable."
             return
         }
         showModel()
     }
 
     @objc private func remove() {
-        guard let window = view.window, installing == nil, running == nil else { return }
+        guard let window = view.window, installing == nil, running == nil, let variant = selectedVariant else { return }
         let alert = NSAlert()
-        alert.messageText = "Remove \(TidyModel.displayName)?"
-        alert.informativeText = "Its file (about 5.7 GB) is deleted from Voice is Local's folder. Tidy Up then uses "
-            + "Apple's on-device model. You can install Qwen again at any time."
+        alert.messageText = "Remove \(variant.displayName)?"
+        alert.informativeText = "This frees about \(variant.downloadSize) on this Mac. You can download it again."
         alert.addButton(withTitle: "Remove")
         alert.addButton(withTitle: "Cancel")
         alert.buttons.first?.hasDestructiveAction = true
@@ -274,16 +298,16 @@ final class TidyPane: NSViewController, MainSectionContent {
             guard let self, response == .alertFirstButtonReturn else { return }
             self.installing = "Removing…"
             self.showModel()
-            let started = self.actions.remove { [weak self] failure in
+            let started = self.actions.remove(variant) { [weak self] failure in
                 guard let self else { return }
                 self.installing = nil
                 self.showModel()
-                if let failure { self.modelLabel.stringValue = "Qwen was not removed: \(failure)" }
+                if let failure { self.modelLabel.stringValue = "\(variant.displayName) was not removed: \(failure)" }
             }
             if !started {
                 self.installing = nil
                 self.showModel()
-                self.modelLabel.stringValue = "Qwen cannot be removed: the voiceislocal tool could not start."
+                self.modelLabel.stringValue = "The model could not be removed because the voiceislocal tool is unavailable."
             }
         }
     }
@@ -314,8 +338,8 @@ final class TidyPane: NSViewController, MainSectionContent {
         }
         generation += 1
         let ticket = generation
-        let model = actions.modelStatus() == .installed ? TidyModel.displayName : "Apple's on-device model"
-        switch actions.tidy(text, { [weak self] result in
+        let engine = selectedEngine ?? (actions.modelStatus(.qwen) == .installed ? .qwen : .apple)
+        switch actions.tidy(text, selectedEngine, { [weak self] result in
             guard let self, self.generation == ticket else { return }
             self.running = nil
             self.finished(result)
@@ -323,7 +347,7 @@ final class TidyPane: NSViewController, MainSectionContent {
         case .success(let handle):
             running = handle
             showResult(nil)
-            showResultStatus("Tidying with \(model)…", animating: true)
+            showResultStatus("Tidying with \(engine.displayName)…", animating: true)
             setRunning(true)
         case .failure(let error):
             showError("Cannot tidy: \(error.localizedDescription)")
@@ -402,8 +426,7 @@ final class TidyPane: NSViewController, MainSectionContent {
             showError(kept.isEmpty ? "The text could not be tidied." : kept.joined(separator: " "))
             return
         }
-        let engine = outcome.engine == .qwen ? TidyModel.displayName : "Apple's on-device model"
-        showResultStatus((["Tidied with \(engine)."] + kept).joined(separator: " "))
+        showResultStatus((["Tidied with \(outcome.engine.displayName)."] + kept).joined(separator: " "))
         showResult(TidyReview(text: outcome.text, changes: outcome.changes))
     }
 

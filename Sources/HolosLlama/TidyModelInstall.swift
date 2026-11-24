@@ -23,37 +23,43 @@ public enum TidyModelInstall {
 
     /// Downloads or copies the model unless it is installed (or `force`). `source`: a model file already on this Mac,
     /// checked and copied instead of downloading. `progress` goes from 0 to 1: the transfer, then the check.
-    public static func setUp(force: Bool = false, source: URL? = nil, root: URL = TidyModel.root,
-                             fetch: Fetch = huggingFace, notice: @Sendable (String) -> Void,
+    public static func setUp(variant: TidyModel.Variant = .qwen, force: Bool = false, source: URL? = nil,
+                             root: URL = TidyModel.root, fetch: Fetch? = nil, notice: @Sendable (String) -> Void,
                              progress: @escaping @Sendable (Double) -> Void) async throws {
-        try await setUp(force: force, source: source, root: root, pin: .qwen, fetch: fetch, notice: notice,
-                        progress: progress)
+        try await setUp(variant: variant, force: force, source: source, root: root,
+                        pin: Pin(size: variant.size, sha256: variant.sha256),
+                        fetch: fetch ?? huggingFace(variant), notice: notice, progress: progress)
     }
 
-    static func setUp(force: Bool, source: URL?, root: URL, pin: Pin, fetch: Fetch,
+    static func setUp(variant: TidyModel.Variant = .qwen, force: Bool, source: URL?, root: URL, pin: Pin, fetch: Fetch,
                       notice: @Sendable (String) -> Void,
                       progress: @escaping @Sendable (Double) -> Void) async throws {
-        if !force, isInstalled(root: root, pin: pin) {
+        let file = variant.file(in: root)
+        if !force, isInstalled(file: file, pin: pin) {
             notice("The Tidy Up model is already installed.")
             progress(1)
             return
         }
-        try ensurePrivateDirectory(root)
-        let lock = try InstallLock(path: TidyModel.lockFile(root: root).path)
+        let directory = variant.directory(in: root)
+        try ensurePrivateDirectory(directory)
+        let lock = try InstallLock(path: TidyModel.lockFile(root: directory).path)
         defer { lock.release() }
-        if !force, isInstalled(root: root, pin: pin) {
+        if !force, isInstalled(file: file, pin: pin) {
             notice("The Tidy Up model is already installed.")
             progress(1)
             return
         }
         // A copy is checked under its own name, so a file that turns out not to be the model never costs the person an
         // unfinished download.
-        let partial = source == nil ? TidyModel.partialFile(root: root) : TidyModel.copyFile(root: root)
+        let downloadFile = file.appendingPathExtension("download")
+        let copyFile = file.appendingPathExtension("copy")
+        let partial = source == nil ? downloadFile : copyFile
         if let source {
-            try copy(source, to: partial, root: root, size: pin.size, notice: notice, progress: { progress(0.5 * $0) })
+            try copy(source, to: partial, modelFiles: [file, downloadFile, copyFile], size: pin.size,
+                     notice: notice, progress: { progress(0.5 * $0) })
         } else {
             if force { try removeIfPresent(partial) }
-            try await download(to: partial, size: pin.size, fetch: fetch, notice: notice,
+            try await download(variant, to: partial, size: pin.size, fetch: fetch, notice: notice,
                                progress: { progress(0.8 * $0) })
         }
         try Task.checkCancellation()
@@ -63,39 +69,43 @@ public enum TidyModelInstall {
         guard digest == pin.sha256 else {
             try removeIfPresent(partial)
             throw HolosError.incomplete(source == nil
-                ? "The downloaded Tidy Up model is damaged and was deleted. Run voiceislocal setup --tidy-model again."
-                : "That file is not \(TidyModel.fileName) as published (its SHA-256 differs), so it was not used.")
+                ? "The downloaded Tidy Up model is damaged and was deleted. Try installing it again."
+                : "That file is not \(variant.fileName) as published (its SHA-256 differs), so it was not used.")
         }
-        let file = TidyModel.file(root: root)
         try removeIfPresent(file)
         try FileManager.default.moveItem(at: partial, to: file)
         // The other way's leftovers: an unfinished download once a copy is installed, or a copy that was stopped. The
         // model is installed either way, so a leftover that cannot be deleted is not an error.
-        try? removeIfPresent(TidyModel.partialFile(root: root))
-        try? removeIfPresent(TidyModel.copyFile(root: root))
+        for leftover in [downloadFile, copyFile] {
+            do { try removeIfPresent(leftover) }
+            catch { log.error("Could not remove a leftover Tidy Up model file") }
+        }
         log.info("Tidy Up model installed")
         progress(1)
     }
 
-    private static func isInstalled(root: URL, pin: Pin) -> Bool {
-        let size = (try? FileManager.default.attributesOfItem(atPath: TidyModel.file(root: root).path))?[.size] as? Int64
+    private static func isInstalled(file: URL, pin: Pin) -> Bool {
+        let size = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.size] as? Int64
         return size == pin.size
     }
 
     /// Deletes the installed model and any unfinished download (Settings' Remove).
-    public static func remove(root: URL = TidyModel.root) throws {
-        guard FileManager.default.fileExists(atPath: root.path) else { return }
-        let lock = try InstallLock(path: TidyModel.lockFile(root: root).path)
+    public static func remove(variant: TidyModel.Variant = .qwen, root: URL = TidyModel.root) throws {
+        let directory = variant.directory(in: root)
+        guard FileManager.default.fileExists(atPath: directory.path) else { return }
+        let lock = try InstallLock(path: TidyModel.lockFile(root: directory).path)
         defer { lock.release() }
-        try removeIfPresent(TidyModel.file(root: root))
-        try removeIfPresent(TidyModel.partialFile(root: root))
-        try removeIfPresent(TidyModel.copyFile(root: root))
+        let file = variant.file(in: root)
+        try removeIfPresent(file)
+        try removeIfPresent(file.appendingPathExtension("download"))
+        try removeIfPresent(file.appendingPathExtension("copy"))
     }
 
     // MARK: - Transfer
 
     /// Appends to `partial` from where an earlier download stopped (from the start when the server ignores the range).
-    static func download(to partial: URL, size: Int64, fetch: Fetch, notice: @Sendable (String) -> Void,
+    static func download(_ variant: TidyModel.Variant, to partial: URL, size: Int64, fetch: Fetch,
+                         notice: @Sendable (String) -> Void,
                          progress: @escaping @Sendable (Double) -> Void) async throws {
         let manager = FileManager.default
         if !manager.fileExists(atPath: partial.path) {
@@ -111,8 +121,9 @@ public enum TidyModelInstall {
         }
         // Complete already (a run stopped while checking it): only the check is left.
         guard offset < size else { progress(1); return }
-        notice(offset > 0 ? "Resuming the Tidy Up model download (\(TidyModel.displayName), about 5.7 GB)…"
-            : "Downloading the Tidy Up model (\(TidyModel.displayName), about 5.7 GB)…")
+        let label = "\(variant.displayName), about \(variant.downloadSize)"
+        notice(offset > 0 ? "Resuming the Tidy Up model download (\(label))…"
+            : "Downloading the Tidy Up model (\(label))…")
         let handle = try FileHandle(forWritingTo: partial)
         defer { try? handle.close() }
         var written = offset
@@ -141,24 +152,22 @@ public enum TidyModelInstall {
         }
         try handle.synchronize()
         guard written == size else {
-            throw HolosError.incomplete("The Tidy Up model download stopped early. Run voiceislocal setup --tidy-model "
-                + "again to resume it.")
+            throw HolosError.incomplete("The Tidy Up model download stopped early. Install it again to resume it.")
         }
     }
 
     /// Copies `source` (a link is followed) to `partial` when its size is the model's and it is not one of the model's
     /// own files in `root`.
-    static func copy(_ source: URL, to partial: URL, root: URL, size expected: Int64,
+    static func copy(_ source: URL, to partial: URL, modelFiles: [URL], size expected: Int64,
                      notice: @Sendable (String) -> Void, progress: @escaping @Sendable (Double) -> Void) throws {
         let source = source.resolvingSymlinksInPath()
-        let own = [TidyModel.file(root: root), TidyModel.partialFile(root: root), TidyModel.copyFile(root: root)]
-            .map { $0.resolvingSymlinksInPath().standardizedFileURL.path }
+        let own = modelFiles.map { $0.resolvingSymlinksInPath().standardizedFileURL.path }
         guard !own.contains(source.standardizedFileURL.path) else {
             throw HolosError.invalidInput("That file is one of the Tidy Up model's own files; give a copy kept elsewhere.")
         }
         let size = (try FileManager.default.attributesOfItem(atPath: source.path)[.size] as? Int64) ?? -1
         guard size == expected else {
-            throw HolosError.invalidInput("That file is not \(TidyModel.fileName) as published (its size differs).")
+            throw HolosError.invalidInput("That file is not \(modelFiles[0].lastPathComponent) as published (its size differs).")
         }
         notice("Copying \(source.lastPathComponent)…")
         try removeIfPresent(partial)
@@ -168,17 +177,24 @@ public enum TidyModelInstall {
 
     /// The default `Fetch`: the pinned file from Hugging Face, from `offset` on. A response is checked before any of
     /// it is written: the status, and the range or length it says it holds.
-    public static let huggingFace: Fetch = { offset, write in
-        var request = URLRequest(url: TidyModel.downloadURL)
+    public static let huggingFace: Fetch = huggingFace(.qwen)
+
+    private static func huggingFace(_ variant: TidyModel.Variant) -> Fetch {
+        { offset, write in try await fetch(variant, offset: offset, write: write) }
+    }
+
+    private static func fetch(_ variant: TidyModel.Variant, offset: Int64,
+                              write: (Data) throws -> Void) async throws -> Bool {
+        var request = URLRequest(url: variant.downloadURL)
         if offset > 0 { request.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range") }
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         let http = response as? HTTPURLResponse
-        let remaining = TidyModel.size - offset
+        let remaining = variant.size - offset
         switch http?.statusCode {
         case 206 where http?.value(forHTTPHeaderField: "Content-Range")?.hasPrefix("bytes \(offset)-") == true
             && response.expectedContentLength == remaining:
             break
-        case 200 where offset > 0 && response.expectedContentLength == TidyModel.size:
+        case 200 where offset > 0 && response.expectedContentLength == variant.size:
             // The whole file, from a server that cannot resume; anything else (a captive portal's page) is refused
             // below, and the unfinished download stays.
             return false
