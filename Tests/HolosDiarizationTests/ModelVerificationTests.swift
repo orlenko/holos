@@ -424,7 +424,7 @@ import HolosCore
         let info = try await diarizer.engineInfo()
 
         #expect(info.engine == "FluidAudio.OfflineDiarizerManager")
-        #expect(info.engineVersion == "0.17.1")
+        #expect(info.engineVersion == "0.17.3")
         #expect(info.models == [ModelDescriptor(id: "FluidInference/speaker-diarization-coreml",
                                                 revision: "df2625ac79a7ac6b65ad868fee6d80f320da4232",
                                                 sha256: ModelTreeDigest.digest(of: pinned))])

@@ -7,6 +7,8 @@ that needs FluidAudio or WhisperKit, and for recording (unless the app's in-proc
 - `Holos.swift`: the root command and its subcommands (`doctor`, `setup`, `transcribe`, `record`, `session`,
   `speakers`, `people`, `voices`, `say`, `read`, `history`, `words`, `eval`). Before `people`, `speakers` and
   `session` commands it finishes forgets a crash left pending (`ForgetResume`).
+- `setup --parakeet` installs the optional Ultra model. `session compare-recognition` prints a separate candidate
+  and the saved words, including in builds with Evaluation disabled.
 - One file per command (`Record.swift`, `Session*.swift`, `Speakers.swift`, …): parse arguments, call the library,
   print. `Console` writes content to stdout and messages to stderr.
 

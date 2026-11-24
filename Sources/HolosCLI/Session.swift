@@ -23,6 +23,7 @@ struct Session: AsyncParsableCommand {
             Languages.self,
             FixWords.self,
             DeepTranscribe.self,
+            CompareRecognition.self,
             Summarize.self,
             Rename.self,
         ])

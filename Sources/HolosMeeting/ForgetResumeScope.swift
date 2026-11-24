@@ -8,7 +8,7 @@ public enum ForgetResumeScope {
     public static let commands: Set<String> = ["people", "speakers", "session"]
     /// Subcommands of those groups that only read, and so change nothing first either: the group, then the
     /// subcommand's name.
-    public static let readOnly: Set<[String]> = [["session", "echo-label-stats"]]
+    public static let readOnly: Set<[String]> = [["session", "echo-label-stats"], ["session", "compare-recognition"]]
 
     /// Whether the command line `arguments` (without the program name) runs the forget resume first: its first word is
     /// one of `commands`, its first two words are not one of `readOnly`, and it is not a dry run of `session

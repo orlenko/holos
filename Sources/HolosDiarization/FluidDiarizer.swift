@@ -84,7 +84,7 @@ public struct FluidDiarizerConfiguration: Sendable, Equatable {
         let config = offlineConfig(speakers: nil)
         return [
             "clusteringThreshold": String(describing: config.clustering.threshold),
-            // FluidAudio 0.17.1 loads segmentation, embedding, and PLDA with `.all` and always keeps FBank on the CPU.
+            // FluidAudio 0.17.3 loads segmentation, embedding, and PLDA with `.all` and always keeps FBank on the CPU.
             "computeUnits": "all",
             "fbankComputeUnits": "cpuOnly",
             "embeddingExcludeOverlap": String(config.embedding.excludeOverlap),
@@ -101,7 +101,7 @@ public struct FluidDiarizerConfiguration: Sendable, Equatable {
     }
 }
 
-/// `SpeakerDiarizer` over FluidAudio 0.17.1's `OfflineDiarizerManager` (pyannote Community-1 segmentation, WeSpeaker
+/// `SpeakerDiarizer` over FluidAudio 0.17.3's `OfflineDiarizerManager` (pyannote Community-1 segmentation, WeSpeaker
 /// embeddings, VBx clustering), fully offline (docs/meeting/post-processing.md §4.8).
 ///
 /// Every call first verifies the pinned model files (`FluidModels.status`) and refuses unverified ones. The actor
@@ -113,7 +113,7 @@ public actor FluidDiarizer: SpeakerDiarizer {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "diarization")
 
     public static let engineName = "FluidAudio.OfflineDiarizerManager"
-    public static let engineVersion = "0.17.1"
+    public static let engineVersion = "0.17.3"
     public static let embeddingDimension = 256
     public static let embeddingModel = EmbeddingModelID(
         id: "FluidInference/speaker-diarization-coreml/Embedding.mlmodelc", revision: FluidModels.revision)
