@@ -40,6 +40,20 @@ struct TidyModelInstallTests {
         }
     }
 
+    @Test func installingAndRemovingAComparisonModelLeavesTheExistingQwenFileAlone() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = TidyModel.file(root: root)
+        try Data("original model".utf8).write(to: original)
+        let variant = TidyModel.Variant.s1Mini
+        try await TidyModelInstall.setUp(variant: variant, force: false, source: nil, root: root, pin: pin,
+                                         fetch: fetch(content), notice: { _ in }, progress: { _ in })
+        #expect(try Data(contentsOf: variant.file(in: root)) == content)
+        try TidyModelInstall.remove(variant: variant, root: root)
+        #expect(!FileManager.default.fileExists(atPath: variant.file(in: root).path))
+        #expect(try String(contentsOf: original, encoding: .utf8) == "original model")
+    }
+
     @Test func aDownloadThatStopsResumesFromWhereItStopped() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

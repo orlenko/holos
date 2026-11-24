@@ -1245,11 +1245,16 @@ and rejoins the split sentences, fixes punctuation and capitals, breaks the text
 the speaker lists items and quotes where they quote someone, and drops fillers ("um"), false starts and repeated
 words. Nothing leaves the Mac and nothing is copied.
 
-`voiceislocal tidy [FILE] [--model qwen|apple] [--json]` tidies a file or standard input (at most 1 MB of UTF-8
+`voiceislocal tidy [FILE] [--model qwen|qwen4b|s1-mini|muesli|apple] [--json]` tidies a file or standard input (at most 1 MB of UTF-8
 text) and prints the result; `--json` prints `TidyCommand.Outcome`: the text, each part as sent and as used, and the
 words it changed. The model is Qwen3.5 9B when it is installed, else Apple's on-device model. Apple's model
 (`OnDeviceTidy`, the model of Apple Intelligence's fix) needs Apple Intelligence turned on and tidies English and
 French text, as the fix does.
+
+**Model Options…** chooses a model for the next run. Qwen3.5 4B uses the same instructions as 9B. S1-mini by
+Superwhisper and Muesli Qwen3.5 2B are smaller English dictation models with their own prompts and shorter parts.
+All use the same output check and word-change review. The selection applies to Tidy Up in the open window. Choose
+another model and press **Tidy Up** again to compare against the same input. **Automatic** uses 9B or Apple as above.
 
 Qwen (`QwenTidy`, HolosLlama) gave the best paragraphs and lists when the two were compared on long dictation, and
 tidies languages written with spaces between words (the check counts words by them) whose words take at most about 5
@@ -1310,11 +1315,11 @@ struck through in red where they were, after a sentence's punctuation when they 
 space or the end), and the words it added underlined in green (`TidyReview`, HolosAppModel), with how many of each;
 a part left as it was says why. **Copy Tidied Text** copies the edit without the struck-through words, and nothing
 is copied otherwise: the edit cannot be selected, and VoiceOver reads it with each change named ("(removed: We)",
-"(added: to)"). **Model Options…** opens the model controls below the editor and shows which model tidies. With
-Qwen not installed, **Install Qwen…** runs
-`voiceislocal setup --tidy-model` and shows its progress, and **Use a File Already Downloaded…** runs it with
-`--from` the file chosen; with Qwen installed, **Remove Qwen…** asks, then runs `setup --remove-tidy-model`. The
-section reads the model's state from its files (`TidyModel.status`). One tidy-up or one model change runs at a time.
+"(added: to)"). The model controls show download size and progress. **Use a File Already Downloaded…** checks
+and copies a GGUF from this Mac. The commands `setup --tidy-model --model <name>` and
+`setup --remove-tidy-model --model <name>` manage the named download independently, with `qwen` the default.
+Each download is pinned by publisher revision, byte count, and SHA-256. One tidy-up or model change runs in
+the window at a time.
 
 ### First-launch setup
 

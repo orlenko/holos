@@ -1199,3 +1199,15 @@ the Apache License 2.0, whose full text is the FluidAudio `LICENSE` in section 1
 `Qwen3.5-9B-Q4_K_M.gguf` from https://huggingface.co/unsloth/Qwen3.5-9B-GGUF (Apache 2.0; revision
 3885219b6810b007914f3a7950a8d1b469d598a5). It is downloaded by `voiceislocal setup --tidy-model` and not included
 in the app. The model was quantized by Unsloth; no other change was made to it.
+
+### Optional Tidy Up comparison models
+
+- Qwen3.5 4B by the Qwen team, Alibaba Cloud, is under Apache 2.0. The download is the Q4_K_M GGUF
+  [quantized by Unsloth](https://huggingface.co/unsloth/Qwen3.5-4B-GGUF).
+- Muesli Qwen3.5 2B is a Qwen fine-tune distributed by Muesli under Apache 2.0.
+  See the [model card](https://huggingface.co/Muesli-HQ/qwen35-2b-muesli-cleanup-v12-gguf).
+- **S1-mini by Superwhisper**, copyright 2026 Superwhisper, is a derivative of Qwen3-0.6B by Alibaba Cloud.
+  See the [model license and additional attribution term](https://huggingface.co/superwhisper/s1-mini-GGUF/blob/34add00a48a2e5d24e5a4ee5405a99620a3a240c/LICENSE)
+  and the [model notice](https://huggingface.co/superwhisper/s1-mini-GGUF/blob/34add00a48a2e5d24e5a4ee5405a99620a3a240c/NOTICE).
+
+The app downloads the weights directly from their publishers when requested. They are separate from the app bundle.

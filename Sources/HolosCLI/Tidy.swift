@@ -22,7 +22,7 @@ struct Tidy: AsyncParsableCommand {
             """)
 
     @Argument(help: "A UTF-8 text file, or - (or nothing) for standard input.") var file: String?
-    @Option(help: "The model: qwen or apple. Default: qwen when it is installed, else apple.")
+    @Option(help: "The model: qwen, qwen4b, s1-mini, muesli, or apple. Default: qwen when installed, else apple.")
     var model: TidyCommand.Engine?
     /// A GGUF file to tidy with instead of the installed Qwen file (development).
     @Option(help: .hidden) var modelFile: String?
@@ -49,22 +49,21 @@ struct Tidy: AsyncParsableCommand {
     }
 
     private func makeTidier(_ engine: TidyCommand.Engine, for text: String) throws -> TextTidier {
-        switch engine {
-        case .apple:
-            if let reason = OnDeviceTidy.unavailableReason(for: text) {
-                Console.error("Cannot tidy with Apple's model: \(reason).")
+        if let variant = engine.downloadable {
+            let url = modelFile.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) } ?? variant.file()
+            guard modelFile != nil || variant.status() == .installed else {
+                Console.error("\(variant.displayName) is not installed. Open Model Options in Tidy Up, or run "
+                    + "voiceislocal setup --tidy-model --model \(variant.rawValue).")
                 throw ExitCode(1)
             }
-            return OnDeviceTidy.tidier()
-        case .qwen:
-            let url = modelFile.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) } ?? TidyModel.file()
-            guard modelFile != nil || TidyModel.status() == .installed else {
-                Console.error(TidyModel.missingModelMessage)
-                throw ExitCode(1)
-            }
-            Console.error("Loading \(TidyModel.displayName)…")
-            return QwenTidy.tidier(model: try LlamaModel(file: url))
+            Console.error("Loading \(variant.displayName)…")
+            return try QwenTidy.tidier(variant: variant, file: url)
         }
+        if let reason = OnDeviceTidy.unavailableReason(for: text) {
+            Console.error("Cannot tidy with Apple's model: \(reason).")
+            throw ExitCode(1)
+        }
+        return OnDeviceTidy.tidier()
     }
 
     /// At most 1 MB of UTF-8 text from `file` or standard input.

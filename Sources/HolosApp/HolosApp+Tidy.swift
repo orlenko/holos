@@ -19,16 +19,17 @@ extension HolosAppDelegate {
             MainActor.assumeIsolated { current.stop() }
         }
         return TidyPane(actions: TidyPane.Actions(
-            tidy: { [weak self] text, completion in
+            tidy: { [weak self] text, engine, completion in
                 guard let self else { return .failure(HolosError.unavailable("Voice is Local is quitting.")) }
-                return self.startTidy(text, run: current, completion: completion)
+                return self.startTidy(text, engine: engine, run: current, completion: completion)
             },
-            install: { [weak self] file, progress, done in
-                self?.runTidyModelSetup(file.map { ["--tidy-model", "--from", $0.path] } ?? ["--tidy-model"],
-                                        progress: progress, done: done) ?? false
+            install: { [weak self] variant, file, progress, done in
+                let arguments = ["--tidy-model", "--model", variant.rawValue] + (file.map { ["--from", $0.path] } ?? [])
+                return self?.runTidyModelSetup(arguments, progress: progress, done: done) ?? false
             },
-            remove: { [weak self] done in
-                self?.runTidyModelSetup(["--remove-tidy-model"], progress: { _ in }, done: done) ?? false
+            remove: { [weak self] variant, done in
+                self?.runTidyModelSetup(["--remove-tidy-model", "--model", variant.rawValue],
+                                        progress: { _ in }, done: done) ?? false
             },
             lastDictation: { [weak self] in
                 guard let self, !self.lastTranscript.isEmpty else { return nil }
@@ -48,7 +49,7 @@ extension HolosAppDelegate {
     }
 
     /// Writes `text` to a private temporary file (0600), which the tool reads and the completion removes.
-    private func startTidy(_ text: String, run current: TidyRun,
+    private func startTidy(_ text: String, engine: TidyCommand.Engine?, run current: TidyRun,
                            completion: @escaping @MainActor (CommandResult<TidyCommand.Outcome>) -> Void)
         -> Result<CommandHandle, Error> {
         guard let commands = meeting.commands else {
@@ -60,7 +61,8 @@ extension HolosAppDelegate {
             return .failure(HolosError.io("the text could not be written to a temporary file"))
         }
         do {
-            let handle = try commands.start(["tidy", "--json", input.url.path], output: "tidy-json",
+            let arguments = ["tidy", "--json"] + (engine.map { ["--model", $0.rawValue] } ?? []) + [input.url.path]
+            let handle = try commands.start(arguments, output: "tidy-json",
                                             errors: "tidy-errors", maxOutputBytes: Self.tidyOutputBytes,
                                             as: TidyCommand.Outcome.self) { result in
                 input.remove()
@@ -98,7 +100,7 @@ extension HolosAppDelegate {
             while !finished.value {
                 if let line = Self.lastLine(output), line.hasPrefix("Tidy Up model:") || line.hasPrefix("Downloading")
                     || line.hasPrefix("Resuming") || line.hasPrefix("Checking") || line.hasPrefix("Copying") {
-                    progress(line.replacingOccurrences(of: "Tidy Up model:", with: "Installing Qwen:"))
+                    progress(line.replacingOccurrences(of: "Tidy Up model:", with: "Installing model:"))
                 }
                 try? await Task.sleep(for: .milliseconds(500))
             }

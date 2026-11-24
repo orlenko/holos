@@ -58,12 +58,17 @@ public struct TextTidier: Sendable {
     public var partWords: Int
     /// Bound on one part's reply.
     public var timeout: Duration
-    private let model: TranscriptFixer.Model
+    private let edit: @Sendable (String) async throws -> String
 
     public init(partWords: Int, timeout: Duration, model: @escaping TranscriptFixer.Model) {
+        self.init(partWords: partWords, timeout: timeout, edit: { try await model(Self.instructions, Self.prompt(for: $0)) })
+    }
+
+    /// For a model that formats its own prompt from an unwrapped part.
+    public init(partWords: Int, timeout: Duration, edit: @escaping @Sendable (String) async throws -> String) {
         self.partWords = max(1, partWords)
         self.timeout = timeout
-        self.model = model
+        self.edit = edit
     }
 
     /// Tidies `text` part by part, in order, calling `progress(done, total)` before each part and once at the end.
@@ -86,12 +91,11 @@ public struct TextTidier: Sendable {
 
     /// `lineBreak`: the given text's line ending ("\r\n" or "\n"), which the edit's lines get too.
     private func tidyPart(_ piece: Piece, lineBreak: String) async -> Part {
-        let model = model
-        let prompt = Self.prompt(for: piece.text)
+        let edit = edit
         func kept(_ reason: String) -> Part {
             Part(original: piece.text, text: piece.text, separator: piece.separator, kept: reason)
         }
-        switch await TranscriptFixer.firstOf(timeout, { try await model(Self.instructions, prompt) }) {
+        switch await TranscriptFixer.firstOf(timeout, { try await edit(piece.text) }) {
         case .timedOut:
             return kept("the model took too long")
         case .failed:

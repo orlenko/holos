@@ -13,29 +13,33 @@ struct TidyPaneTests {
     /// What the fake actions saw.
     final class Calls {
         var tidied: [String] = []
+        var engines: [TidyCommand.Engine?] = []
         var copied: [String] = []
         var installs: [URL?] = []
+        var installedVariants: [TidyModel.Variant] = []
         var completion: (@MainActor (CommandResult<TidyCommand.Outcome>) -> Void)?
     }
 
     static func actions(status: DeepModelStatus, calls: Calls = Calls(), last: String? = nil) -> TidyPane.Actions {
         TidyPane.Actions(
-            tidy: { text, completion in
+            tidy: { text, engine, completion in
                 calls.tidied.append(text)
+                calls.engines.append(engine)
                 calls.completion = completion
                 return .success(CommandHandle())
             },
-            install: { file, _, _ in
+            install: { variant, file, _, _ in
                 calls.installs.append(file)
+                calls.installedVariants.append(variant)
                 return true
             },
-            remove: { _ in true },
+            remove: { _, _ in true },
             lastDictation: { last },
             copy: { text in
                 calls.copied.append(text)
                 return true
             },
-            modelStatus: { status })
+            modelStatus: { _ in status })
     }
 
     static func views<T: NSView>(_ pane: TidyPane, _ type: T.Type) -> [T] {
@@ -47,6 +51,20 @@ struct TidyPaneTests {
     }
 
     static func labels(_ pane: TidyPane) -> [String] { views(pane, NSTextField.self).map(\.stringValue) }
+
+    @Test func explicitModelSelectionReachesBothCleanupAndSetup() throws {
+        let calls = Calls()
+        let pane = TidyPane(actions: Self.actions(status: .notInstalled, calls: calls))
+        try Self.button(pane, "Model Options…").performClick(nil)
+        let picker = try #require(Self.views(pane, NSPopUpButton.self).first)
+        picker.selectItem(withTitle: "S1-mini by Superwhisper (English)")
+        pane.load("A test sentence.")
+        try Self.button(pane, "Tidy Up").performClick(nil)
+        #expect(calls.engines == [.s1Mini])
+        try Self.button(pane, "Cancel").performClick(nil)
+        try Self.button(pane, "Download Model…").performClick(nil)
+        #expect(calls.installedVariants == [.s1Mini])
+    }
 
     @Test(arguments: [CGFloat(400), 900])
     func theEditorFillsThePanelUntilTidyingOpensTwoEqualColumns(width: CGFloat) throws {

@@ -9,6 +9,13 @@ public enum TidyCommand {
         case apple
         /// Qwen3.5 9B through llama.cpp (`QwenTidy`, HolosLlama), once its file is installed (`TidyModel`).
         case qwen
+        case qwen4b
+        case s1Mini = "s1-mini"
+        case muesli
+
+        public var downloadable: TidyModel.Variant? { TidyModel.Variant(rawValue: rawValue) }
+
+        public var displayName: String { downloadable?.displayName ?? "Apple's on-device model" }
     }
 
     public struct Outcome: Sendable, Codable, Equatable {

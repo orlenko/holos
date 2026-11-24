@@ -20,7 +20,7 @@ public enum TidyModel {
     public static let sha256 = "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
     /// Where the file is downloaded from.
     public static var downloadURL: URL {
-        URL(string: "https://huggingface.co/\(repository)/resolve/\(revision)/\(fileName)")!
+        Variant.qwen.downloadURL
     }
 
     /// What a Qwen tidy-up without the model says.
@@ -55,11 +55,7 @@ public enum TidyModel {
     /// `.installed` when the file is in place with the pinned size (its SHA-256 was checked before it was moved
     /// there), `.downloading` while a process holds the install lock, else `.notInstalled`. From the files alone.
     public static func status(root: URL = root) -> DeepModelStatus {
-        if let size = (try? FileManager.default.attributesOfItem(atPath: file(root: root).path))?[.size] as? Int64,
-           size == self.size {
-            return .installed
-        }
-        return lockIsHeld(root: root) ? .downloading : .notInstalled
+        Variant.qwen.status(in: root)
     }
 
     /// Whether some process holds the install lock now (a shared lock cannot be had).

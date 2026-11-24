@@ -11,6 +11,8 @@ import HolosMeeting
 import HolosSpeech
 import HolosSynthesis
 import HolosWhisper
+
+extension TidyModel.Variant: ExpressibleByArgument {}
 import Synchronization
 
 struct Doctor: AsyncParsableCommand {
@@ -106,7 +108,9 @@ struct Setup: AsyncParsableCommand {
     var whisper = false
     @Flag(help: "Download and prepare the natural Reading voices (network; English unless --language fr).")
     var naturalVoices = false
-    @Flag(help: "Download and check Tidy Up's model (network, about 5.7 GB).") var tidyModel = false
+    @Flag(help: "Download and check a Tidy Up model (network).") var tidyModel = false
+    @Option(help: "With --tidy-model or --remove-tidy-model: qwen (default), qwen4b, s1-mini, or muesli.")
+    var model: TidyModel.Variant?
     @Option(help: ArgumentHelp("With --tidy-model: copy this model file, already on this Mac, instead of downloading.",
                                valueName: "file"))
     var from: String?
@@ -125,6 +129,9 @@ struct Setup: AsyncParsableCommand {
             throw ValidationError("Choose one of --speakers, --whisper, --natural-voices, --tidy-model, and --remove-tidy-model.")
         }
         if from != nil && !tidyModel { throw ValidationError("--from applies only with --tidy-model.") }
+        if model != nil && !tidyModel && !removeTidyModel {
+            throw ValidationError("--model applies only with --tidy-model or --remove-tidy-model.")
+        }
         if language != nil && !naturalVoices { throw ValidationError("--language applies only with --natural-voices.") }
         if let language, NaturalVoicePack.allCases.first(where: { $0.languageCode == language }) == nil {
             throw ValidationError("--language must be en or fr.")
@@ -138,17 +145,19 @@ struct Setup: AsyncParsableCommand {
             return
         }
         if tidyModel {
+            let variant = model ?? .qwen
             let source = from.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
             let progress = ProgressPrinter(label: "Tidy Up model")
-            try await TidyModelInstall.setUp(force: force, source: source, notice: { Console.error($0) },
+            try await TidyModelInstall.setUp(variant: variant, force: force, source: source, notice: { Console.error($0) },
                                              progress: progress.report)
-            Console.output(TidyModel.readyMessage)
-            Console.output(TidyModel.creditsLine)
+            Console.output(variant == .qwen ? TidyModel.readyMessage : "Ready: Tidy Up model (\(variant.displayName)).")
+            Console.output(variant == .qwen ? TidyModel.creditsLine : "See THIRD_PARTY_NOTICES.md for model credits.")
             return
         }
         if removeTidyModel {
-            try TidyModelInstall.remove()
-            Console.output("Removed: Tidy Up model.")
+            let variant = model ?? .qwen
+            try TidyModelInstall.remove(variant: variant)
+            Console.output(variant == .qwen ? "Removed: Tidy Up model." : "Removed: \(variant.displayName).")
             return
         }
         if speakers {
