@@ -7,12 +7,12 @@ import HolosMeeting
 /// The main window's Tidy Up section (docs/design.md "Tidy Up"): paste or type a text (or take the last dictation,
 /// or one from History), and a model on this Mac rejoins the sentences a pause split and adds paragraphs, lists and
 /// quotes. The edit shows the words it removed struck through in place and the words it added underlined
-/// (`TidyReview`); Copy Tidied Text copies it, and nothing is ever copied otherwise. The model line at the top says
-/// which model tidies and installs or removes Qwen.
+/// (`TidyReview`); Copy Tidied Text copies it, and nothing is ever copied otherwise.
 ///
 /// Invariants:
 /// 1. One tidy-up or one model change at a time; Cancel stops the tidy-up, and its result is dropped.
 /// 2. The clipboard is written only by Copy Tidied Text, with the edit shown.
+/// 3. The input fills the panel until a tidy-up is requested. Its progress, error or edit belongs to the right pane.
 @MainActor
 final class TidyPane: NSViewController, MainSectionContent {
     struct Actions {
@@ -46,7 +46,12 @@ final class TidyPane: NSViewController, MainSectionContent {
     private let lastButton = NSButton(title: "Last Dictation", target: nil, action: nil)
     private let copyButton = NSButton(title: "Copy Tidied Text", target: nil, action: nil)
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
+    private let resultStatus = NSTextField(wrappingLabelWithString: "")
     private let summaryLabel = NSTextField(wrappingLabelWithString: "")
+    private let spinner = NSProgressIndicator()
+    private let resultPanel = NSStackView()
+    private let modelOptions = NSStackView()
+    private var panelWidths: (full: NSLayoutConstraint, split: NSLayoutConstraint)?
     private var running: CommandHandle?
     /// Counts tidy-ups, so a cancelled one's late result is dropped (invariant 1).
     private var generation = 0
@@ -77,8 +82,6 @@ final class TidyPane: NSViewController, MainSectionContent {
         resultView.isSelectable = false
         inputScroll.borderType = .bezelBorder
         resultScroll.borderType = .bezelBorder
-        inputScroll.heightAnchor.constraint(equalToConstant: 160).isActive = true
-        resultScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
 
         for (button, action) in [(installButton, #selector(install)), (fromFileButton, #selector(installFromFile)),
                                  (removeButton, #selector(remove)), (tidyButton, #selector(tidy)),
@@ -97,53 +100,85 @@ final class TidyPane: NSViewController, MainSectionContent {
         cancelButton.isHidden = true
         copyButton.isEnabled = false
 
-        for label in [modelLabel, statusLabel, summaryLabel] {
+        for label in [modelLabel, statusLabel, resultStatus, summaryLabel] {
             label.font = .systemFont(ofSize: 12)
             label.textColor = .secondaryLabelColor
         }
-        let modelButtons = WrappingRowView(views: [installButton, fromFileButton, removeButton])
-        let inputActions = NSStackView(views: [tidyButton, cancelButton, lastButton])
-        inputActions.spacing = 8
-        let stack = NSStackView(views: [
-            heading("Model"), modelLabel, modelButtons,
-            heading("Text"), inputScroll, inputActions, statusLabel,
-            heading("Tidied"), resultScroll, summaryLabel, copyButton,
-        ])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.setCustomSpacing(22, after: modelButtons)
-        stack.setCustomSpacing(18, after: statusLabel)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        let document = FlippedView()
-        document.translatesAutoresizingMaskIntoConstraints = false
-        document.addSubview(stack)
-        let content = NSScrollView()
-        content.hasVerticalScroller = true
-        content.drawsBackground = false
-        content.documentView = document
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -24),
-            stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 18),
-            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -18),
-            document.widthAnchor.constraint(equalTo: content.contentView.widthAnchor),
-        ])
-        for view in [modelLabel, modelButtons, inputScroll, statusLabel, resultScroll, summaryLabel] {
-            view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        }
-        view = content
+        resultStatus.maximumNumberOfLines = 3
+        view = makeContent(input: inputScroll, result: resultScroll)
         showModel()
-        showResult(nil)
+        resetOutput()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    private func heading(_ title: String) -> NSTextField {
-        let label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 13, weight: .semibold)
-        return label
+    private func makeContent(input: NSScrollView, result: NSScrollView) -> NSView {
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isIndeterminate = true
+        spinner.isDisplayedWhenStopped = false
+        spinner.setAccessibilityLabel("Tidying text")
+        let status = NSStackView(views: [spinner, resultStatus])
+        status.alignment = .centerY
+        spinner.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        spinner.heightAnchor.constraint(equalToConstant: 16).isActive = true
+        resultPanel.orientation = .vertical
+        resultPanel.alignment = .leading
+        for item in [status, result, summaryLabel, copyButton] { resultPanel.addArrangedSubview(item) }
+        for item in [status, result, summaryLabel] {
+            item.widthAnchor.constraint(equalTo: resultPanel.widthAnchor).isActive = true
+        }
+
+        let panels = NSView()
+        for item in [input, resultPanel] {
+            item.translatesAutoresizingMaskIntoConstraints = false
+            panels.addSubview(item)
+            item.topAnchor.constraint(equalTo: panels.topAnchor).isActive = true
+            item.bottomAnchor.constraint(equalTo: panels.bottomAnchor).isActive = true
+        }
+        NSLayoutConstraint.activate([
+            input.leadingAnchor.constraint(equalTo: panels.leadingAnchor),
+            resultPanel.trailingAnchor.constraint(equalTo: panels.trailingAnchor),
+            input.widthAnchor.constraint(equalTo: resultPanel.widthAnchor),
+        ])
+        let full = input.trailingAnchor.constraint(equalTo: panels.trailingAnchor)
+        let split = input.trailingAnchor.constraint(equalTo: resultPanel.leadingAnchor, constant: -16)
+        panelWidths = (full, split)
+
+        let modelButton = NSButton(title: "Model Options…", target: self, action: #selector(toggleModelOptions(_:)))
+        let modelButtons = WrappingRowView(views: [installButton, fromFileButton, removeButton])
+        modelOptions.orientation = .vertical
+        modelOptions.alignment = .leading
+        for item in [modelLabel, modelButtons] {
+            modelOptions.addArrangedSubview(item)
+            item.widthAnchor.constraint(equalTo: modelOptions.widthAnchor).isActive = true
+        }
+        modelOptions.isHidden = true
+        let inputActions = WrappingRowView(views: [tidyButton, cancelButton, lastButton, modelButton])
+        let stack = NSStackView(views: [panels, inputActions, statusLabel, modelOptions])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 720, height: 500))
+        content.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
+        ])
+        for item in [panels, inputActions, statusLabel, modelOptions] {
+            item.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        return content
+    }
+
+    @objc private func toggleModelOptions(_ sender: NSButton) {
+        modelOptions.isHidden.toggle()
+        sender.title = modelOptions.isHidden ? "Model Options…" : "Hide Model Options"
+        (sender.superview as? WrappingRowView)?.viewsChanged()
     }
 
     var preferredFirstResponder: NSView? { inputView }
@@ -155,12 +190,11 @@ final class TidyPane: NSViewController, MainSectionContent {
     /// tidy-up runs, says so and keeps the box.
     func load(_ text: String) {
         guard running == nil else {
-            statusLabel.stringValue = "A tidy-up is running. Cancel it to tidy another text."
+            showInputStatus("A tidy-up is running. Cancel it to tidy another text.")
             return
         }
         inputView.string = text
-        showResult(nil)
-        statusLabel.stringValue = ""
+        resetOutput()
     }
 
     // MARK: - Model
@@ -186,6 +220,7 @@ final class TidyPane: NSViewController, MainSectionContent {
         fromFileButton.isHidden = status == .installed
         removeButton.isHidden = status != .installed
         for button in [installButton, fromFileButton, removeButton] { button.isEnabled = !busy && status != .downloading }
+        (installButton.superview as? WrappingRowView)?.viewsChanged()
         tidyButton.isEnabled = running == nil && installing == nil
     }
 
@@ -258,7 +293,7 @@ final class TidyPane: NSViewController, MainSectionContent {
     @objc private func loadLast() {
         guard running == nil else { return }
         guard let text = actions.lastDictation(), !text.isEmpty else {
-            statusLabel.stringValue = "No dictation since Voice is Local started. History's Tidy Up… opens an earlier one."
+            showInputStatus("No dictation since Voice is Local started. History's Tidy Up… opens an earlier one.")
             return
         }
         load(text)
@@ -267,12 +302,14 @@ final class TidyPane: NSViewController, MainSectionContent {
     @objc private func tidy() {
         let text = inputView.string
         guard running == nil, installing == nil else { return }
+        showInputStatus(nil)
+        setOutputVisible(true)
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            statusLabel.stringValue = "Paste or type a text first, or use Last Dictation."
+            showError("Paste or type a text first, or use Last Dictation.")
             return
         }
         guard text.utf8.count <= Self.maximumBytes else {
-            statusLabel.stringValue = "The text is longer than Tidy Up takes (1 MB). Tidy it in parts."
+            showError("The text is longer than Tidy Up takes (1 MB). Tidy it in parts.")
             return
         }
         generation += 1
@@ -285,11 +322,11 @@ final class TidyPane: NSViewController, MainSectionContent {
         }) {
         case .success(let handle):
             running = handle
-            statusLabel.stringValue = "Tidying with \(model)… A long text takes a minute or more."
             showResult(nil)
+            showResultStatus("Tidying with \(model)…", animating: true)
             setRunning(true)
         case .failure(let error):
-            statusLabel.stringValue = "Cannot tidy: \(error.localizedDescription)"
+            showError("Cannot tidy: \(error.localizedDescription)")
         }
     }
 
@@ -298,7 +335,8 @@ final class TidyPane: NSViewController, MainSectionContent {
         running?.terminate()
         running = nil
         setRunning(false)
-        statusLabel.stringValue = "Cancelled."
+        resetOutput()
+        showInputStatus("Cancelled.")
     }
 
     /// The most text `voiceislocal tidy` takes (`Tidy.maximumBytes`).
@@ -307,14 +345,53 @@ final class TidyPane: NSViewController, MainSectionContent {
     private func setRunning(_ on: Bool) {
         lastButton.isEnabled = !on
         cancelButton.isHidden = !on
+        (cancelButton.superview as? WrappingRowView)?.viewsChanged()
         inputView.isEditable = !on
         showModel()
     }
 
+    private func setOutputVisible(_ visible: Bool) {
+        guard let panelWidths else { return }
+        let (active, inactive) = visible ? (panelWidths.split, panelWidths.full) : (panelWidths.full, panelWidths.split)
+        inactive.isActive = false
+        active.isActive = true
+        resultPanel.isHidden = !visible
+    }
+
+    private func resetOutput() {
+        setOutputVisible(false)
+        showInputStatus(nil)
+        showResultStatus(nil)
+        showResult(nil)
+    }
+
+    private func showInputStatus(_ message: String?) {
+        statusLabel.stringValue = message ?? ""
+        statusLabel.isHidden = message == nil
+    }
+
+    private func showResultStatus(_ message: String?, animating: Bool = false) {
+        resultStatus.stringValue = message ?? ""
+        resultStatus.toolTip = message
+        resultStatus.superview?.isHidden = message == nil
+        spinner.isHidden = !animating
+        if animating { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
+    }
+
+    private func showError(_ message: String) {
+        showResult(nil)
+        showResultStatus(nil)
+        resultView.textStorage?.setAttributedString(NSAttributedString(string: message, attributes: [
+            .font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor,
+        ]))
+        resultView.setAccessibilityValue(message)
+    }
+
     private func finished(_ result: CommandResult<TidyCommand.Outcome>) {
         setRunning(false)
+        showInputStatus(nil)
         guard let outcome = result.outcome else {
-            statusLabel.stringValue = "Not tidied: " + (result.lastErrorLine ?? "the voiceislocal tool stopped (code \(result.code)).")
+            showError("Not tidied: " + (result.lastErrorLine ?? "the voiceislocal tool stopped (code \(result.code))."))
             return
         }
         let total = outcome.parts.count
@@ -322,12 +399,11 @@ final class TidyPane: NSViewController, MainSectionContent {
             part.kept.map { total == 1 ? "The text was left as it was: \($0)." : "Part \(index + 1) of \(total) was left as it was: \($0)." }
         }
         if outcome.nothingTidied {
-            statusLabel.stringValue = kept.joined(separator: " ")
-            showResult(nil)
+            showError(kept.isEmpty ? "The text could not be tidied." : kept.joined(separator: " "))
             return
         }
         let engine = outcome.engine == .qwen ? TidyModel.displayName : "Apple's on-device model"
-        statusLabel.stringValue = (["Tidied with \(engine)."] + kept).joined(separator: " ")
+        showResultStatus((["Tidied with \(engine)."] + kept).joined(separator: " "))
         showResult(TidyReview(text: outcome.text, changes: outcome.changes))
     }
 
@@ -335,6 +411,7 @@ final class TidyPane: NSViewController, MainSectionContent {
     private func showResult(_ review: TidyReview?) {
         self.review = review
         copyButton.isEnabled = review != nil
+        summaryLabel.isHidden = review == nil
         guard let review else {
             resultView.textStorage?.setAttributedString(NSAttributedString(string: ""))
             resultView.setAccessibilityValue("")
@@ -363,7 +440,7 @@ final class TidyPane: NSViewController, MainSectionContent {
 
     @objc private func copyTidied() {
         guard let review, !review.text.isEmpty else { return }
-        statusLabel.stringValue = actions.copy(review.text)
-            ? "Copied the tidied text (without the struck-through words)." : "Clipboard write failed."
+        showInputStatus(actions.copy(review.text)
+            ? "Copied the tidied text (without the struck-through words)." : "Clipboard write failed.")
     }
 }
