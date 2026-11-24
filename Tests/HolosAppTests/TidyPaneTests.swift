@@ -48,6 +48,33 @@ struct TidyPaneTests {
 
     static func labels(_ pane: TidyPane) -> [String] { views(pane, NSTextField.self).map(\.stringValue) }
 
+    @Test(arguments: [CGFloat(400), 900])
+    func theEditorFillsThePanelUntilTidyingOpensTwoEqualColumns(width: CGFloat) throws {
+        let pane = TidyPane(actions: Self.actions(status: .installed))
+        let input = try #require(pane.preferredFirstResponder?.enclosingScrollView)
+        let result = try #require(Self.views(pane, NSTextView.self).first { !$0.isEditable }?.enclosingScrollView)
+        pane.load("One sentence. In two parts.")
+        pane.view.setFrameSize(NSSize(width: width, height: 700))
+        pane.view.layoutSubtreeIfNeeded()
+        #expect(!input.isHiddenOrHasHiddenAncestor)
+        #expect(input.frame.width > width - 50)
+        #expect(input.frame.height > 600)
+        #expect(result.isHiddenOrHasHiddenAncestor)
+
+        try Self.button(pane, "Tidy Up").performClick(nil)
+        pane.view.layoutSubtreeIfNeeded()
+        #expect(!result.isHiddenOrHasHiddenAncestor)
+        #expect(abs(input.frame.width - result.frame.width) <= 1)
+        #expect(input.convert(input.bounds, to: pane.view).maxX < result.convert(result.bounds, to: pane.view).minX)
+        let spinner = try #require(Self.views(pane, NSProgressIndicator.self).first)
+        #expect(spinner.isIndeterminate && !spinner.isHiddenOrHasHiddenAncestor)
+
+        try Self.button(pane, "Cancel").performClick(nil)
+        pane.view.layoutSubtreeIfNeeded()
+        #expect(result.isHiddenOrHasHiddenAncestor)
+        #expect(input.frame.width > width - 50)
+    }
+
     @Test func aResultShowsRemovedWordsStruckAndCopyIsOnlyOnThePress() throws {
         let calls = Calls()
         let pane = TidyPane(actions: Self.actions(status: .installed, calls: calls))
@@ -84,19 +111,24 @@ struct TidyPaneTests {
         ], changes: [])
         let completion = try #require(calls.completion)
         completion(CommandResult(code: 1, outcome: outcome))
-        #expect(Self.labels(pane).contains("The text was left as it was: the model left out too many words."))
+        let result = try #require(Self.views(pane, NSTextView.self).first { !$0.isEditable })
+        #expect(!result.isHiddenOrHasHiddenAncestor)
+        #expect(result.string == "The text was left as it was: the model left out too many words.")
+        #expect(!Self.views(pane, NSProgressIndicator.self).contains { !$0.isHiddenOrHasHiddenAncestor })
         #expect(try !Self.button(pane, "Copy Tidied Text").isEnabled)
     }
 
     @Test func theModelLineOffersQwenUntilItIsInstalled() throws {
         let calls = Calls()
         let pane = TidyPane(actions: Self.actions(status: .notInstalled, calls: calls))
+        try Self.button(pane, "Model Options…").performClick(nil)
         #expect(try !Self.button(pane, "Install Qwen…").isHidden)
         #expect(try Self.button(pane, "Remove Qwen…").isHidden)
         try Self.button(pane, "Install Qwen…").performClick(nil)
         #expect(calls.installs == [nil])
 
         let installed = TidyPane(actions: Self.actions(status: .installed))
+        try Self.button(installed, "Model Options…").performClick(nil)
         #expect(try Self.button(installed, "Install Qwen…").isHidden)
         #expect(try !Self.button(installed, "Remove Qwen…").isHidden)
     }
@@ -118,7 +150,8 @@ struct TidyPaneTests {
         pane.load(String(repeating: "word ", count: 210_000))
         try Self.button(pane, "Tidy Up").performClick(nil)
         #expect(calls.tidied.isEmpty)
-        #expect(Self.labels(pane).contains { $0.hasPrefix("The text is longer than Tidy Up takes") })
+        let result = try #require(Self.views(pane, NSTextView.self).first { !$0.isEditable })
+        #expect(result.string.hasPrefix("The text is longer than Tidy Up takes"))
     }
 
     @Test func historysTidyUpWhileATidyUpRunsSaysSoAndKeepsTheBox() throws {
@@ -136,6 +169,7 @@ struct TidyPaneTests {
 
     @Test func tidyUpWaitsWhileQwenInstalls() throws {
         let pane = TidyPane(actions: Self.actions(status: .notInstalled))
+        try Self.button(pane, "Model Options…").performClick(nil)
         try Self.button(pane, "Install Qwen…").performClick(nil)
         #expect(try !Self.button(pane, "Tidy Up").isEnabled)
     }
