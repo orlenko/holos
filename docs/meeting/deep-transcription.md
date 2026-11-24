@@ -438,3 +438,11 @@ is ready. Measuring the vocabulary terms the pass gets
 right against a cloud reference on more meetings (`eval local --backend whisper`, then `eval
 compare`), now that the prompt is checked chunk by chunk. Upstream reports for the three
 WhisperKit prompt problems worked around here.
+
+**Parakeet Ultra comparison.** Meetings › ··· › Compare Recognition… offers Compare and Download & Compare.
+The latter runs `voiceislocal setup --parakeet` to install about 632 MB from the pinned Fluid Inference
+Core ML repository. Compare runs `voiceislocal session compare-recognition <session> --json`.
+The command accepts a finished meeting with saved audio and one of the model’s 25 languages. It reads
+the current transcript, renders each track outside the archive, and runs Parakeet locally with the
+meeting language’s script filter and an empty vocabulary prompt. The result shows the saved words
+beside the candidate, grouped by track. Only the comparison dialog or command output receives it.

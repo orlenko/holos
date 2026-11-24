@@ -24,7 +24,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.1"),
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.3"),
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", exact: "1.1.0"),
         .package(url: "https://github.com/sparkle-project/Sparkle.git", exact: "2.10.0"),
     ],
@@ -134,7 +134,7 @@ let package = Package(
         .testTarget(name: "HolosLlamaTests", dependencies: ["HolosLlama", "HolosCore"]),
         .testTarget(name: "HolosPocketTests", dependencies: ["HolosPocket", "HolosSynthesis", "HolosCore", "HolosTestSupport"]),
         .testTarget(name: "HolosDiarizationTests", dependencies: [
-            "HolosDiarization", "HolosSpeakers", "HolosSynthesis", "HolosAudio", "HolosCore",
+            "HolosDiarization", "HolosSpeakers", "HolosSynthesis", "HolosAudio", "HolosCore", "HolosTestSupport",
         ]),
     ],
     swiftLanguageModes: [.v6]

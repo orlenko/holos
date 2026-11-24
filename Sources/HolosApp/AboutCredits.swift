@@ -14,8 +14,8 @@ enum AboutCredits {
     }
 
     static let fluidAudio = """
-        Speaker labels are made by the bundled voiceislocal tool with FluidAudio 0.17.1 \
-        (https://github.com/FluidInference/FluidAudio, tag v0.17.1, commit 5c51c5c9), licensed under the Apache \
+        Speaker labels are made by the bundled voiceislocal tool with FluidAudio 0.17.3 \
+        (https://github.com/FluidInference/FluidAudio, tag v0.17.3, commit a6b826ce), licensed under the Apache \
         License 2.0. The Voice is Local app does not link FluidAudio or include the models; see THIRD_PARTY_NOTICES.md for the \
         full license texts.
         """
@@ -57,6 +57,12 @@ enum AboutCredits {
         `voiceislocal setup --whisper` and not included in the app; see THIRD_PARTY_NOTICES.md.
         """
 
+    static let parakeet = """
+        Meeting recognition comparison uses moondream’s Parakeet Ultra in Fluid Inference’s Core ML conversion
+        (https://huggingface.co/FluidInference/parakeet-ultra-coreml), CC BY 4.0
+        (https://creativecommons.org/licenses/by/4.0/). Downloaded separately by voiceislocal setup --parakeet.
+        """
+
     static let pocket = """
         Natural Reading voices are made by the bundled voiceislocal tool with Pocket TTS by Kyutai \
         (https://huggingface.co/kyutai/pocket-tts), licensed under the Creative Commons Attribution 4.0 International \
@@ -79,7 +85,7 @@ enum AboutCredits {
     }
 
     static var text: String {
-        ([buildIdentity].compactMap { $0 } + [license, fluidAudio, readability, models, whisper, pocket])
+        ([buildIdentity].compactMap { $0 } + [license, fluidAudio, readability, models, whisper, pocket, parakeet])
             .joined(separator: "\n\n")
     }
 

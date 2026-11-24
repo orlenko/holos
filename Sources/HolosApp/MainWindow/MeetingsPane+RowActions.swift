@@ -10,6 +10,8 @@ extension MeetingsPane {
     func rowActions(_ summary: SessionSummary) -> Set<MeetingRowActionsView.Kind> {
         var kinds: Set<MeetingRowActionsView.Kind> = [.open, .copyPath]
         if summary.transcriptID != nil { kinds.insert(.view) }
+        if SessionCompareRecognitionCommand.finished(summary.manifestStatus), summary.chunkCount > 0,
+           !summary.audioDeleted, !isBusy(summary) { kinds.insert(.compare) }
         let allowed = MeetingActionPolicy.enabled(summary, inUse: isBusy(summary), hasExport: false, transcriptFiles: false)
         if allowed.contains(.deleteAudio) { kinds.insert(.deleteAudio) }
         if allowed.contains(.deleteMeeting) { kinds.insert(.deleteMeeting) }
@@ -49,6 +51,10 @@ extension MeetingsPane {
                 table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
             }
             showLive(sessionID: summary.id, directory: summary.directory)
+        case .compare:
+            guard rowActions(summary).contains(.compare), let window = view.window,
+                  let app = NSApp.delegate as? HolosAppDelegate else { return NSSound.beep() }
+            app.compareRecognition(summary, in: window)
         case .view:
             let url = SessionPaths.export("md", in: summary.directory)
             guard Self.isRegularFile(url) else { return NSSound.beep() }

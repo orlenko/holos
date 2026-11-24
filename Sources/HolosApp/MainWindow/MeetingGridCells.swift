@@ -201,12 +201,13 @@ final class MeetingTableRowView: NSTableRowView {
 @MainActor
 final class MeetingRowActionsView: NSTableCellView, IdentifiedCell {
     enum Kind: CaseIterable {
-        case open, view, copyPath, deleteAudio, deleteMeeting
+        case open, view, compare, copyPath, deleteAudio, deleteMeeting
 
         var title: String {
             switch self {
             case .open: "Open"
             case .view: "View Transcript"
+            case .compare: "Compare Recognition…"
             case .copyPath: "Copy Path"
             case .deleteAudio: "Delete Audio…"
             case .deleteMeeting: "Delete Meeting…"
@@ -217,6 +218,7 @@ final class MeetingRowActionsView: NSTableCellView, IdentifiedCell {
             switch self {
             case .open: "Opens the meeting, where you name its speakers and correct the transcript."
             case .view: "Opens the Markdown transcript in your Markdown app."
+            case .compare: "Compares the current words with Parakeet Ultra on the saved audio."
             case .copyPath: "Copies the path of the meeting's folder."
             case .deleteAudio: "Deletes the meeting's audio for good; the transcript and speaker names stay."
             case .deleteMeeting: "Moves the meeting's folder to the Trash."

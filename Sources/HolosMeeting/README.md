@@ -23,6 +23,8 @@ recorder ↔ app protocol.
   language, word-fix, live-hint and deep-transcription stages, `TranscriptPublisher` (the one path that makes a new
   transcript current, used by those stages and Review's word edits), `SessionExports`, `SpeakerSessionSnapshot`, and
   the library side of the `voiceislocal session …` commands (`Session*Command`).
+- `SessionCompareRecognitionCommand` takes a read-only snapshot of a finished meeting, renders each track into
+  private temporary storage, and returns candidate text alongside the current transcript.
 - `Review/`: `ReviewSession` (`@MainActor`; its value types in `ReviewSessionTypes`, among them `ReviewRevision`,
   what the window showed when the person acted; loading in `+Loading`; when `exports/` is rewritten in
   `ReviewExportScheduler`), playback, learning, paragraphs, maintenance.

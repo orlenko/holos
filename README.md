@@ -341,6 +341,8 @@ language anyway, as an experiment:
 
 ```sh
 voiceislocal setup --whisper                       # download and check the model (resumes if interrupted)
+voiceislocal setup --parakeet                     # optional Parakeet Ultra model (about 632 MB)
+voiceislocal session compare-recognition <session> # show current and candidate words separately
 voiceislocal session deep-transcribe <session>     # transcribe a finished meeting again
 voiceislocal session deep-transcribe <session> --force   # again, or over edited speaker labels
 voiceislocal session deep-transcribe <session> --any-language   # a meeting in another language (experimental)
@@ -492,7 +494,7 @@ or more words that repeats it up to 1 s later; the words are listed in the run's
 nothing is dropped), and with others in the room a microphone speaker who is at least
 60 % echo is hidden. Speaker
 labels need the models from
-`voiceislocal setup --speakers` (FluidAudio 0.17.1, run offline; `voiceislocal doctor` reports
+`voiceislocal setup --speakers` (FluidAudio 0.17.3, run offline; `voiceislocal doctor` reports
 them as verified, not installed, or damaged). Without them the recording is saved
 with speaker-less transcript files and a hint to install them. The results are
 read-only generated files in the session's `exports/`: `transcript.md`,

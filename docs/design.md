@@ -883,7 +883,7 @@ another app holds the chord.
 ### Natural voices
 
 Reading can use natural (neural) voices besides Apple's: Kyutai's Pocket TTS (CC BY 4.0) in Fluid Inference's
-Core ML conversion, run with FluidAudio 0.17.1 (the version the app already pins). Voice identifiers are
+Core ML conversion, run with FluidAudio 0.17.3 (the version the app already pins). Voice identifiers are
 `pocket:<language>:<voice>` (`pocket:en:alba`, `pocket:fr:estelle`); `NaturalVoiceCatalog` (HolosSynthesis) lists
 them with the licence of the recording each voice prompt was made from (the Pocket TTS model card maps voices to
 recordings; https://huggingface.co/kyutai/tts-voices gives their licences). Only voices whose recording allows
@@ -1707,7 +1707,9 @@ screen, where speakers are named. The ··· holds View Transcript (exports/tran
 opens Markdown; off without a saved transcript, and a beep when the file is missing), Copy Path (the
 meeting's folder, for an agent or Terminal), and Delete Audio… and Delete Meeting… (off when
 `MeetingActionPolicy` refuses them, for example while the meeting records or is worked on, or for
-Delete Audio… with no audio). Their states come from the catalog read, so drawing a row reads no files.
+Delete Audio… with no audio). Compare Recognition… opens the Parakeet Ultra comparison for a finished
+meeting with saved audio. Download & Compare installs the optional model. Compare runs locally and
+displays the current transcript alongside the candidate, grouped by audio track. Their states come from the catalog read, so drawing a row reads no files.
 VoiceOver offers the same actions on every row, as custom actions of its name, and names the meeting
 on each row's Open and ···. Where
 the list is narrower than 470 points (beside a call's window) the When and

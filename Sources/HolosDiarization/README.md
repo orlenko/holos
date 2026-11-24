@@ -10,14 +10,17 @@ it; the app runs diarization in a `voiceislocal` process.
 - `FluidModels`: where the speaker models live (`<supportRoot>/Models/speaker-diarization-coreml@<revision>`), their
   install status, installing them (`voiceislocal setup --speakers`), and verifying them against `PinnedModels`
   (every file's size and SHA-256 at the pinned revision; `ModelTreeDigest`).
+- `ParakeetModels` and `ParakeetTranscriber` install and run Parakeet Ultra for read-only meeting comparison.
+  Setup stages the pinned revision under the model install lock and checks every file before loading and publishing.
+  Inference verifies the installed tree and uses `AsrModels.loadLocal`.
 - `Int16CAFSampleSource`: feeds a rendered 16 kHz track to FluidAudio. `HolosPaths.models`.
 
 **Must not own:** speaker turns, alignment, names or exports (`HolosSpeakers`, `HolosMeeting`), session files.
 
-**Depends on:** HolosCore. FluidAudio (pinned at 0.17.1 in `Package.swift`), CryptoKit, Accelerate.
+**Depends on:** HolosCore. FluidAudio (pinned at 0.17.3 in `Package.swift`), CryptoKit, Accelerate.
 
 **Invariants**
-- FluidAudio is imported only in `FluidDiarizer.swift`, `FluidModels.swift` and `Int16CAFSampleSource.swift`.
+- FluidAudio is imported only in `FluidDiarizer.swift`, `FluidModels.swift`, `Int16CAFSampleSource.swift` and the Parakeet adapter and installer.
   This target never imports HolosSpeakers: FluidAudio's `WordTiming` and `AudioSource` clash with Holos types, so
   write `HolosCore.AudioSource` where both are visible (`docs/conventions.md §1.1`).
 - Models that are missing or fail verification make `diarize` throw; nothing downloads during a diarization.

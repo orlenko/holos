@@ -18,7 +18,7 @@ only `HolosCLI` links it; the app renders natural parts through `voiceislocal sa
 **Must not own:** which voices are offered and their licences (`NaturalVoiceCatalog`), the install folder, marker
 and lock (`NaturalVoiceModels`), paragraphs, checks and files (`NaturalSpeechRenderer`), anything the app links.
 
-**Depends on:** HolosCore, HolosSynthesis. FluidAudio (pinned at 0.17.1 in `Package.swift`).
+**Depends on:** HolosCore, HolosSynthesis. FluidAudio (pinned at 0.17.3 in `Package.swift`).
 
 **Invariants**
 - Every request names the reviewed commit, never `main`: the listing, FluidAudio's downloads (its revision

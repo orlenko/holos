@@ -8,16 +8,24 @@ app does not link FluidAudio, WhisperKit, or llama.cpp or include the models; it
 transcription, natural voices, and Tidy Up through the `voiceislocal` tool, and carries `llama.framework` in
 `Contents/Frameworks` only for that tool. The app itself includes Sparkle, which installs its updates (section 7).
 
-## 1. FluidAudio 0.17.1
+## 1. FluidAudio 0.17.3
 
-- Source: https://github.com/FluidInference/FluidAudio, tag v0.17.1, commit
-  `5c51c5c93afff0d89594a2a93c3103e790ba648c`.
+- Source: https://github.com/FluidInference/FluidAudio, tag v0.17.3, commit
+  `a6b826ce9a09028fc685a4b32a8927ec920c3188`.
 - License: Apache License 2.0; the full text of the checkout's `LICENSE` follows.
 - Voice is Local uses its offline speaker diarization (`OfflineDiarizerManager`) and, for natural voices, its NeMo
   text normalizer (`NemoTextNormalizer`, from the NemoTextProcessing binary below). The files of its
   `ThirdPartyLicenses/` folder follow the license verbatim: the VBx port (Apache 2.0), fastcluster
   (BSD-2-clause style), the prebuilt NemoTextProcessing binary v0.3.1 that FluidAudio links by default
   (Apache 2.0), and the text-frontend notices that ship in the same module.
+
+### Optional Parakeet Ultra model
+
+`voiceislocal setup --parakeet` downloads Fluid Inference’s Core ML conversion of
+[moondream/parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra), based on NVIDIA Parakeet TDT 0.6B v3.
+The conversion includes an int8 encoder. The model is distributed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+[Model and pinned revision](https://huggingface.co/FluidInference/parakeet-ultra-coreml/tree/95eaa59a39d4394f047a4dc5cce480388a60d1b6).
 
 ### FluidAudio `LICENSE`
 
@@ -992,7 +1000,7 @@ Natural voices use Kyutai's Pocket TTS (https://huggingface.co/kyutai/pocket-tts
 the Creative Commons Attribution 4.0 International License (CC BY 4.0, https://creativecommons.org/licenses/by/4.0/),
 in Fluid Inference's Core ML conversion from https://huggingface.co/FluidInference/pocket-tts-coreml (CC BY 4.0,
 "Attribution to Kyutai is required"; revision 91748676fe3c8b2eb3007b3125253bcd898202c3 on 2026-10-08), run with
-FluidAudio 0.17.1. The English (`v2.1/english`) and French (`v2.1/french_24l`) packs are downloaded by
+FluidAudio 0.17.3. The English (`v2.1/english`) and French (`v2.1/french_24l`) packs are downloaded by
 `voiceislocal setup --natural-voices` and not included in the app. The models were converted to Core ML; no other
 change was made to them. Voices that the app does not offer are deleted from the downloaded packs.
 

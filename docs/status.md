@@ -87,7 +87,7 @@ timeline and a larger local-model benchmark are follow-ups.
   connect, and refuses to start without it or with the lid closed. A call records the
   system default input, follows a change of it with an "audio restarted" gap, and
   records system audio alone when there is no input device.
-- Speaker labels (wave 2): `HolosDiarization` runs FluidAudio 0.17.1's offline
+- Speaker labels (wave 2): `HolosDiarization` runs FluidAudio 0.17.3's offline
   diarizer (pyannote Community-1 segmentation, WeSpeaker embeddings, VBx clustering),
   fully offline, one track at a time. `setup --speakers` downloads the pinned models
   (about 21 MB, every file checked by SHA-256, load-checked before use; `--force`
@@ -577,7 +577,7 @@ timeline and a larger local-model benchmark are follow-ups.
   `.m4a`, the bar's drag rules and the window's highlight are unit-tested, and the views were checked rendered offscreen;
   dragging the bar in the real list and how closely the highlight tracks a voice by ear are still to check.
 - Natural voices (docs/design.md "Natural voices"): Reading can use Kyutai's Pocket TTS through
-  FluidAudio 0.17.1, rendered by the bundled `voiceislocal say` (the app does not link
+  FluidAudio 0.17.3, rendered by the bundled `voiceislocal say` (the app does not link
   FluidAudio). `voiceislocal setup --natural-voices [--language fr]` or Settings › Reading
   (Download with the size, progress, Cancel, failure shown) installs a pack into
   `Application Support/Holos/Models/pocket-tts` (English about 530 MB, French about 1.9 GB) and

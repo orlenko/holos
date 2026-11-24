@@ -256,7 +256,7 @@ Adapter rules:
   `windows` (`embedding256`); `timings.totalProcessingSeconds` → `processingSeconds`.
   These vectors stay in memory; only the post-processor decides whether any are
   persisted (docs/meeting/people-voice.md §4.10).
-- **engineInfo():** engine `FluidAudio.OfflineDiarizerManager`, version `0.17.1`, one
+- **engineInfo():** engine `FluidAudio.OfflineDiarizerManager`, version `0.17.3`, one
   `ModelDescriptor(id: FluidModels.repository, revision:, sha256: <tree digest>)`,
   `embeddingModel = EmbeddingModelID(id: "FluidInference/speaker-diarization-coreml/Embedding.mlmodelc",
   revision: FluidModels.revision)`, dimension 256, flattened configuration.
@@ -266,8 +266,8 @@ Adapter rules:
   merging quieter or briefer speakers into others. The review window's New Speaker,
   split, and Find More Speakers tools matter more than merge (PR9).
 - **License and credits.** PR7a writes `THIRD_PARTY_NOTICES.md` at the repo root:
-  1. FluidAudio 0.17.1 (`https://github.com/FluidInference/FluidAudio`, tag v0.17.1,
-     commit `5c51c5c9`): Apache License 2.0, with the full text of the checkout's
+  1. FluidAudio 0.17.3 (`https://github.com/FluidInference/FluidAudio`, tag v0.17.3,
+     commit `a6b826ce`): Apache License 2.0, with the full text of the checkout's
      `LICENSE`, and every file in its `ThirdPartyLicenses/` folder verbatim (VBx port,
      Apache 2.0; fastcluster, BSD-2-clause style; NemoTextProcessing binary v0.3.1,
      Apache 2.0; and the text-frontend notices that ship in the same module).

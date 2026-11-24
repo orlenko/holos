@@ -154,7 +154,7 @@ struct MeetingsPaneGridTests {
         let index = try #require(pane.rowIndex(of: second.id))
         let name = try #require(pane.table.view(atColumn: 0, row: index, makeIfNecessary: true))
         let actions = name.accessibilityCustomActions() ?? []
-        #expect(actions.map(\.name) == ["Open", "View Transcript", "Copy Path", "Delete Audio…", "Delete Meeting…"])
+        #expect(actions.map(\.name) == ["Open", "View Transcript", "Compare Recognition…", "Copy Path", "Delete Audio…", "Delete Meeting…"])
         _ = actions.last?.handler?()
         #expect(performed.first?.0 == .deleteMeeting && performed.first?.1 == second.id, "Unselected: its own meeting.")
         let cell = try Self.actions(pane, second.id)

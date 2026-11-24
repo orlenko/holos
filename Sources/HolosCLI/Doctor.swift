@@ -106,6 +106,7 @@ struct Setup: AsyncParsableCommand {
     @Flag(help: "Download and verify the speaker models used to label speakers (network).") var speakers = false
     @Flag(help: "Download and check the deep transcription model used after meetings (network, about 1.6 GB).")
     var whisper = false
+    @Flag(help: "Download and verify Parakeet Ultra for meeting comparison (about 632 MB).") var parakeet = false
     @Flag(help: "Download and prepare the natural Reading voices (network; English unless --language fr).")
     var naturalVoices = false
     @Flag(help: "Download and check a Tidy Up model (network).") var tidyModel = false
@@ -117,16 +118,16 @@ struct Setup: AsyncParsableCommand {
     @Flag(help: "Delete Tidy Up's model and any unfinished download.") var removeTidyModel = false
     @Option(help: ArgumentHelp("With --natural-voices: en (the default) or fr.", valueName: "language"))
     var language: String?
-    @Flag(help: "With --speakers, --whisper, --natural-voices, or --tidy-model: download and install the models again even when they are installed.")
+    @Flag(help: "With --speakers, --whisper, --parakeet, --natural-voices, or --tidy-model: download and install the models again even when they are installed.")
     var force = false
 
     func validate() throws {
-        let chosen = [speakers, whisper, naturalVoices, tidyModel, removeTidyModel].filter { $0 }.count
+        let chosen = [speakers, whisper, parakeet, naturalVoices, tidyModel, removeTidyModel].filter { $0 }.count
         if force && (chosen == 0 || removeTidyModel) {
-            throw ValidationError("--force applies only with --speakers, --whisper, --natural-voices, or --tidy-model.")
+            throw ValidationError("--force applies only with --speakers, --whisper, --parakeet, --natural-voices, or --tidy-model.")
         }
         if chosen > 1 {
-            throw ValidationError("Choose one of --speakers, --whisper, --natural-voices, --tidy-model, and --remove-tidy-model.")
+            throw ValidationError("Choose one of --speakers, --whisper, --parakeet, --natural-voices, --tidy-model, and --remove-tidy-model.")
         }
         if from != nil && !tidyModel { throw ValidationError("--from applies only with --tidy-model.") }
         if model != nil && !tidyModel && !removeTidyModel {
@@ -139,6 +140,11 @@ struct Setup: AsyncParsableCommand {
     }
 
     mutating func run() async throws {
+        if parakeet {
+            try await ParakeetModels.setUp(force: force, progress: ProgressPrinter(label: "Parakeet Ultra").report)
+            Console.output("Parakeet Ultra is ready.")
+            return
+        }
         if naturalVoices {
             let pack = NaturalVoicePack.allCases.first { $0.languageCode == (language ?? "en") } ?? .english
             try await NaturalVoiceSetup.run(pack: pack, force: force)

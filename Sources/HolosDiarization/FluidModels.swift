@@ -322,16 +322,17 @@ public enum FluidModels {
     /// Runs `body` with a fresh, empty "<directory>.partial-<UUID>" folder under the install lock for `directory`,
     /// and removes that folder afterwards whatever happens (after a successful publish it holds the replaced
     /// install, if any). Leftover partial folders of an earlier, killed install are removed first.
-    private static func withStagingFolder<T>(for directory: URL, _ body: (URL) async throws -> T) async throws -> T {
+    static func withStagingFolder<T>(for directory: URL, setupFlag: String = "--speakers",
+                                     _ body: (URL) async throws -> T) async throws -> T {
         let parent = directory.deletingLastPathComponent()
         try ensurePrivateDirectory(parent)
-        let lock = try InstallLock(folder: parent, name: directory.lastPathComponent)
+        let lock = try InstallLock(folder: parent, name: directory.lastPathComponent, setupFlag: setupFlag)
         defer { lock.release() }
         removeLeftovers(of: directory)
         let partial = parent.appendingPathComponent(directory.lastPathComponent + ".partial-" + UUID().uuidString,
                                                     isDirectory: true)
         guard mkdir(partial.path, 0o700) == 0 else {
-            throw HolosError.io("Cannot create a folder for the speaker-model download in \(parent.path).")
+            throw HolosError.io("Cannot create a model staging folder in \(parent.path).")
         }
         defer { removeTree(partial) }
         return try await body(partial)
@@ -373,7 +374,7 @@ public enum FluidModels {
 
     enum MarkerState: Equatable { case missing, matches, differs }
 
-    static func readMarker(in repo: URL) -> MarkerState {
+    static func readMarker(in repo: URL, revision: String = revision) -> MarkerState {
         let (fd, code) = FileDigest.openBeneath(repo, relativePath: revisionMarkerName)
         guard fd >= 0 else { return code == ENOENT ? .missing : .differs }
         defer { close(fd) }
@@ -407,14 +408,14 @@ public enum FluidModels {
 
     /// Moves the verified `partial` folder to `directory` in one rename: exclusive when nothing is there, else an
     /// atomic swap with the old install (which then sits at `partial` and is removed by the caller).
-    private static func publish(_ partial: URL, to directory: URL) throws {
+    static func publish(_ partial: URL, to directory: URL) throws {
         var moved = renamex_np(partial.path, directory.path, UInt32(RENAME_EXCL)) == 0
         if !moved, errno == EEXIST {
             moved = renamex_np(partial.path, directory.path, UInt32(RENAME_SWAP)) == 0
         }
         guard moved else {
             let reason = String(cString: strerror(errno))
-            throw HolosError.io("Cannot move the speaker models into \(directory.path): \(reason).")
+            throw HolosError.io("Cannot move the verified models into \(directory.path): \(reason).")
         }
         let parent = open(directory.deletingLastPathComponent().path, O_RDONLY | O_CLOEXEC | O_DIRECTORY)
         if parent >= 0 {
@@ -438,7 +439,7 @@ public enum FluidModels {
         do {
             try FileManager.default.removeItem(at: url)
         } catch {
-            log.error("Could not remove a speaker-model staging folder")
+            log.error("Could not remove a model staging folder")
         }
     }
 }
@@ -447,19 +448,19 @@ public enum FluidModels {
 private final class InstallLock {
     private let fd: Int32
 
-    init(folder: URL, name: String) throws {
+    init(folder: URL, name: String, setupFlag: String) throws {
         let path = folder.appendingPathComponent("." + name + ".install.lock").path
         fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
-        guard fd >= 0 else { throw HolosError.io("Cannot open the speaker-model install lock in \(folder.path).") }
+        guard fd >= 0 else { throw HolosError.io("Cannot open the model install lock in \(folder.path).") }
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
             let code = errno
             close(fd)
             if code == EWOULDBLOCK {
                 throw HolosError.unavailable(
-                    "Speaker models are being installed by another voiceislocal setup --speakers; wait for it to finish, "
+                    "Models are being installed by another voiceislocal setup \(setupFlag); wait for it to finish, "
                         + "then try again.")
             }
-            throw HolosError.io("Cannot lock the speaker-model install lock in \(folder.path).")
+            throw HolosError.io("Cannot lock the model install lock in \(folder.path).")
         }
     }
 
