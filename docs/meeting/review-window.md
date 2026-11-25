@@ -138,7 +138,14 @@ public enum SessionAudioComposition {
   following it, word-fix underlines, tooltips and Revert, VoiceOver's per-word actions.
   Assigning a row (its pop-up, Assign to…, 1–9, New Speaker…) gives every turn of the
   selected rows in one change, so one Undo restores them. Search shows the rows with a
-  matching turn, whole; Next Uncertain goes to the row of the next uncertain turn after
+  matching turn, whole. The row and toolbar menus show **Often here together** when a confirmed person other
+  than you shares at least two other saved meetings with a person who is not already shown in this meeting.
+  This uses distinct meeting IDs from saved voice samples while Remember voices and the person's suggestions
+  are on. It gives up to five
+  suggestions, ordered by the number of matching confirmed people and then by the proportion of shared meetings.
+  Automatic names do not anchor the list. The speaker name field puts the same names first, and the menus
+  and field keep their usual choices available. This ordering does not assign names or change voice matching.
+  Next Uncertain goes to the row of the next uncertain turn after
   the selected rows' last turn and plays from that turn. Split Turn on a row offers its
   words: a word inside a turn splits that turn there (a `splitTurn` edit, undone as any
   other; its second part starts a row), and a word that already starts a turn only

@@ -97,6 +97,7 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private var hints: [String: MeetingTurnHint] = [:]
     private var speakers: [ProjectedSpeaker] = []
     private var people: [SpeakerProfile] = []
+    private(set) var suggestedPeople: [String] = []
     private(set) var editable = true
     private var text: (ProjectedTurn) -> String = { _ in "" }
     private(set) var words: (ProjectedTurn) -> [ReviewWord] = { _ in [] }
@@ -199,7 +200,8 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// Shows `paragraphs`, keeping the selected turns' rows selected (by turn ID, after `resolve`; never a row that
     /// took in turns that were not selected) and reloading only what changed when the rows are the same paragraphs.
     func update(paragraphs newParagraphs: [ReviewParagraph], speakers newSpeakers: [ProjectedSpeaker],
-                people newPeople: [SpeakerProfile], editable newEditable: Bool,
+                people newPeople: [SpeakerProfile], suggestedPeople newSuggestedPeople: [String] = [],
+                editable newEditable: Bool,
                 hints newHints: [String: MeetingTurnHint] = [:], text: @escaping (ProjectedTurn) -> String,
                 words: @escaping (ProjectedTurn) -> [ReviewWord], resolve: (String) -> String,
                 wordMoves newWordMoves: [ReviewWordMove] = []) {
@@ -217,6 +219,7 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         hints = newHints
         let menusChanged = newSpeakers != speakers || newPeople.map(\.id) != people.map(\.id)
             || newPeople.map(\.displayName) != people.map(\.displayName) || newEditable != editable
+            || newSuggestedPeople != suggestedPeople
         paragraphs = newParagraphs
         var rows: [String: Int] = [:]
         for (row, paragraph) in newParagraphs.enumerated() {
@@ -225,6 +228,7 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         rowOf = rows
         speakers = newSpeakers
         people = newPeople
+        suggestedPeople = newSuggestedPeople
         editable = newEditable
         self.text = text
         self.words = words
@@ -376,7 +380,7 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         let hint = Self.hint(of: paragraph, in: hints)
         cell.configure(paragraph: paragraph, text: text(of: paragraph), words: paragraph.turns.flatMap(words),
                        menu: (hint.map { AssignMenu.suggestion($0, in: paragraph) } ?? [])
-                           + AssignMenu.items(speakers: speakers, people: people),
+                           + AssignMenu.items(speakers: speakers, people: people, suggested: suggestedPeople),
                        editable: editable, hint: hint)
         let playing = paragraph.id == playingParagraphID
         cell.setPlaying(playing, word: playing ? playingWord : nil)

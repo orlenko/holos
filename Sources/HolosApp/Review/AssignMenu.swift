@@ -23,30 +23,41 @@ final class HintChoice: NSObject {
     init(turnID: String) { self.turnID = turnID }
 }
 
-/// The items of a speaker menu: the meeting's speakers, the known people without a speaker in it, "Unknown", and
-/// "New Speaker…". Menu items are made directly (never by title), so two speakers with one name stay apart.
+/// The items of a speaker menu: the meeting's speakers, frequent companions and other known people,
+/// "Unknown", and "New Speaker…". Items carry their target ID, so people with the same name stay apart.
 @MainActor
 enum AssignMenu {
-    static func items(speakers: [ProjectedSpeaker], people: [SpeakerProfile], unknownTitle: String = "Unknown")
-        -> [NSMenuItem] {
+    static func items(speakers: [ProjectedSpeaker], people: [SpeakerProfile], suggested: [String] = [],
+                      unknownTitle: String = "Unknown") -> [NSMenuItem] {
         var items: [NSMenuItem] = []
         for speaker in speakers {
             items.append(item(title(of: speaker), .target(.speaker(speaker.id))))
         }
         let linked = Set(speakers.compactMap(\.profileID))
         let others = people.filter { !linked.contains($0.id) }
-        if !others.isEmpty {
-            items.append(.separator())
-            items.append(.sectionHeader(title: "People"))
-            for person in others {
-                items.append(item(person.displayName + (person.isSelf ? " (you)" : ""),
-                                  .target(.person(profileID: person.id))))
-            }
-        }
+        let companions = suggested.compactMap { id in others.first { $0.id == id } }
+        let companionIDs = Set(companions.map(\.id))
+        items += peopleSection("Often here together", people: companions)
+        items += peopleSection("People", people: others.filter { !companionIDs.contains($0.id) })
         items.append(.separator())
         items.append(item(unknownTitle, .target(.unknown)))
         items.append(item("New Speaker…", .newSpeaker))
         return items
+    }
+
+    /// The sidebar's editable combo box uses the same ordering and keeps every name available.
+    static func prioritizedPeople(_ people: [SpeakerProfile], suggested: [String]) -> [SpeakerProfile] {
+        guard !suggested.isEmpty else { return people }
+        let ids = Set(suggested)
+        return suggested.compactMap { id in people.first { $0.id == id } }
+            + people.filter { !ids.contains($0.id) }
+    }
+
+    private static func peopleSection(_ title: String, people: [SpeakerProfile]) -> [NSMenuItem] {
+        guard !people.isEmpty else { return [] }
+        return [.separator(), .sectionHeader(title: title)] + people.map { person in
+            item(person.displayName + (person.isSelf ? " (you)" : ""), .target(.person(profileID: person.id)))
+        }
     }
 
     /// "Jim", "Speaker 3", "Jim (auto)", with the number key that assigns to it ("2 · Maria") for speakers 1–9.
