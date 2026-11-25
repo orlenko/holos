@@ -290,12 +290,17 @@ public enum EchoFilter {
                     var end = index
                     while end < effective.count, !echo[end] { end += 1 }
                     let indices = index..<end
-                    let unedited = indices.allSatisfy { !edited.contains(WordRef(segmentID: segment.id, word: $0)) }
-                        && indices.allSatisfy { !effective[$0].estimated }
-                    if unedited {
+                    let judged = indices.allSatisfy {
+                        !edited.contains(WordRef(segmentID: segment.id, word: $0))
+                            && !effective[$0].estimated
+                            && mask.isEcho(start: effective[$0].start, end: effective[$0].end) != nil
+                    }
+                    if judged {
                         let matchable = indices.filter { !normalized(effective[$0].text).isEmpty }
-                        if matchable.count <= echoMaxBridgeWords,
-                           matchable.allSatisfy({ overlapsSystem(effective[$0]) }) {
+                        let interiorPunctuation = matchable.isEmpty && index > 0 && end < effective.count
+                        if interiorPunctuation
+                            || (!matchable.isEmpty && matchable.count <= echoMaxBridgeWords
+                                && matchable.allSatisfy({ overlapsSystem(effective[$0]) })) {
                             for position in indices { echo[position] = true }
                         }
                     }

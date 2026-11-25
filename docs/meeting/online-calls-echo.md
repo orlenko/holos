@@ -140,8 +140,9 @@ genuinely local (the user, or people in the room) stays even while the call play
      the last frame, without times, or with estimated times (a segment without word timing) is
      kept. In a microphone segment at least `EchoFilter.echoClusterShare` (60 %) of whose words
      are echo (dropped by the text filter or flagged by the mask), an unedited measured remnant
-     of at most `EchoFilter.echoMaxBridgeWords` (2) words overlapping system speech (along with
-     adjacent punctuation) is also flagged as echo (`EchoFilter.acousticEchoSpans`).
+     within the mask's coverage of at most `EchoFilter.echoMaxBridgeWords` (2) words overlapping
+     system speech (along with interior punctuation) is also flagged as echo
+     (`EchoFilter.acousticEchoSpans`).
 - *Storage.* `echo/mask.json` (`EchoMaskRecord`, schema 1: verdict, delay fit, frame counts,
   the SHA-256 of the frames, analysis seconds) and `echo/frames-<sha>.bin` (one class byte
   per frame, then one byte per frame of predicted echo level in 0.5 dB steps; about 450 KB

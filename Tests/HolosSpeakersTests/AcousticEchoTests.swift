@@ -736,6 +736,10 @@ private let mostlyEcho = timedMask(seconds: 40, echo: [(10, 11.95)])
     #expect(EchoFilter.acousticEchoSpans(transcript: words, mask: allLocal, excluding: dropped)
         == [WordSpan(segmentID: "M", first: 3, end: 4)])
 
+    // A remnant past the mask's last frame (where `mask.isEcho` returns nil) is outside the mask's coverage and stays.
+    let shortMask = timedMask(seconds: 11.2, echo: [])
+    #expect(EchoFilter.acousticEchoSpans(transcript: words, mask: shortMask, excluding: dropped).isEmpty)
+
     // Edited in Review, that word is kept.
     var editedMic = mic
     editedMic.fixes = [TranscriptWordFix(first: 3, end: 4, heard: "alpha", kind: .reviewEdit)]
