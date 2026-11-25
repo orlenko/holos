@@ -14,11 +14,13 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "whisper")
 
     public let engine: String
+    private let decodeEntireRecording: Bool
     private let kit: WhisperKit
     /// Where the audio is cut into chunks: WhisperKit's voice-activity chunker (a fake one in the opt-in tests).
     var chunker: any AudioChunking = VADAudioChunker()
 
-    private init(kit: WhisperKit, model: String) {
+    private init(kit: WhisperKit, model: String, decodeEntireRecording: Bool) {
+        self.decodeEntireRecording = decodeEntireRecording
         self.kit = kit
         engine = DeepTranscriptionModel.engineName(model)
     }
@@ -26,7 +28,8 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
     /// Loads the installed model (the first load on a Mac, or after an OS update, can take minutes while Core ML
     /// specializes it). Throws `unavailable` with the setup hint when it is not installed.
     public static func load(root: URL = DeepTranscriptionModel.root,
-                            model: String = DeepTranscriptionModel.name) async throws -> WhisperKitTranscriber {
+                            model: String = DeepTranscriptionModel.name,
+                            decodeEntireRecording: Bool = false) async throws -> WhisperKitTranscriber {
         guard WhisperModels.status(root: root, model: model) == .installed else {
             throw HolosError.unavailable(WhisperModels.missingModelMessage)
         }
@@ -39,7 +42,7 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
                 download: false))
             guard let tokenizer = kit.tokenizer else { throw HolosError.unavailable("its tokenizer did not load") }
             kit.textDecoder.logitsFilters = [PromptTimestampRulesFilter(specialTokens: tokenizer.specialTokens)]
-            return WhisperKitTranscriber(kit: kit, model: model)
+            return WhisperKitTranscriber(kit: kit, model: model, decodeEntireRecording: decodeEntireRecording)
         } catch {
             if error is CancellationError || Task.isCancelled { throw CancellationError() }
             throw HolosError.unavailable("The deep transcription model could not be loaded "
@@ -67,7 +70,7 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         // Audio the chunking left out is decoded too where the recorded transcript heard speech in it.
         let ranges = Self.plan(chunks: chunks.map { $0.seekOffsetIndex..<($0.seekOffsetIndex + $0.audioSamples.count) },
                                total: request.samples.count, recordedWords: request.recordedWords,
-                               maxSamples: maxSamples)
+                               maxSamples: maxSamples, decodeEntireRecording: decodeEntireRecording)
         var plainOptions: DecodingOptions?
         if tokens != nil {
             plainOptions = options
@@ -272,7 +275,10 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
     /// seconds) decoded too, in pieces of at most `maxSamples`, those with a recorded word kept: speech the chunking
     /// would leave out without a trace (WhisperKit's chunker stops a second before the end, and another could skip
     /// what its voice-activity detection takes for silence). The rest of what it leaves out has no recorded speech.
-    static func plan(chunks: [Range<Int>], total: Int, recordedWords: [Double], maxSamples: Int) -> [Range<Int>] {
+    /// Dictation has no live reference. It also decodes uncovered audio, including a subsecond utterance
+    /// for which the chunker returns no ranges.
+    static func plan(chunks: [Range<Int>], total: Int, recordedWords: [Double], maxSamples: Int,
+                     decodeEntireRecording: Bool = false) -> [Range<Int>] {
         let sorted = chunks.map { $0.clamped(to: 0..<max(0, total)) }.filter { !$0.isEmpty }
             .sorted { $0.lowerBound < $1.lowerBound }
         guard total > 0 else { return [] }
@@ -290,13 +296,13 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
                 if let next, next.lowerBound == gap.upperBound { return gap.lowerBound..<next.upperBound }
             }
             let inside = starts.filter { gap.contains($0) }
-            if inside.count >= DeepTranscriptionRequest.recordedSpeechWords {
+            if decodeEntireRecording || inside.count >= DeepTranscriptionRequest.recordedSpeechWords {
                 let pieces = (gap.count + max(1, maxSamples) - 1) / max(1, maxSamples)
                 let length = (gap.count + pieces - 1) / pieces
                 var start = gap.lowerBound
                 while start < gap.upperBound {
                     let piece = start..<min(gap.upperBound, start + length)
-                    if inside.contains(where: { piece.contains($0) }) { out.append(piece) }
+                    if decodeEntireRecording || inside.contains(where: { piece.contains($0) }) { out.append(piece) }
                     start = piece.upperBound
                 }
             }
@@ -427,8 +433,8 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
             try Task.checkCancellation()
         }
         for (index, outcome) in outcomes.enumerated() {
-            if case .failure(let error) = outcome {
-                Self.log.error("Deep transcription: a chunk at \(offsets[index] / WhisperKit.sampleRate, privacy: .public) s could not be decoded: \(String(describing: error), privacy: .public)")
+            if case .failure = outcome {
+                Self.log.error("Deep transcription: a chunk at \(offsets[index] / WhisperKit.sampleRate, privacy: .public) s could not be decoded")
             }
         }
         let decoded = try Self.requireAll(outcomes,

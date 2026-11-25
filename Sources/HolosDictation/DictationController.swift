@@ -45,10 +45,21 @@ protocol DictationCapture: AnyObject {
     func stop() async throws
 }
 
-protocol DictationSpeech: Sendable {
+public protocol DictationSpeech: Sendable {
     func append(_ frame: PCMFrame) async throws
     func finish() async throws -> [TranscriptSegment]
     func cancel() async
+}
+
+/// A recognizer that buffers microphone frames and returns its only transcript from `finish`.
+public protocol AfterReleaseSpeech: DictationSpeech {
+    var modelName: String { get }
+    /// Retire the capture and schedule private file cleanup. Safe to call again.
+    @MainActor func discard()
+}
+
+public extension AfterReleaseSpeech {
+    func cancel() async { await discard() }
 }
 
 extension AppleSpeechSession: DictationSpeech {}
@@ -97,6 +108,8 @@ struct DictationDependencies {
 ///    hold on entering those phases and releases it on leaving them, so every way out lets it go.
 /// 4. Settings read at `begin` (locale, the recognizer it picks from `recognizers`, contextual strings, seam terms)
 ///    never change an utterance in progress.
+/// 5. An after-release session receives every accepted microphone frame and no live recognition updates.
+///    Each terminal transition retires it before notifying the consumer.
 @MainActor
 public final class DictationController {
     public private(set) var status = DictationStatus(phase: .idle)
@@ -125,6 +138,8 @@ public final class DictationController {
     /// This utterance's joining of the recognizer's results; its decisions last the utterance.
     private var seams: DictationSeams?
     private var capture: (any DictationCapture)?
+    private var afterRelease: (any AfterReleaseSpeech)?
+    public var processingModel: String? { afterRelease?.modelName }
     private var speech: (any DictationSpeech)?
     private var updateContinuation: AsyncStream<TranscriptUpdate>.Continuation?
     private var prepareTask: Task<Void, Never>?
@@ -161,10 +176,11 @@ public final class DictationController {
 
     /// Returns false while an earlier utterance is still starting, recording, finishing, or stopping.
     @discardableResult
-    public func begin() -> Bool {
+    public func begin(afterRelease: (any AfterReleaseSpeech)? = nil) -> Bool {
         guard generation == nil, cleanupTask == nil else { return false }
         let id = UUID()
         generation = id
+        self.afterRelease = afterRelease
         releaseRequested = false
         reducer = TranscriptReducer()
         seams = DictationSeams(language: locale, terms: seamTerms())
@@ -204,14 +220,14 @@ public final class DictationController {
             publish(.init(phase: .finalizing, utteranceID: id,
                           message: "Finishing startup after key release."))
             guard generation == id else { return }
-            startFinalizationWatchdog(id)
+            startFinalizationWatchdog(id, recognizingAfterRelease: false)
             prepareTask?.cancel()
         case .listening:
             watchdog.cancel()
             publish(.init(phase: .finalizing, utteranceID: id, text: status.text,
                           committedText: status.committedText))
             guard generation == id else { return }
-            startFinalizationWatchdog(id)
+            startFinalizationWatchdog(id, recognizingAfterRelease: afterRelease != nil)
             finalizationTask = Task { [weak self] in await self?.finalize(id) }
         case .idle, .finalizing, .result, .failed:
             break
@@ -242,8 +258,13 @@ public final class DictationController {
             for await update in pair.stream { self?.accept(update, for: id) }
         }
         do {
-            let session = try await dependencies.makeSpeech(locale, backend, vocabulary) { update in
-                pair.continuation.yield(update)
+            let session: any DictationSpeech
+            if let afterRelease {
+                session = afterRelease
+            } else {
+                session = try await dependencies.makeSpeech(locale, backend, vocabulary) { update in
+                    pair.continuation.yield(update)
+                }
             }
             guard generation == id else {
                 pair.continuation.finish()
@@ -283,6 +304,9 @@ public final class DictationController {
                         try Task.checkCancellation()
                         guard self.generation == id else { return }
                         guard audio.track == "mic" else { continue }
+                        if self.afterRelease != nil, audio.followsDrop || audio.discontinuity != nil {
+                            throw HolosError.incomplete("Microphone audio was interrupted. Please dictate again.")
+                        }
                         try await session.append(audio.frame)
                         guard self.generation == id else { return }
                         self.frameTap?(id, audio.frame)
@@ -311,6 +335,7 @@ public final class DictationController {
             await feedTask?.value
             guard generation == id else { return }
             let segments = try await session.finish()
+            guard generation == id else { return }
             updateContinuation?.finish()
             await previewTask?.value
             guard generation == id else { return }
@@ -328,7 +353,7 @@ public final class DictationController {
     }
 
     private func accept(_ update: TranscriptUpdate, for id: UUID) {
-        guard generation == id, status.phase == .listening || status.phase == .finalizing else { return }
+        guard generation == id, afterRelease == nil, status.phase == .listening || status.phase == .finalizing else { return }
         do {
             try reducer.apply(update)
             publish(.init(phase: status.phase, utteranceID: id,
@@ -400,14 +425,18 @@ public final class DictationController {
                                          message: "Dictation finalization timed out. Try again."))
     }
 
-    private func startFinalizationWatchdog(_ id: UUID) {
-        watchdog.startFinalization { [weak self] in self?.finalizationTimedOut(id) }
+    private func startFinalizationWatchdog(_ id: UUID, recognizingAfterRelease: Bool) {
+        watchdog.startFinalization(afterRelease: recognizingAfterRelease) { [weak self] in self?.finalizationTimedOut(id) }
     }
 
     private func publish(_ newStatus: DictationStatus) {
         // Invariant 3: taken once on entering preparing or listening (a refused hold is not retried on every
         // transcript update), released on leaving them.
         let wasActive = Self.keepsDisplayAwake(status.phase)
+        if [.result, .failed, .idle].contains(newStatus.phase) {
+            afterRelease?.discard()
+            afterRelease = nil
+        }
         status = newStatus
         if Self.keepsDisplayAwake(newStatus.phase) {
             if !wasActive { displayHold = dependencies.keepDisplayAwake("Voice is Local dictation") }

@@ -26,10 +26,15 @@ public struct ParakeetTranscriber: DeepTranscriber {
         "lt", "lv", "mt", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "uk",
     ]
 
+    public static func supports(locale: String) -> Bool {
+        guard let code = Locale(identifier: locale).language.languageCode?.identifier.lowercased() else { return false }
+        return languages.contains(code)
+    }
+
     public func transcribe(_ request: DeepTranscriptionRequest,
                            progress: @escaping @Sendable (Double) -> Void) async throws -> [DeepTranscribedSegment] {
         guard let code = request.language, Self.languages.contains(code), let language = Language(rawValue: code) else {
-            throw HolosError.invalidInput("Parakeet Ultra does not support this meeting language.")
+            throw HolosError.invalidInput("Parakeet Ultra does not support this recognition language.")
         }
         _ = try await promptTokenCount(request.prompt)
         try Task.checkCancellation()

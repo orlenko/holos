@@ -48,10 +48,20 @@ public struct CommandResult<Outcome: Sendable>: Sendable {
     public let launcher: MaintenanceLauncher
     /// Where the output files are made.
     public let folder: URL
+    private let removesOutputFiles: Bool
 
     public init(launcher: MaintenanceLauncher, folder: URL = FileManager.default.temporaryDirectory) {
         self.launcher = launcher
         self.folder = folder
+        self.removesOutputFiles = true
+    }
+
+    /// The caller owns this private, per-command folder and removes it (including stdout and stderr) on every
+    /// terminal path. Collection only reads from it, so cancellation can unlink it while the child is being reaped.
+    public init(launcher: MaintenanceLauncher, callerOwnedFolder: URL) {
+        self.launcher = launcher
+        self.folder = callerOwnedFolder
+        self.removesOutputFiles = false
     }
 
     /// Starts `voiceislocal <arguments>` with stdout in a temporary file named `output` and stderr in one named
@@ -126,26 +136,30 @@ public struct CommandResult<Outcome: Sendable>: Sendable {
                 Task {
                     let result = await Task.detached {
                         Self.collect(code: code, output: outputFile, errors: errorFile,
-                                     maxOutputBytes: maxOutputBytes, decode: decode)
+                                     maxOutputBytes: maxOutputBytes, decode: decode, removesOutputFiles: removesOutputFiles)
                     }.value
                     completion(result)
                 }
             }
             handle.started(pid)
         } catch {
-            outputFile.remove()
-            errorFile?.remove()
+            if removesOutputFiles {
+                outputFile.remove()
+                errorFile?.remove()
+            }
             throw error
         }
     }
 
-    /// Reads and decodes the files of a command that exited with `code`, then removes them.
+    /// Reads and decodes the files of a command that exited with `code`. Removes the files the runner owns.
     nonisolated static func collect<Outcome: Sendable>(
         code: Int32, output: TemporaryArtifact, errors: TemporaryArtifact?, maxOutputBytes: Int,
-        decode: @Sendable (Data) throws -> Outcome) -> CommandResult<Outcome> {
+        decode: @Sendable (Data) throws -> Outcome, removesOutputFiles: Bool = true) -> CommandResult<Outcome> {
         defer {
-            output.remove()
-            errors?.remove()
+            if removesOutputFiles {
+                output.remove()
+                errors?.remove()
+            }
         }
         let errorText = errors.flatMap { file in
             (try? AtomicFile.readIfPresent(file.url, maxBytes: maxErrorBytes)).flatMap {

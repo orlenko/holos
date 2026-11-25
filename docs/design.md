@@ -127,6 +127,24 @@ and start the screensaver, which takes focus from the destination. From press un
 release, cancel or failure, hold an idle display-sleep assertion; it does not stop a
 lock the user asks for (a hot corner, Lock Screen).
 
+Settings › Dictation › **Dictation mode** defaults to **Live**. **Accurate after release** uses the same
+shortcut and microphone. Choose **WhisperKit large-v3 turbo** or **Parakeet Ultra** in the model picker.
+The picker checks the selected model on this Mac and offers Download when it is missing. The same explicit
+installs are available through `voiceislocal setup --whisper` and `voiceislocal setup --parakeet`.
+Add `--status` to either command to check its installation. Accurate mode can run without Apple speech assets.
+
+Accurate mode shows microphone levels while listening. On release it drains capture, closes the private
+audio file, and runs the selected model in a local `voiceislocal` helper. The destination receives text only
+after recognition and the selected cleanup steps finish. Focus and selection are checked at insertion,
+with Copy Result available if the destination changed. Esc, disable, sleep and quit cancel the utterance.
+An interrupted recording, helper failure or ten-minute finalization timeout discards the attempt.
+
+Whisper receives the approved word list and the intended words from saved corrections, limited to the
+dictation vocabulary and the model’s 110-token prompt budget. Parakeet uses the selected language without
+a vocabulary prompt. Both results go through the usual filler removal, correction rules and optional cleanup.
+Learning comes from edits confirmed through Learn or review and from explicitly maintained words. Merely
+dictating or retaining a History entry adds no vocabulary.
+
 Sleep or an inactive login session cancels the current utterance and releases the hotkey.
 Wake and session activation restore dictation when it was enabled or enabling before the
 interruption. Overlapping sleep and session changes wait for both to end. A user who turned
@@ -172,7 +190,7 @@ languages of both of Apple's recognizers, grouped English, French, then the rest
 (`DictationLanguage.groups`). `SpeechTranscriber` (backend `speech`, the progressive preset)
 has English, French and a few more; `DictationTranscriber` (backend `dictation`, the
 time-indexed long-dictation preset with volatile results) has about fifty more, among them
-Russian and Ukrainian. `RecognizerLocales.backend(for:)` (HolosCore) is the one place that
+Russian and Ukrainian. For Live and Run Again, `RecognizerLocales.backend(for:)` (HolosCore) is the one place that
 picks a language's recognizer: `speech` when `SpeechTranscriber` has the language, else
 `dictation` when `DictationTranscriber` has it, then the same by language alone ("ru"),
 `speech` first; `speech` when neither has it, so the recognizer reports it as unsupported.
@@ -1166,7 +1184,13 @@ said. Settings › Dictation history › **Keep the audio of dictations (for Run
 turning it off stops keeping new audio and offers to delete the audio already kept (the text
 stays). History Off keeps no audio either.
 
-Capture: `DictationController.frameTap` hands the app every microphone frame the recognizer
+Accurate mode uses a temporary copy of the microphone audio in the same recording format, including
+when History is off. It removes the recording, prompt settings and helper output on completion,
+failure or cancellation. Quit waits up to five seconds for cleanup. App launch sweeps abandoned capture
+folders after their owning processes exit. The History audio setting controls the separate retained copy.
+Run Again continues to use the Apple recognizer for the chosen language.
+
+For the History copy, `DictationController.frameTap` hands the app every microphone frame the recognizer
 took, with its utterance ID, in order and before the result; the app gives them to a
 `DictationAudioWriter` (HolosAudio) made at key-down, only once the secure-field checks passed
 and only when History records and keeps audio. The writer converts and encodes on its own

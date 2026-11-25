@@ -7,6 +7,26 @@ import HolosSpeech
 /// offers both of Apple's recognizers' languages and uses the recognizer its language needs; meetings offer
 /// `SpeechTranscriber`'s only.
 extension HolosAppDelegate {
+    var removeFillers: Bool {
+        get { UserDefaults.standard.object(forKey: "removeFillers") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "removeFillers") }
+    }
+
+    func makeAccurateDictationWorker() -> AccurateDictationWorker? {
+        let settings = AccurateDictationSettings()
+        guard settings.enabled else { return nil }
+        return AccurateDictationWorker(model: settings.model, locale: locale, vocabulary: controller.contextualStrings)
+    }
+
+    func requiredLiveAssets(locale: String, backend: SpeechBackend) async throws -> String? {
+        guard !AccurateDictationSettings().enabled else { return nil }
+        return try await checkDictationAssets(locale: locale, backend: backend)
+    }
+
+    func recognitionModeChanged() {
+        if enabled { disable(); enable() } else { updateSettings() }
+    }
+
     var assetState: String? {
         get { dictationLanguageState.assetStatus }
         set { dictationLanguageState.assetStatus = newValue }
