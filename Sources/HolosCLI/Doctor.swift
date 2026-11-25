@@ -106,7 +106,8 @@ struct Setup: AsyncParsableCommand {
     @Flag(help: "Download and verify the speaker models used to label speakers (network).") var speakers = false
     @Flag(help: "Download and check the deep transcription model used after meetings (network, about 1.6 GB).")
     var whisper = false
-    @Flag(help: "Download and verify Parakeet Ultra for meeting comparison (about 632 MB).") var parakeet = false
+    @Flag(help: "Download and verify Parakeet Ultra (about 632 MB).") var parakeet = false
+    @Flag(help: "With --parakeet or --whisper, print local installation status as JSON.") var status = false
     @Flag(help: "Download and prepare the natural Reading voices (network; English unless --language fr).")
     var naturalVoices = false
     @Flag(help: "Download and check a Tidy Up model (network).") var tidyModel = false
@@ -123,6 +124,9 @@ struct Setup: AsyncParsableCommand {
 
     func validate() throws {
         let chosen = [speakers, whisper, parakeet, naturalVoices, tidyModel, removeTidyModel].filter { $0 }.count
+        if status && ((!parakeet && !whisper) || force) {
+            throw ValidationError("--status requires --parakeet or --whisper, without --force.")
+        }
         if force && (chosen == 0 || removeTidyModel) {
             throw ValidationError("--force applies only with --speakers, --whisper, --parakeet, --natural-voices, or --tidy-model.")
         }
@@ -140,6 +144,11 @@ struct Setup: AsyncParsableCommand {
     }
 
     mutating func run() async throws {
+        if status {
+            let state: DeepModelStatus = whisper ? WhisperModels.status() : try (ParakeetModels.isInstalled() ? .installed : .notInstalled)
+            try Console.json(state)
+            return
+        }
         if parakeet {
             try await ParakeetModels.setUp(force: force, progress: ProgressPrinter(label: "Parakeet Ultra").report)
             Console.output("Parakeet Ultra is ready.")

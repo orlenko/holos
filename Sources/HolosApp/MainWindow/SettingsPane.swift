@@ -60,8 +60,10 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         var shortcut: (HotkeyChoice) -> Void
         var retention: (HistoryRetention) -> Void
         var appearance: (AppearanceChoice) -> Void
+        var recognitionChanged: () -> Void = {}
     }
 
+    let recognition = AccurateDictationControls()
     private let callbacks: Callbacks
     private let openAtLaunchToggle = NSButton(checkboxWithTitle: "Open the Voice is Local window when it starts",
                                               target: nil, action: nil)
@@ -71,7 +73,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
                                                        trackingMode: .selectOne, target: nil, action: nil)
     private let fillerToggle = NSButton(checkboxWithTitle: "Remove filler words", target: nil, action: nil)
     private let languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let shortcutPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    let shortcutPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let retentionPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private var shownLocaleGroups: [[String]]?
     private let previewToggle = NSButton(checkboxWithTitle: "Show the dictation preview while dictating",
@@ -288,19 +290,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         addRow(.dictation, "Dictation", to: grid)
         addRowItem(.dictation, .dictation, keywords: ["turn on", "turn off", "enable", "start"])
 
-        shortcutPopup.target = self
-        shortcutPopup.action = #selector(shortcutChosen(_:))
-        for (choice, title) in [(HotkeyChoice.rightOption, "Right Option"),
-                                (.controlOptionSpace, "Control–Option–Space")] {
-            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            item.representedObject = choice.rawValue
-            shortcutPopup.menu?.addItem(item)
-        }
-        shortcutPopup.setAccessibilityLabel("Hold-to-talk shortcut")
-        addControlRow(.dictation, "keyboard", "Hold-to-talk shortcut", "Hold it, wait for Listening, speak, release",
-                      keywords: ["hotkey", "key", "right option", "control option space", "push to talk"],
-                      control: shortcutPopup, to: grid)
-
+        addRecognitionRows(to: grid, modeChanged: callbacks.recognitionChanged)
         languagePopup.target = self
         languagePopup.action = #selector(languageChosen(_:))
         languagePopup.setAccessibilityLabel("Dictation language")
@@ -488,6 +478,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     private var searchedTextChangedInUpdate = false
 
     func sectionDidShow() {
+        recognition.checkSelected()
         refreshReadingCard()
     }
 
@@ -660,7 +651,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
 
     /// A row whose control is a pop-up menu, a segmented control, or a slider; searched by its title, detail, and
     /// `keywords`. `focus`: what Return in the search focuses, when not `control`.
-    private func addControlRow(_ chapter: SettingsChapter, _ symbol: String, _ title: String, _ detailText: String,
+    func addControlRow(_ chapter: SettingsChapter, _ symbol: String, _ title: String, _ detailText: String,
                                keywords: [String], control: NSView, focus: NSView? = nil, to grid: NSGridView) {
         let (text, _, detail) = Self.labels(title)
         detail.stringValue = detailText
@@ -682,8 +673,6 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
                                 grid: grid, gridAnchor: icon, focus: focus ?? control))
     }
 
-    /// A row's bold title over its detail line: `textWidth` wide, narrower in a narrow window (the detail wraps at
-    /// the width it gets; the title truncates last).
     // MARK: - State
 
     func update(_ state: SetupState) {
@@ -701,6 +690,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         updateLanguagePopup(state)
         select(shortcutPopup, state.shortcut.rawValue)
         shortcutPopup.isEnabled = state.shortcutChangeable
+        recognition.refresh(changeable: state.shortcutChangeable && !state.installingAssets)
+        setRowHidden(.assets, recognition.settings.enabled)
         select(retentionPopup, state.historyRetention.rawValue)
         openAtLaunchToggle.state = state.openWindowAtLaunch ? .on : .off
         updateChecksToggle.isEnabled = state.updatesAvailable
@@ -1262,7 +1253,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         callbacks.appearance(AppearanceChoice.allCases[sender.selectedSegment])
     }
 
-    @objc private func shortcutChosen(_ sender: NSPopUpButton) {
+    @objc func shortcutChosen(_ sender: NSPopUpButton) {
         guard let raw = sender.selectedItem?.representedObject as? String, let choice = HotkeyChoice(rawValue: raw) else {
             return
         }

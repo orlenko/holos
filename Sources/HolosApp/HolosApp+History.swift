@@ -17,6 +17,7 @@ struct HistoryDraft {
     let language: String
     /// For a terminal (`DictationRecord.terminal`).
     var terminal = false
+    var accurateRemoveFillers: Bool?
     var listeningStarted: Date?
     var listeningEnded: Date?
 

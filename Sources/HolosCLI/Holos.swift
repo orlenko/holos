@@ -19,6 +19,7 @@ struct Holos: AsyncParsableCommand {
             Doctor.self,
             Setup.self,
             Transcribe.self,
+            AccurateDictation.self,
             Record.self,
             Session.self,
             Speakers.self,

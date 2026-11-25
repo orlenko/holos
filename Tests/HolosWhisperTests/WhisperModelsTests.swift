@@ -334,6 +334,16 @@ import Testing
             == [0..<(20 * second), (20 * second)..<(39 * second + second / 2)])
     }
 
+    @Test func accurateDictationIncludesAudioOutsideVoiceActivityRangesWithoutALiveReference() {
+        #expect(WhisperKitTranscriber.plan(chunks: [], total: 8000, recordedWords: [], maxSamples: 32_000,
+                                          decodeEntireRecording: true) == [0..<8000])
+        let ranges = WhisperKitTranscriber.plan(chunks: [32_000..<48_000], total: 96_000, recordedWords: [],
+                                                maxSamples: 32_000, decodeEntireRecording: true)
+        #expect(ranges.first?.lowerBound == 0)
+        #expect(ranges.last?.upperBound == 96_000)
+        #expect(zip(ranges, ranges.dropFirst()).allSatisfy { $0.upperBound == $1.lowerBound })
+    }
+
     @Test func whisperKitsChunkingLeavesNoAudioOutOfThePlan() async throws {
         // WhisperKit's chunker stops less than a second before the end: that tail is decoded with the last chunk.
         let samples = (0..<(40 * 16_000 + 8_000)).map { Float(sin(Double($0) * 0.05)) * 0.2 }

@@ -680,3 +680,91 @@ func hungSpeechOrMicrophoneStartupStillTimesOut(microphone: Bool) async {
     #expect(await eventually { controller.status.phase == .result })
     #expect(requests == 1)
 }
+
+@MainActor
+private final class DeferredSpeech: AfterReleaseSpeech {
+    nonisolated let modelName = "Offline test model"
+    var frames: [Double] = []
+    var finishWaiter: CheckedContinuation<Void, Never>?
+    var retired = false
+    var validationError: HolosError?
+    func append(_ frame: PCMFrame) async throws { frames.append(frame.startTime) }
+    func finish() async throws -> [TranscriptSegment] {
+        if let validationError { throw validationError }
+        await withCheckedContinuation { finishWaiter = $0 }
+        return [.init(start: 0, end: 1, text: "invented result")]
+    }
+    func discard() { retired = true }
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor func accurateDictationDrainsCaptureBeforeRecognizingAndNeverStreams() async throws {
+    let harness = Harness()
+    let worker = DeferredSpeech()
+    var updates: [DictationStatus] = []
+    let controller = DictationController(dependencies: harness.dependencies) { updates.append($0) }
+    #expect(controller.begin(afterRelease: worker))
+    let id = controller.status.utteranceID
+    #expect(await eventually { controller.status.phase == .listening })
+    for start in [0.0, 0.1] {
+        harness.capture.emit(try PCMFrame(samples: [0.1], sampleRate: 16_000, channels: 1, startTime: start))
+    }
+    #expect(worker.finishWaiter == nil)
+    controller.end()
+    #expect(await eventually { worker.finishWaiter != nil })
+    #expect(worker.frames == [0, 0.1])
+    #expect(harness.capture.stops == 1)
+    #expect(harness.locales.isEmpty)
+    #expect(updates.allSatisfy { $0.text.isEmpty && $0.committedText.isEmpty })
+    #expect(controller.status.message == nil)
+    worker.finishWaiter?.resume()
+    #expect(await eventually { controller.status.phase == .result })
+    #expect(controller.status.text == "invented result")
+    #expect(controller.status.utteranceID == id)
+    #expect(worker.retired)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor func cancelledAccurateDictationCannotPublishOrCloseTheNextLiveStream() async {
+    let harness = Harness()
+    let worker = DeferredSpeech()
+    var updates: [DictationStatus] = []
+    let controller = DictationController(dependencies: harness.dependencies) { updates.append($0) }
+    #expect(controller.begin(afterRelease: worker))
+    #expect(await eventually { controller.status.phase == .listening })
+    controller.end()
+    #expect(await eventually { worker.finishWaiter != nil })
+    controller.cancel()
+    #expect(worker.retired)
+    #expect(await eventually { controller.begin() })
+    #expect(await eventually { controller.status.phase == .listening })
+    worker.finishWaiter?.resume()
+    harness.emit(.init(segment: .init(start: 0, end: 1, text: "new session"), isFinal: true))
+    #expect(await eventually { controller.status.committedText == "new session" })
+    #expect(!updates.contains { $0.phase == .result })
+    controller.cancel()
+}
+
+@Test(arguments: [true, false]) @MainActor
+func accurateDictationValidationFailuresLeaveTheOriginalDestinationUntouched(failedCapture: Bool) async throws {
+    let harness = Harness()
+    let worker = DeferredSpeech()
+    var field = "draft text"
+    var writes = 0
+    let controller = DictationController(dependencies: harness.dependencies) { status in
+        if status.phase == .result || !status.committedText.isEmpty {
+            writes += 1
+            field = status.text
+        }
+    }
+    #expect(controller.begin(afterRelease: worker))
+    #expect(await eventually { controller.status.phase == .listening })
+    if failedCapture {
+        harness.capture.fail(HolosError.incomplete("Incomplete recording"))
+    } else {
+        worker.validationError = .invalidInput("Invalid helper result")
+        controller.end()
+    }
+    #expect(await eventually { controller.status.phase == .failed })
+    #expect(worker.retired)
+    #expect(writes == 0)
+    #expect(field == "draft text")
+}
