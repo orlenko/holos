@@ -87,7 +87,7 @@ struct SettingsEmbeddingTests {
     static func settings(size: NSSize) throws -> (NSWindow, SettingsPane) {
         NSApplication.shared.setActivationPolicy(.prohibited)
         let noop = SettingsPane.Callbacks(perform: { _ in }, opacity: { _ in }, language: { _ in },
-                                          shortcut: { _ in }, retention: { _ in }, appearance: { _ in })
+                                          shortcut: { _, _ in }, retention: { _ in }, appearance: { _ in })
         let controller = MainWindowController { section in
             section == .settings ? SettingsPane(callbacks: noop) : NSViewController()
         }

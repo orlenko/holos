@@ -520,7 +520,7 @@ struct AXHandle: Equatable {
         }
         // Invariant 4.
         if let remoteShortcut, KeyboardTyping.heldKeysReachRemote(shortcut: remoteShortcut) {
-            return .needsCopy("\(appName) passes held keys on to the other computer, so typing now could run a shortcut there. Dictate with Right Option.")
+            return .needsCopy("\(appName) passes held keys on to the other computer, so typing now could run a shortcut there. Release all modifiers when finishing, or use Right Option alone.")
         }
         let strokes: [KeyboardStroke]?
         if requiresPhysicalKeys {

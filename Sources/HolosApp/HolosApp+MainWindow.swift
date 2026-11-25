@@ -58,10 +58,9 @@ extension HolosAppDelegate {
                 perform: { [weak self] action in self?.performSetup(action) },
                 opacity: { [weak self] value in self?.changePreviewOpacity(value) },
                 language: { [weak self] identifier in self?.changeLanguage(to: identifier) },
-                shortcut: { [weak self] choice in self?.changeShortcut(to: choice) },
+                shortcut: { [weak self] mode, choice in self?.changeShortcut(mode, to: choice) },
                 retention: { [weak self] retention in self?.changeHistoryRetention(to: retention) },
-                appearance: { [weak self] choice in self?.changeAppearance(to: choice) },
-                recognitionChanged: { [weak self] in self?.recognitionModeChanged() }))
+                appearance: { [weak self] choice in self?.changeAppearance(to: choice) }))
         }
     }
 

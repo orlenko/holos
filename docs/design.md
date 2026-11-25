@@ -127,8 +127,12 @@ and start the screensaver, which takes focus from the destination. From press un
 release, cancel or failure, hold an idle display-sleep assertion; it does not stop a
 lock the user asks for (a hot corner, Lock Screen).
 
-Settings › Dictation › **Dictation mode** defaults to **Live**. **Accurate after release** uses the same
-shortcut and microphone. Choose **WhisperKit large-v3 turbo** or **Parakeet Ultra** in the model picker.
+Settings › Dictation has independent **Live shortcut** and **Accurate shortcut** controls. Live defaults
+to Right Option. For the default Accurate shortcut, hold Right Command and then press and hold Right Option.
+Release Right Option to finish, and let go of both keys. The shortcut selects one mode for the whole utterance.
+Either shortcut can use another listed chord or be set to Off, and the same binding cannot serve both modes.
+Existing Live shortcut preferences and the selected Accurate model are retained.
+Choose **WhisperKit large-v3 turbo** or **Parakeet Ultra** in the Accurate model picker.
 The picker checks the selected model on this Mac and offers Download when it is missing. The same explicit
 installs are available through `voiceislocal setup --whisper` and `voiceislocal setup --parakeet`.
 Add `--status` to either command to check its installation. Accurate mode can run without Apple speech assets.
@@ -398,7 +402,7 @@ the list (again after its entry was removed) and shows macOS's own prompt if it 
 **System Settings…** link only opens the page, so one click never shows both; nothing is inferred
 or remembered, since macOS cannot tell whether its prompt will appear; granted, one **Open
 Settings** opens the page; Microphone keeps Request… while not determined, then Open Settings; the
-Setup Assistant's permission rows use the same two buttons), Dictation (on/off, hold-to-talk shortcut, language,
+Setup Assistant's permission rows use the same two buttons), Dictation (on/off, Live and Accurate shortcuts, language,
 speech model, fillers, Apple Intelligence fix, preview and its opacity), Meetings (record
 system audio, deep transcription, titles and summaries with Apple Intelligence, speaker
 labels, a link to People for remembered voices), Reading (default

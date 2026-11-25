@@ -4,7 +4,7 @@ Where the app touches other apps: dictation's global hotkey and putting text int
 read-aloud shortcut and reading the selected text.
 
 **Owns**
-- `GlobalHotkeyMonitor` (`@MainActor`): a `CGEvent` tap for the chosen `HotkeyChoice`, reporting `HotkeyAction`s;
+- `GlobalHotkeyMonitor` (`@MainActor`): one `CGEvent` tap for the two `DictationShortcuts`, reporting which mode began;
   `HotkeyStartError` says why it could not start (Accessibility not granted, tap refused). The press/release logic
   is a pure `HotkeyReducer`.
 - `ChordHotkey` (`@MainActor`): a Carbon hot key for a key chord (`readSelection`, ⌃⌥⌘R), needing no permission;

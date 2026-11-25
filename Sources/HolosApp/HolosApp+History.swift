@@ -18,6 +18,7 @@ struct HistoryDraft {
     /// For a terminal (`DictationRecord.terminal`).
     var terminal = false
     var accurateRemoveFillers: Bool?
+    var shortcutTitle: String?
     var listeningStarted: Date?
     var listeningEnded: Date?
 

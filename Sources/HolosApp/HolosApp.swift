@@ -200,14 +200,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     var reopenAfterQuit = false
     /// The language snapshot, derived pickers and coalesced asset requests (invariants 1–3).
     let dictationLanguageState = DictationLanguageState()
-    private var shortcut: HotkeyChoice = .rightOption
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AccurateDictationWorker.removeAbandonedCaptures()
         applyAppearance()  // before any window opens
-        if let raw = UserDefaults.standard.string(forKey: "shortcut"), let saved = HotkeyChoice(rawValue: raw) {
-            shortcut = saved
-        }
         controller = DictationController(locale: locale) { [weak self] update in self?.receive(update) }
         overlay.setOpacity(previewOpacity)
         do { corrections = try CorrectionList.load(from: CorrectionList.defaultURL) }
@@ -327,8 +323,6 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         return [.preparing, .listening, .finalizing].contains(controller.status.phase)
     }
 
-    var shortcutTitle: String { shortcut == .rightOption ? "Right Option" : "Control–Option–Space" }
-
     /// The menu bar menu, for when a call starts and the window is not at hand (docs/design.md "Menu bar menu"): the
     /// meeting's Start or Stop and Save first, set apart; dictation's state only when it is not simply ready, with
     /// Cancel Dictation while it runs, and Copy Result (and Copy Original) while a result is kept; then Open Voice
@@ -395,7 +389,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     func enable() {
         guard !enabled, !enabling, !installingAssets, !dictationSession.suspended else { return }
-        guard !refuseIfReplaced() else { return }
+        guard canEnableDictationShortcuts(), !refuseIfReplaced() else { return }
         guard AudioCapture.microphonePermission == "authorized", AXIsProcessTrusted() else {
             show("Grant Microphone and Accessibility access in Voice is Local Settings, then enable dictation.")
             showSetupUnlessAssistant()
@@ -408,14 +402,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         enableTask = Task { [weak self] in
             guard let self else { return }
             // Invariant 4: resolve the language and recognizer before configuring or enabling the controller.
-            if !AccurateDictationSettings().enabled { await self.loadLanguages() }
+            if self.dictationShortcuts.live != .off { await self.loadLanguages() }
             guard !Task.isCancelled, generation == self.enableGeneration else { return }
             let locale = self.locale, backend = self.dictationBackend
             do {
                 self.controller.locale = locale
                 self.controller.recognizers = self.recognizerLocales ?? .unknown
                 self.controller.contextualStrings = self.dictationVocabulary(language: locale)
-                let state = try await self.requiredLiveAssets(locale: locale, backend: backend)
+                let state = await self.liveAssetsForEnabling(locale: locale, backend: backend)
                 guard !Task.isCancelled, generation == self.enableGeneration else { return }
                 guard self.matchesDictationConfiguration(locale: locale, backend: backend) else {
                     self.enabling = false
@@ -423,14 +417,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
                 if let state { self.assetState = state }
-                guard state == nil || state == "installed" else {
+                guard self.dictationShortcuts.accurate != .off || state == "installed" else {
                     self.enabling = false
                     self.show("Install the speech model for \(self.languageName) in Voice is Local Settings first.")
                     self.showSetupUnlessAssistant()
                     self.resumeDeferredDictationSetup()
                     return
                 }
-                let monitor = GlobalHotkeyMonitor(shortcut: self.shortcut) { [weak self] action in self?.handle(action) }
+                let monitor = GlobalHotkeyMonitor(shortcuts: self.dictationShortcuts) { [weak self] action in self?.handle(action) }
                 try monitor.start()
                 self.inputMonitoringNeeded = false
                 self.monitor = monitor
@@ -466,33 +460,19 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         endFixing(heard: latestCommitted)
         controller.cancel()
         if persist { dictationSession.didDisable(); UserDefaults.standard.set(false, forKey: "dictationEnabled") }
-        show("Disabled — \(shortcutTitle) is available to other apps")
+        show("Dictation disabled")
         overlay.hide()
-    }
-
-    /// Not during a dictation or an enable; Settings then shows the current shortcut again.
-    var canChangeShortcut: Bool { !isBusy && !enabling }
-
-    func changeShortcut(to choice: HotkeyChoice) {
-        guard choice != shortcut, canChangeShortcut else {
-            updateSettings()  // puts a refused choice back in Settings
-            return
-        }
-        let wasEnabled = enabled
-        disable()
-        shortcut = choice
-        UserDefaults.standard.set(choice.rawValue, forKey: "shortcut")
-        if wasEnabled { enable() } else { show("Disabled — shortcut: \(shortcutTitle)") }
     }
 
     private func handle(_ action: HotkeyAction) {
         guard enabled else { return }
         switch action {
-        case .began:
+        case .began(let mode):
             guard !isBusy, !refuseIfReplaced(), !TextInsertion.isSecureInputActive() else {
                 return
             }
-            if synchronizeDictationLanguage() { return }
+            if synchronizeDictationLanguage() || !canBeginDictation(mode) { return }
+            let shortcut = dictationShortcuts[mode]
             overlay.allowShowing()
             resultNeedsAttention = false
             forcedStopMessage = nil
@@ -567,13 +547,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             historyDraft = HistoryDraft(date: Date(),
                                         app: Self.historyAppName(typed: typedAppName, pid: fieldPID ?? originPID),
                                         language: locale, terminal: dictationForTerminal,
-                                        accurateRemoveFillers: AccurateDictationSettings().enabled ? removeFillers : nil)
+                                        accurateRemoveFillers: mode == .accurate ? removeFillers : nil,
+                                        shortcutTitle: shortcut.releaseTitle)
             // Terms added with `voiceislocal words` since the last dictation count for this one.
             refreshWordList()
             // This dictation's corrections, fixed now; a refused begin leaves the one still stopping with its own.
             let previousCorrections = dictationCorrections
             dictationCorrections = corrections
-            if controller.begin(afterRelease: makeAccurateDictationWorker()) {
+            if controller.begin(afterRelease: makeAccurateDictationWorker(mode: mode)) {
                 // A pending opacity sample must not hide this dictation's own preview or result.
                 // A rejected begin leaves the timer running so the sample still hides on time.
                 opacitySampleTask?.cancel()
@@ -603,6 +584,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private var activeShortcutTitle: String { historyDraft?.shortcutTitle ?? shortcutTitle }
+
     private func receive(_ update: DictationStatus) {
         monitor?.setSessionActive([.preparing, .listening, .finalizing].contains(update.phase))
         noteHistoryPhase(update)
@@ -625,9 +608,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 overlay.hide()  // an earlier result's message no longer applies
             }
         case .listening:
-            message = "Listening — release \(shortcutTitle) to finish"
+            message = "Listening — release \(activeShortcutTitle) to finish"
             if showPreview {
-                overlay.show(title: "Listening", hint: "Release \(shortcutTitle) to finish · Esc cancels",
+                overlay.show(title: controller.processingModel == nil ? "Listening" : "Listening · Accurate",
+                             hint: "Release \(activeShortcutTitle) to finish · Esc cancels",
                              text: update.text.isEmpty ? "Speak now" : cleaned(update.text), listening: true)
             }
             latestCommitted = update.committedText
@@ -1305,8 +1289,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func show(_ value: String) {
+    func show(_ value: String, attention: Bool = false) {
         message = value
+        if attention {
+            overlay.allowShowing()
+            overlay.show(title: value, text: "", attention: true)
+            scheduleOverlayHide()
+        }
         rebuildMenu()
     }
 
@@ -1446,7 +1435,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             screenCaptureDefault: MeetingAppState.screenCaptureDefault,
             assets: assetState, installingAssets: installingAssets,
             dictationEnabled: enabled, enabling: enabling, busy: isBusy, shortcutTitle: shortcutTitle,
-            shortcut: shortcut, shortcutChangeable: canChangeShortcut,
+            shortcuts: dictationShortcuts, shortcutChangeable: canChangeShortcut,
             removeFillers: removeFillers, showPreview: showPreview, previewOpacity: previewOpacity,
             message: message,
             speakerModels: speakerLabels.status, speakerModelsDetail: speakerLabels.detail,
@@ -1553,7 +1542,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func installAssets() {
-        guard !installingAssets, !isBusy, !enabled, !enabling else { return }
+        guard !installingAssets, !isBusy, !enabling, !enabled || assetState != "installed" else { return }
         installingAssets = true  // also keeps the language from changing until the install ends
         prepareDictationModelInstall()
         assetTask = Task { [weak self] in
