@@ -29,22 +29,18 @@ launches, and **Skip — Show All Settings**, open the main window on **Settings
 Accessibility access explicitly (Input Monitoring is not needed; its row appears only if
 macOS refuses the hold-to-talk key with Accessibility on); in the Dictation card pick the
 **Dictation language** (English (Canada) by default; Russian, Ukrainian and the other
-languages only Apple's dictation recognizer has are listed too) and the hold-to-talk shortcut, and
-install Apple's speech model for the language; each row updates live, and its button
-opens the matching System Settings pane. A new language applies from the next dictation;
-when its model is missing, dictation turns off until it is installed. The asset action
-may download Apple's model. Then turn dictation on in Settings. The default user-selectable shortcut is **Right Option**;
-**Control–Option–Space** is the alternate. Once enabled, hold the chosen shortcut,
-wait for “Listening” in the non-activating preview, speak, then release. Releasing
-during startup produces a retry message instead of a partial insertion. Esc or
-“Cancel Dictation” cancels, including while finalizing.
+languages only Apple's dictation recognizer has are listed too). Install Apple's speech model
+for the language to use Live. Accurate has its own downloadable models. A new language applies
+from the next dictation. Then turn dictation on in Settings.
+The **Live shortcut** defaults to **Right Option**. For the default **Accurate shortcut**,
+hold **Right Command**, then press and hold **Right Option**. Wait for Listening before
+speaking and release Right Option when finished. Accurate shows microphone activity
+while you speak and recognizes the recording after release. In either mode, Esc or
+**Cancel Dictation** cancels, including while finalizing.
 
-Right Option is reserved while its shortcut is enabled. Unrelated typing while
-holding it cancels dictation and may be consumed until the key is released. Use
-the alternate shortcut or disable dictation if Right Option is needed for other
-work. Sleep or an inactive login session cancels the utterance and pauses dictation.
-On return, an enabled toggle is restored automatically; a disabled toggle stays off.
-Check sleep/wake and switching login sessions, including sleep during an in-progress enable. There is no automatic login launch or background installation.
+Choose another chord or Off for either shortcut in Settings › Dictation. When
+only Accurate uses Right Option, a plain Right Option press reaches the focused app.
+Release all chord modifiers for accurate insertion in Screen Sharing.
 
 ## Setup Assistant
 
@@ -282,7 +278,7 @@ audio of dictations (for Run Again)** on (the default):
 
 ## Result and privacy behavior
 
-The app previews the current recognition hypothesis. Words the recognizer has
+Live dictation previews the current recognition hypothesis. Words the recognizer has
 finalized are written into the target while you are still speaking; volatile words
 stay in the preview until they settle, and releasing the shortcut writes whatever
 the final transcript adds. Text is only ever appended, never rewritten. Surrounding
@@ -319,9 +315,9 @@ kept for copying. No Option or Control combinations are synthesized.
 Screen Sharing gets the same physical keys, and Shift pressed and released as its own key, with the flags a real Left Shift reports (it ignores a Shift without the device bit). What runs on the other
 computer is unknown, so it is treated as a terminal: code tokens get no backticks. Dictate into a terminal and a text
 editor on the other Mac, and check uppercase letters and punctuation. Both Macs need the same keyboard layout, which
-Voice is Local cannot check. Right Option types as you speak. With Control-Option-Space, Control and Option reach the
-other computer before the dictation starts, so typing is refused and the text waits for Copy Result. Moving to another
-Screen Sharing window stops typing.
+Voice is Local cannot check. Live dictation with Right Option types as you speak. Other chord modifiers reach the
+other computer before dictation starts. If text is ready while any of those modifiers are still held, the app
+leaves it for Copy Result. Moving to another Screen Sharing window stops typing.
 
 Hesitation sounds ("um", "uh", "ah", "erm", "hmm") and the commas around them are
 removed before corrections are applied, unless **Remove filler words** is turned
@@ -456,6 +452,7 @@ behavior, and permission owner for each row.
 | Browser text field and rich editor (e.g. ChatGPT in Chrome) | Phrases are typed as you pause while that field keeps focus; moving focus stops typing and keeps the rest for Copy Result. |
 | Native field without direct Accessibility writes | Typed into while it keeps focus; a field that fails a safety check (large selection, unreadable range) is not typed into and its text is kept for Copy Result. |
 | Terminal input (shell prompt and a TUI such as Claude Code) | Phrases are typed as you pause; never a Return; Secure Keyboard Entry refuses. Switching tab, split pane or window while speaking stops typing; nothing lands in the new session, and the rest is kept for Copy Result. Check Terminal and iTerm2 (tabs and split panes), and one of Ghostty, WezTerm, kitty, Alacritty, Warp or Rex (the log line "focus tracked by session/window/app" shows which level that terminal supports). |
+| Both dictation shortcuts | In the same field, use Right Option for Live, then hold Right Command and press Right Option for Accurate. Release both keys after speaking. Verify the Accurate shortcut inserts only after release. Change one binding, confirm the other mode still works, and set Live to Off to check that plain Right Option reaches the front app. |
 | Accidental press after a dictation that left text for Copy Result | Tap the shortcut and release before Listening, press and Esc, or hold without speaking: Copy Result and Copy Original still offer the earlier text, which still expires ten minutes after its own dictation. A later dictation that recognizes words replaces it. |
 | Learn "bull request" → "pull request", then dictate it | Corrected in preview and in the field; "bull market" unchanged. |
 | Long utterance with pauses in TextEdit | Finalized phrases appear while speaking, the tail on release, no duplicates or missing spaces. |

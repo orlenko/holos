@@ -57,10 +57,9 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         var perform: (SetupAction) -> Void
         var opacity: (Double) -> Void
         var language: (String) -> Void
-        var shortcut: (HotkeyChoice) -> Void
+        var shortcut: (DictationShortcutMode, HotkeyChoice) -> Void
         var retention: (HistoryRetention) -> Void
         var appearance: (AppearanceChoice) -> Void
-        var recognitionChanged: () -> Void = {}
     }
 
     let recognition = AccurateDictationControls()
@@ -74,6 +73,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     private let fillerToggle = NSButton(checkboxWithTitle: "Remove filler words", target: nil, action: nil)
     private let languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     let shortcutPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    let accurateShortcutPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let retentionPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private var shownLocaleGroups: [[String]]?
     private let previewToggle = NSButton(checkboxWithTitle: "Show the dictation preview while dictating",
@@ -290,7 +290,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         addRow(.dictation, "Dictation", to: grid)
         addRowItem(.dictation, .dictation, keywords: ["turn on", "turn off", "enable", "start"])
 
-        addRecognitionRows(to: grid, modeChanged: callbacks.recognitionChanged)
+        addRecognitionRows(to: grid)
         languagePopup.target = self
         languagePopup.action = #selector(languageChosen(_:))
         languagePopup.setAccessibilityLabel("Dictation language")
@@ -688,10 +688,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         }
         let language = DictationLanguage.name(of: state.locale)
         updateLanguagePopup(state)
-        select(shortcutPopup, state.shortcut.rawValue)
-        shortcutPopup.isEnabled = state.shortcutChangeable
-        recognition.refresh(changeable: state.shortcutChangeable && !state.installingAssets)
-        setRowHidden(.assets, recognition.settings.enabled)
+        updateShortcutRows(state)
+        setRowHidden(.assets, state.shortcuts.live == .off)
         select(retentionPopup, state.historyRetention.rawValue)
         openAtLaunchToggle.state = state.openWindowAtLaunch ? .on : .off
         updateChecksToggle.isEnabled = state.updatesAvailable
@@ -766,7 +764,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         }
 
         if let title = rows[.assets]?.title { setSearched(title, "Speech model: \(language)") }
-        let canInstall = !state.installingAssets && !state.busy && !state.dictationEnabled && !state.enabling
+        let canInstall = !state.installingAssets && !state.busy && !state.enabling
+            && state.shortcuts.canInstallLiveModel(whileEnabled: state.dictationEnabled)
         if state.installingAssets || state.assets == "downloading" {
             set(.assets, .pending, "Downloading and installing…", button: "Install", enabled: false)
         } else {
@@ -1257,7 +1256,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         guard let raw = sender.selectedItem?.representedObject as? String, let choice = HotkeyChoice(rawValue: raw) else {
             return
         }
-        callbacks.shortcut(choice)
+        callbacks.shortcut(sender === accurateShortcutPopup ? .accurate : .live, choice)
     }
 
     @objc private func retentionChosen(_ sender: NSPopUpButton) {

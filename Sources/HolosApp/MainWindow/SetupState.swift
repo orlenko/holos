@@ -25,8 +25,8 @@ struct SetupState {
     var enabling: Bool
     var busy: Bool
     var shortcutTitle: String
-    /// The hold-to-talk shortcut, and whether it can be changed now (not during a dictation, enable, or meeting).
-    var shortcut: HotkeyChoice = .rightOption
+    /// The two hold-to-talk shortcuts and whether they can be changed now.
+    var shortcuts = DictationShortcuts()
     var shortcutChangeable = true
     var removeFillers: Bool
     /// Whether the dictation preview is shown while dictating; problems are always shown.

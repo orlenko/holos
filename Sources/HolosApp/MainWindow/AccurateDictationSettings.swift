@@ -4,15 +4,9 @@ import HolosDesktop
 import HolosCore
 import HolosMeeting
 
-/// The two choices are independent so switching to Live remembers the selected local model.
 struct AccurateDictationSettings {
     let defaults: UserDefaults
     init(_ defaults: UserDefaults = .standard) { self.defaults = defaults }
-
-    var enabled: Bool {
-        get { defaults.bool(forKey: "dictationAfterRelease") }
-        nonmutating set { defaults.set(newValue, forKey: "dictationAfterRelease") }
-    }
 
     var model: AccurateDictationModel {
         get { defaults.string(forKey: "accurateDictationModel").flatMap(AccurateDictationModel.init) ?? .whisper }
@@ -26,14 +20,13 @@ struct AccurateDictationSettings {
 @MainActor
 final class AccurateDictationControls {
     let settings: AccurateDictationSettings
-    let mode = NSPopUpButton()
     let model = NSPopUpButton()
     let status = NSTextField(labelWithString: "")
     let download = NSButton()
     private let runner: CommandRunner
     private var states: [AccurateDictationModel: State] = [:]
     private var changeable = true
-    var modeChanged: () -> Void = {}
+    private var enabled = true
 
     private enum State { case checking, missing, installing, externalDownload, installed, checkFailed, downloadFailed }
 
@@ -41,11 +34,6 @@ final class AccurateDictationControls {
          launcher: MaintenanceLauncher = MaintenanceLauncher(executable: ChildProcessLauncher.bundledExecutable)) {
         self.settings = settings
         runner = CommandRunner(launcher: launcher)
-        mode.addItems(withTitles: ["Live", "Accurate after release"])
-        mode.selectItem(at: settings.enabled ? 1 : 0)
-        mode.setAccessibilityLabel("Dictation mode")
-        mode.target = self
-        mode.action = #selector(chooseMode)
         model.addItems(withTitles: AccurateDictationModel.allCases.map(\.title))
         model.selectItem(withTitle: settings.model.title)
         model.setAccessibilityLabel("Accurate dictation model")
@@ -57,10 +45,10 @@ final class AccurateDictationControls {
         status.font = .preferredFont(forTextStyle: .caption1)
     }
 
-    func refresh(changeable: Bool) {
+    func refresh(changeable: Bool, enabled: Bool) {
         self.changeable = changeable
-        mode.isEnabled = changeable
-        model.isEnabled = changeable && settings.enabled
+        self.enabled = enabled
+        model.isEnabled = changeable && enabled
         let choice = settings.model
         let state = states[choice]
         status.stringValue = switch state {
@@ -72,19 +60,19 @@ final class AccurateDictationControls {
         case .downloadFailed: "Download or verification failed. Retry when connected."
         case .checking, nil: "Checking…"
         }
-        status.isHidden = !settings.enabled
+        status.isHidden = !enabled
         let canRecheck = state == .checkFailed || state == .externalDownload
         download.title = canRecheck ? "Check again" : "Download (\(choice == .whisper ? "1.6 GB" : "632 MB"))"
-        download.isHidden = !settings.enabled || (state != .missing && state != .downloadFailed && !canRecheck)
+        download.isHidden = !enabled || (state != .missing && state != .downloadFailed && !canRecheck)
         download.isEnabled = changeable
-        if settings.enabled, state == nil { checkSelected() }
+        if enabled, state == nil { checkSelected() }
     }
 
     func checkSelected() {
         let choice = settings.model
-        guard settings.enabled, states[choice] != .installing, states[choice] != .checking else { return }
+        guard enabled, states[choice] != .installing, states[choice] != .checking else { return }
         states[choice] = .checking
-        refresh(changeable: changeable)
+        refresh(changeable: changeable, enabled: enabled)
         Task {
             let result = try? await runner.run(["setup", "--\(choice.rawValue)", "--status"],
                 output: "json", errors: nil, maxOutputBytes: 4096, as: DeepModelStatus.self)
@@ -93,62 +81,66 @@ final class AccurateDictationControls {
             } else {
                 states[choice] = .checkFailed
             }
-            refresh(changeable: changeable)
+            refresh(changeable: changeable, enabled: enabled)
         }
     }
 
     @objc func downloadChosen() {
         let choice = settings.model
         if states[choice] == .checkFailed || states[choice] == .externalDownload { checkSelected(); return }
-        guard settings.enabled, changeable, states[choice] == .missing || states[choice] == .downloadFailed else { return }
+        guard enabled, changeable, states[choice] == .missing || states[choice] == .downloadFailed else { return }
         states[choice] = .installing
-        refresh(changeable: changeable)
+        refresh(changeable: changeable, enabled: enabled)
         Task {
             let result = try? await runner.run(["setup", "--\(choice.rawValue)"], output: "out", errors: nil,
                                                maxOutputBytes: 4096, decode: { _ in true })
             states[choice] = result?.code == 0 ? .installed : .downloadFailed
-            refresh(changeable: changeable)
+            refresh(changeable: changeable, enabled: enabled)
         }
-    }
-
-    @objc func chooseMode() {
-        settings.enabled = mode.indexOfSelectedItem == 1
-        if settings.enabled { checkSelected() }
-        refresh(changeable: changeable)
-        modeChanged()
     }
 
     @objc func chooseModel() {
         guard let choice = AccurateDictationModel.allCases.first(where: { $0.title == model.titleOfSelectedItem }) else { return }
         settings.model = choice
         checkSelected()
-        refresh(changeable: changeable)
+        refresh(changeable: changeable, enabled: enabled)
     }
 }
 
 extension SettingsPane {
-    func addRecognitionRows(to grid: NSGridView, modeChanged: @escaping () -> Void) {
-        recognition.modeChanged = modeChanged
-        shortcutPopup.target = self
-        shortcutPopup.action = #selector(shortcutChosen(_:))
-        for (choice, title) in [(HotkeyChoice.rightOption, "Right Option"),
-                                (.controlOptionSpace, "Control–Option–Space")] {
-            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            item.representedObject = choice.rawValue
-            shortcutPopup.menu?.addItem(item)
+    func addRecognitionRows(to grid: NSGridView) {
+        for (popup, title) in [(shortcutPopup, "Live shortcut"), (accurateShortcutPopup, "Accurate shortcut")] {
+            popup.target = self
+            popup.action = #selector(shortcutChosen(_:))
+            popup.menu?.autoenablesItems = false
+            for choice in HotkeyChoice.allCases {
+                let item = NSMenuItem(title: choice.title, action: nil, keyEquivalent: "")
+                item.representedObject = choice.rawValue
+                popup.menu?.addItem(item)
+            }
+            popup.setAccessibilityLabel(title)
         }
-        shortcutPopup.setAccessibilityLabel("Hold-to-talk shortcut")
-        addControlRow(.dictation, "keyboard", "Hold-to-talk shortcut", "Hold it, wait for Listening, speak, release",
-                      keywords: ["hotkey", "key", "right option", "control option space", "push to talk"],
-                      control: shortcutPopup, to: grid)
-
-        addControlRow(.dictation, "waveform", "Dictation mode", "Accurate recognizes the recording after you release the shortcut.",
-                      keywords: ["live", "accurate", "after release"], control: recognition.mode, to: grid)
+        let keywords = ["hotkey", "key", "right option", "control option space", "push to talk"]
+        addControlRow(.dictation, "keyboard", "Live shortcut", "Shows and inserts text while you speak.",
+                      keywords: keywords, control: shortcutPopup, to: grid)
+        addControlRow(.dictation, "waveform", "Accurate shortcut", "Recognizes after release. For the default chord, hold Right Command first.",
+                      keywords: keywords + ["right command", "after release"], control: accurateShortcutPopup, to: grid)
         let controls = NSStackView(views: [recognition.model, recognition.status, recognition.download])
         controls.orientation = .vertical
         controls.alignment = .trailing
         addControlRow(.dictation, "cpu", "Accurate dictation model",
                       "Downloaded models recognize your recording on this Mac.",
                       keywords: ["local", "whisper", "parakeet", "download"], control: controls, focus: recognition.model, to: grid)
+    }
+
+    func updateShortcutRows(_ state: SetupState) {
+        let shortcuts = state.shortcuts
+        for (popup, choice, other) in [(shortcutPopup, shortcuts.live, shortcuts.accurate),
+                                       (accurateShortcutPopup, shortcuts.accurate, shortcuts.live)] {
+            popup.selectItem(withTitle: choice.title)
+            popup.isEnabled = state.shortcutChangeable
+            for item in popup.itemArray { item.isEnabled = other == .off || item.title != other.title }
+        }
+        recognition.refresh(changeable: state.shortcutChangeable, enabled: shortcuts.accurate != .off)
     }
 }

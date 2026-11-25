@@ -102,10 +102,8 @@ func accurateDictationFailureHidesHelperDiagnosticsAndDiscardsAudio(code: Int32)
         """)
     let settings = AccurateDictationSettings(defaults)
     let controls = AccurateDictationControls(settings: settings, launcher: launcher)
-    #expect(!settings.enabled)
     #expect(settings.model == .whisper)
-    controls.mode.selectItem(at: 1)
-    controls.chooseMode()
+    controls.refresh(changeable: true, enabled: true)
     for index in [0, 1] {
         controls.model.selectItem(at: index)
         controls.chooseModel()
@@ -118,9 +116,8 @@ func accurateDictationFailureHidesHelperDiagnosticsAndDiscardsAudio(code: Int32)
         #expect(FileInspection.exists(marker))
         #expect(controls.download.isHidden)
     }
-    controls.mode.selectItem(at: 0)
-    controls.chooseMode()
-    #expect(!settings.enabled)
+    controls.refresh(changeable: true, enabled: false)
+    #expect(controls.download.isHidden && !controls.model.isEnabled)
     #expect(AccurateDictationSettings(defaults).model == .parakeet)
 }
 
