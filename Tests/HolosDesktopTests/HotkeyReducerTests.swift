@@ -135,3 +135,14 @@ import Testing
     #expect(!state.receive(.keyDown(code: kVK_ANSI_A, flags: [])).consume)
     #expect(state.receive(.keyDown(code: kVK_Space, flags: chord)).action == .began(.live))
 }
+
+@Test func releasingRightOptionEndsASpaceChordThatRequiresIt() {
+    var state = HotkeyReducer(shortcuts: .init(live: .controlOptionSpace))
+    let chord = CGEventFlags(rawValue: CGEventFlags.maskControl.rawValue | CGEventFlags.maskAlternate.rawValue | 0x40)
+    #expect(!state.receive(.flagsChanged(code: kVK_RightOption, flags: chord)).consume)
+    #expect(state.receive(.keyDown(code: kVK_Space, flags: chord)).action == .began(.live))
+    let optionUp = state.receive(.flagsChanged(code: kVK_RightOption, flags: .maskControl))
+    #expect(optionUp.action == .ended && !optionUp.consume)
+    let spaceUp = state.receive(.keyUp(code: kVK_Space, flags: .maskControl))
+    #expect(spaceUp.action == nil && spaceUp.consume)
+}

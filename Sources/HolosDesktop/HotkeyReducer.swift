@@ -83,7 +83,8 @@ struct HotkeyReducer {
     }
 
     private mutating func flagsChanged(_ code: Int, _ flags: CGEventFlags) -> HotkeyTransition {
-        if code == kVK_RightOption, shortcuts.live.usesRightOption || shortcuts.accurate.usesRightOption {
+        if code == kVK_RightOption, reserved?.usesRightOption != false,
+           shortcuts.live.usesRightOption || shortcuts.accurate.usesRightOption {
             // The device bits distinguish sides when Left Option stays held.
             let optionSides = flags.rawValue & Self.optionSides
             if waitForNeutralOption {
