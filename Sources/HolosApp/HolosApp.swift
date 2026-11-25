@@ -388,7 +388,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func enable() {
-        guard !enabled, !enabling, !installingAssets, !dictationSession.suspended else { return }
+        guard !enabled, !enabling, !dictationSession.suspended else { return }
         guard canEnableDictationShortcuts(), !refuseIfReplaced() else { return }
         guard AudioCapture.microphonePermission == "authorized", AXIsProcessTrusted() else {
             show("Grant Microphone and Accessibility access in Voice is Local Settings, then enable dictation.")
@@ -1542,7 +1542,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func installAssets() {
-        guard !installingAssets, !isBusy, !enabling, !enabled || assetState != "installed" else { return }
+        guard !installingAssets, !isBusy, !enabling, dictationShortcuts.canInstallLiveModel(whileEnabled: enabled)
+                && assetState != "installed" else { return }
         installingAssets = true  // also keeps the language from changing until the install ends
         prepareDictationModelInstall()
         assetTask = Task { [weak self] in

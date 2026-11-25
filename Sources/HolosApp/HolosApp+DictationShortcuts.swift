@@ -31,13 +31,14 @@ extension HolosAppDelegate {
 
     func canEnableDictationShortcuts() -> Bool {
         let choices = dictationShortcuts
-        if choices.live != .off || choices.accurate != .off { return true }
-        show("Choose a Live or Accurate shortcut in Dictation settings.")
-        return false
+        if choices.live == .off, choices.accurate == .off {
+            show("Choose a Live or Accurate shortcut in Dictation settings.")
+        }
+        return choices.canEnable(installingLiveAssets: installingAssets)
     }
 
     func liveAssetsForEnabling(locale: String, backend: SpeechBackend) async -> String? {
-        guard dictationShortcuts.live != .off else { return nil }
+        guard dictationShortcuts.live != .off, !installingAssets else { return nil }
         do {
             return try await checkDictationAssets(locale: locale, backend: backend)
         } catch {
@@ -46,7 +47,7 @@ extension HolosAppDelegate {
     }
 
     func canBeginDictation(_ mode: DictationShortcutMode) -> Bool {
-        guard mode == .live, assetState != "installed" else { return true }
+        guard !mode.canBegin(liveAssetState: assetState, installingLiveAssets: installingAssets) else { return true }
         let hint = installingAssets ? "The Live speech model is downloading."
             : "Install the Live speech model for \(languageName) in Dictation settings."
         show(hint, attention: true)
@@ -73,5 +74,20 @@ struct DictationShortcutPreferences {
     func save(_ shortcuts: DictationShortcuts) {
         defaults.set(shortcuts.live.rawValue, forKey: "shortcut")
         defaults.set(shortcuts.accurate.rawValue, forKey: "accurateDictationShortcut")
+    }
+}
+
+extension DictationShortcuts {
+    func canInstallLiveModel(whileEnabled: Bool) -> Bool { !whileEnabled || accurate != .off }
+
+    /// Accurate can be restored after sleep while a Live-only download is still running.
+    func canEnable(installingLiveAssets: Bool) -> Bool {
+        accurate != .off || (live != .off && !installingLiveAssets)
+    }
+}
+
+extension DictationShortcutMode {
+    func canBegin(liveAssetState: String?, installingLiveAssets: Bool) -> Bool {
+        self == .accurate || (!installingLiveAssets && liveAssetState == "installed")
     }
 }

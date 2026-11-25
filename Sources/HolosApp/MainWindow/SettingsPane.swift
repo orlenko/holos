@@ -765,6 +765,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
 
         if let title = rows[.assets]?.title { setSearched(title, "Speech model: \(language)") }
         let canInstall = !state.installingAssets && !state.busy && !state.enabling
+            && state.shortcuts.canInstallLiveModel(whileEnabled: state.dictationEnabled)
         if state.installingAssets || state.assets == "downloading" {
             set(.assets, .pending, "Downloading and installing…", button: "Install", enabled: false)
         } else {

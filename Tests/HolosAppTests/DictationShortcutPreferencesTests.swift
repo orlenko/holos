@@ -38,3 +38,16 @@ import Testing
     #expect(changes.map(\.0) == [.live, .accurate])
     #expect(changes.map(\.1) == [.controlOptionSpace, .controlShiftSpace])
 }
+
+@Test func accurateRemainsAvailableDuringLiveSetupAndCanRestoreAfterWake() {
+    #expect(DictationShortcuts().canInstallLiveModel(whileEnabled: true))
+    #expect(!DictationShortcuts(accurate: .off).canInstallLiveModel(whileEnabled: true))
+    #expect(DictationShortcuts(accurate: .off).canInstallLiveModel(whileEnabled: false))
+    #expect(DictationShortcuts().canEnable(installingLiveAssets: true))
+    #expect(DictationShortcuts(live: .off).canEnable(installingLiveAssets: true))
+    #expect(!DictationShortcuts(accurate: .off).canEnable(installingLiveAssets: true))
+    #expect(!DictationShortcuts(live: .off, accurate: .off).canEnable(installingLiveAssets: false))
+    #expect(DictationShortcutMode.accurate.canBegin(liveAssetState: nil, installingLiveAssets: true))
+    #expect(!DictationShortcutMode.live.canBegin(liveAssetState: "installed", installingLiveAssets: true))
+    #expect(DictationShortcutMode.live.canBegin(liveAssetState: "installed", installingLiveAssets: false))
+}
