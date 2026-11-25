@@ -1,4 +1,5 @@
 import Foundation
+import HolosSpeakers
 
 /// The review window's playback speeds (docs/meeting/review-window.md §5.10): 1×, 1.25×, 1.5×, and 2×, remembered across
 /// windows and launches.
@@ -52,6 +53,28 @@ public enum ReviewTimeline {
             found = index
         }
         return found
+    }
+
+    /// The turn being spoken at `time` among `turns`: when multiple turns cover `time`, an unknown-speaker microphone
+    /// turn (`track == "mic"` and `speakerID == nil`) or any microphone turn while the echo mix mutes the microphone
+    /// (`micMuted`) yields to any other active turn (such as the system-audio turn being heard), and among the eligible
+    /// turns the one that started last wins (ties go to the later turn in the list). Nil in silence.
+    public static func turnIndex(at time: Double, turns: [ProjectedTurn], micMuted: Bool = false) -> Int? {
+        func isSecondary(_ turn: ProjectedTurn) -> Bool {
+            turn.track == EchoFilter.microphoneTrack && (micMuted || turn.speakerID == nil)
+        }
+        var primary: Int?
+        var fallback: Int?
+        for (index, turn) in turns.enumerated() where turn.start <= time && time < turn.end {
+            if isSecondary(turn) {
+                if let current = fallback, turns[current].start > turn.start { continue }
+                fallback = index
+            } else {
+                if let current = primary, turns[current].start > turn.start { continue }
+                primary = index
+            }
+        }
+        return primary ?? fallback
     }
 
     /// The word being spoken at `time`: the last word (in text order) whose start is at or before it. Nil before the

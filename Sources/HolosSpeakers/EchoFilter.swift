@@ -23,6 +23,11 @@ public enum EchoFilter {
     /// tracks minutes apart ("yes" … "yes" … "yes") would add up to a run and be dropped, which is exactly what
     /// `echoMinRunWords` exists to prevent.
     public static let echoRunGapSeconds = 2.0
+    /// At most this many unmatched words on each track inside an echoed phrase ("alpha" against "beta", "keep one"
+    /// against "keepone") may be bridged when the matched words on both sides reach `echoMinRunWords + 1`.
+    public static let echoMaxBridgeWords = 2
+    /// The echo window used when a segment-level acoustic check compares against system speech.
+    static let defaultEchoWindowSeconds = 1.0
 
     /// Microphone spans to drop: runs of at least `echoMinRunWords` consecutive mic words whose normalized
     /// text (lowercased, letters and digits only) equals, in order, consecutive system words, each mic word
@@ -117,6 +122,7 @@ public enum EchoFilter {
             previous = current
         }
         var droppedMatchable = [Bool](repeating: false, count: candidates.count)
+        var backward = candidates.map { [Int](repeating: 0, count: $0.count) }
         var next: [Int: Int] = [:]
         for i in candidates.indices.reversed() {
             var current: [Int: Int] = [:]
@@ -124,10 +130,60 @@ public enum EchoFilter {
             for (slot, j) in candidates[i].enumerated() {
                 var length = 1
                 if leadsOn, let after = next[j + 1], systemTogether(j, j + 1) { length = after + 1 }
+                backward[i][slot] = length
                 current[j] = length
                 if forward[i][slot] + length - 1 >= minimumRun { droppedMatchable[i] = true }
             }
             next = current
+        }
+
+        // A 1–2 word disagreement between the two tracks' recognizers inside an echoed phrase ("we should alpha now"
+        // on the microphone against "we should beta now" on the system track, or "so we keep one" against "so we
+        // keepone") is still one echo run when both tracks advance by 1…echoMaxBridgeWords matchable
+        // words within echoRunGapSeconds, the bridged words on the two tracks share no normalized word (a missed word
+        // is an insertion or deletion, not a substitution, and still breaks the run), none of the bridged microphone
+        // words was edited in Review, each bridged microphone word lies within the echo window of a bridged system
+        // word, and the matched words on both sides together reach at least max(minimumRun, minimumRun + 1).
+        let bridgeMinimum = max(minimumRun, minimumRun + 1)
+        let leadWindow = min(window, echoLeadToleranceSeconds)
+        for i1 in candidates.indices {
+            for dm in 1...echoMaxBridgeWords {
+                let i2 = i1 + dm + 1
+                guard i2 < candidates.count,
+                      !droppedMatchable[i1] || !droppedMatchable[i1 + 1]
+                          || !droppedMatchable[i2 - 1] || !droppedMatchable[i2],
+                      (i1..<i2).allSatisfy({ micTogether($0, $0 + 1) }),
+                      ((i1 + 1)..<i2).allSatisfy({ !edited.contains(mic[micMatchable[$0]].ref) }) else { continue }
+                for (slot1, j1) in candidates[i1].enumerated() {
+                    let f = forward[i1][slot1]
+                    guard f > 0 else { continue }
+                    for ds in 1...echoMaxBridgeWords {
+                        let j2 = j1 + ds + 1
+                        guard let slot2 = candidates[i2].firstIndex(of: j2) else { continue }
+                        let b = backward[i2][slot2]
+                        guard f + b >= bridgeMinimum,
+                              (j1..<j2).allSatisfy({ systemTogether($0, $0 + 1) }) else { continue }
+                        let disjoint = ((i1 + 1)..<i2).allSatisfy { im in
+                            let micKey = mic[micMatchable[im]].key
+                            return ((j1 + 1)..<j2).allSatisfy { js in
+                                system[systemMatchable[js]].key != micKey
+                            }
+                        }
+                        guard disjoint else { continue }
+                        let timed = ((i1 + 1)..<i2).allSatisfy { im in
+                            let start = mic[micMatchable[im]].start
+                            let low = start - window - timeEpsilon
+                            let high = start + leadWindow + timeEpsilon
+                            return ((j1 + 1)..<j2).contains { js in
+                                let sysStart = system[systemMatchable[js]].start
+                                return sysStart >= low && sysStart <= high
+                            }
+                        }
+                        guard timed else { continue }
+                        for k in (i1 - f + 1)...(i2 + b - 1) { droppedMatchable[k] = true }
+                    }
+                }
+            }
         }
 
         var dropped = [Bool](repeating: false, count: mic.count)
@@ -192,19 +248,68 @@ public enum EchoFilter {
 
     /// Microphone spans the acoustic echo mask flags (`SpeakerProjection` hides them; stored runs never list them):
     /// every effective word of the segments whose track is exactly "mic" for which
-    /// `AcousticEchoMask.isEcho(start:end:)` is true, except the words in `excluding` (those the text filter already
-    /// dropped). A word the mask cannot judge is kept: times that are not numbers, past its last frame, or estimated (a
-    /// segment without word timing spreads its words evenly, so their times say nothing about which sound they were).
+    /// `AcousticEchoMask.isEcho(start:end:)` is true, plus any unedited 1–2 word remnant overlapping system speech (or
+    /// punctuation beside echo) inside a microphone segment at least `echoClusterShare` of whose words are already echo,
+    /// except the words in `excluding` (those the text filter already dropped or the user edited in Review). A word the
+    /// mask cannot judge is kept: times that are not numbers, past its last frame, or estimated (a segment without word
+    /// timing spreads its words evenly, so their times say nothing about which sound they were).
     /// Spans cover consecutive flagged words of one segment, in microphone word order.
     public static func acousticEchoSpans(transcript: Transcript, mask: AcousticEchoMask,
                                          excluding: Set<WordRef> = []) -> [WordSpan] {
+        let edited = reviewEditedWords(in: transcript)
+        let systemWords = SpeakerAlignment.trackSegments(transcript.segments, track: systemTrack,
+                                                         includeUntracked: false)
+            .flatMap { WordTiming.effectiveWords(of: $0) }
+            .filter { $0.start.isFinite && $0.end.isFinite }
+        func overlapsSystem(_ word: EffectiveWord) -> Bool {
+            guard word.start.isFinite, word.end.isFinite else { return false }
+            let low = word.start - defaultEchoWindowSeconds - timeEpsilon
+            let high = max(word.start, word.end) + echoLeadToleranceSeconds + timeEpsilon
+            return systemWords.contains { max($0.start, $0.end) >= low && $0.start <= high }
+        }
+
         var spans: [WordSpan] = []
         for segment in SpeakerAlignment.trackSegments(transcript.segments, track: microphoneTrack,
                                                       includeUntracked: false) {
-            for (index, word) in WordTiming.effectiveWords(of: segment).enumerated() {
+            let effective = WordTiming.effectiveWords(of: segment)
+            guard !effective.isEmpty else { continue }
+            var echo = [Bool](repeating: false, count: effective.count)
+            for (index, word) in effective.enumerated() {
                 let ref = WordRef(segmentID: segment.id, word: index)
-                guard !excluding.contains(ref), !word.estimated,
-                      mask.isEcho(start: word.start, end: word.end) == true else { continue }
+                if excluding.contains(ref) {
+                    echo[index] = !edited.contains(ref)
+                } else if !word.estimated, mask.isEcho(start: word.start, end: word.end) == true {
+                    echo[index] = true
+                }
+            }
+            let echoCount = echo.filter { $0 }.count
+            if Double(echoCount) >= echoClusterShare * Double(effective.count) - timeEpsilon {
+                var index = 0
+                while index < effective.count {
+                    guard !echo[index] else { index += 1; continue }
+                    var end = index
+                    while end < effective.count, !echo[end] { end += 1 }
+                    let indices = index..<end
+                    let judged = indices.allSatisfy {
+                        !edited.contains(WordRef(segmentID: segment.id, word: $0))
+                            && !effective[$0].estimated
+                            && mask.isEcho(start: effective[$0].start, end: effective[$0].end) != nil
+                    }
+                    if judged {
+                        let matchable = indices.filter { !normalized(effective[$0].text).isEmpty }
+                        let interiorPunctuation = matchable.isEmpty && index > 0 && end < effective.count
+                        if interiorPunctuation
+                            || (!matchable.isEmpty && matchable.count <= echoMaxBridgeWords
+                                && matchable.allSatisfy({ overlapsSystem(effective[$0]) })) {
+                            for position in indices { echo[position] = true }
+                        }
+                    }
+                    index = end
+                }
+            }
+            for index in effective.indices where echo[index] {
+                let ref = WordRef(segmentID: segment.id, word: index)
+                guard !excluding.contains(ref) else { continue }
                 if let last = spans.last, last.segmentID == ref.segmentID, last.end == ref.word {
                     spans[spans.count - 1].end += 1
                 } else {

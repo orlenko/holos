@@ -297,7 +297,8 @@ public enum SessionAudioComposition {
   through the meeting until paused (only a speaker's samples stop by themselves); Play
   resumes where it paused, from the start once the audio ended. Once something played,
   the turn playing has a tinted background with an accent bar and its word a tint and an
-  underline; while playing, the list keeps them in view, except for 5 seconds after the
+  underline (when a system-audio turn and an unknown-speaker or echo-muted microphone turn
+  overlap at the play head, playback follows the system-audio turn); while playing, the list keeps them in view, except for 5 seconds after the
   reader scrolls it (Play, a word, a timestamp, or ⌘←/⌘→ follow again at once). The
   words' times are the transcript's (estimated for old sessions). VoiceOver hears only who
   speaks, when that changes; a turn's text offers "Play from “word”" actions. Moving

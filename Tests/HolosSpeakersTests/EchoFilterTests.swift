@@ -129,6 +129,27 @@ private func wordsInTurns(_ run: DiarizationRun) -> Set<WordRef> {
     ]) == [WordSpan(segmentID: "MIC", first: 0, end: 3)])
 }
 
+/// A 1–2 word disagreement between the two recognizers inside an echoed sentence ("alpha" against "beta", or a two-word
+/// split against one word) is bridged when both tracks advance by 1–2 words in the echo window and the matched words
+/// around it reach `echoMinRunWords + 1`.
+@Test func interiorWordDisagreementInEchoPhraseIsDropped() {
+    // 3 matched words + 1 substituted word + 1 matched word = 4 matched words: whole phrase dropped.
+    #expect(echoSpans([
+        echoSegment("SYS", ["do", "you", "have", "alpha", "now"], track: "system", start: 10.0),
+        echoSegment("MIC", ["do", "you", "have", "beta", "now"], track: "mic", start: 10.1),
+    ]) == [WordSpan(segmentID: "MIC", first: 0, end: 5)])
+    // 2 matched words + 2 mic words for 1 system word + 2 matched words = 4 matched words: whole phrase dropped.
+    #expect(echoSpans([
+        echoSegment("SYS", ["so", "we", "KeepOne", "right", "now"], track: "system", start: 20.0),
+        echoSegment("MIC", ["so", "we", "keep", "one", "right", "now"], track: "mic", start: 20.1, wordSeconds: 0.25),
+    ]) == [WordSpan(segmentID: "MIC", first: 0, end: 6)])
+    // Only 3 matched words in all (2 + 1) around a mismatch: not bridged.
+    #expect(echoSpans([
+        echoSegment("SYS", ["do", "you", "alpha", "now"], track: "system", start: 30.0),
+        echoSegment("MIC", ["do", "you", "beta", "now"], track: "mic", start: 30.1),
+    ]).isEmpty)
+}
+
 @Test func caseAndPunctuationAreIgnored() {
     #expect(echoSpans([
         echoSegment("SYS", ["We", "should,", "vote", "now."], track: "system", start: 10.0),

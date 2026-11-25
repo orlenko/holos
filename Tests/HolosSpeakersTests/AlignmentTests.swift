@@ -75,6 +75,23 @@ private func turns(_ segments: [TranscriptSegment], _ diarization: TrackDiarizat
     #expect(words.map(\.label) == [b])
 }
 
+@Test func forwardGapSnapAppliesOnlyToLeadingWordsOfSegmentCoveredByThatCluster() {
+    // A standalone segment or trailing word ending before the next speaker's diarization segment starts does not snap
+    // forward across the gap onto the next speaker, while leading words of a segment covered by that speaker do.
+    let standalone = seg(5.0, 5.5, ("yeah", 5.0, 5.5))
+    let question = seg(5.9, 7.5, ("do", 5.9, 6.2), ("you", 6.3, 6.6), ("agree", 6.7, 7.5))
+    let track = diarization(("A", 0, 3.0), ("B", 6.1, 7.5))
+    let aligned = align([standalone, question], track)
+    // "yeah" (5.0–5.5) is 0.6 s after A and 0.6 s before B's 6.1, or even at 5.7 (0.4 s before B): never snapped to B.
+    #expect(aligned.map(\.label) == [nil, b, b, b])
+    let closerStandalone = seg(5.4, 5.75, ("yeah", 5.4, 5.75))
+    #expect(align([closerStandalone, question], track).map(\.label) == [nil, b, b, b])
+
+    // A trailing uncovered word at the end of an uncovered segment is not ripped onto the next segment's speaker.
+    let trailing = seg(4.5, 5.75, ("can", 4.5, 4.8), ("we", 4.9, 5.2), ("try", 5.4, 5.75))
+    #expect(align([trailing, question], track).map(\.label) == [nil, nil, nil, b, b, b])
+}
+
 // MARK: - Flicker smoothing
 
 @Test func boundaryFlickerIsSmoothed() {

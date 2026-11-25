@@ -165,9 +165,61 @@ public enum SpeakerAlignment {
             let timelines = ClusterTimeline.make(diarization.segments)
             var labelled = words.map { label($0, timelines: timelines, parameters: parameters) }
             let byID = Dictionary(uniqueKeysWithValues: timelines.map { ($0.clusterID, $0) })
+            trimForwardGapSnaps(&labelled, timelines: timelines, byID: byID, parameters: parameters)
             smoothFlicker(&labelled, timelines: byID, parameters: parameters)
             return labelled
         }
+    }
+
+    /// A gap-snapped word (`coveredSeconds == 0`) whose snap came only from a diarization segment starting after the
+    /// word ended (`segment.start > word.end`) keeps that forward snap only when the nearest covered word in the same
+    /// `TranscriptSegment` (looking forward first, then backward) belongs to that same cluster and no earlier word in
+    /// the segment has a different non-nil label. Otherwise the diarization segment belongs to a later utterance after
+    /// a pause, so the word snaps only backward (to a segment ending at or before `word.start` within `gapSnapSeconds`),
+    /// else stays unknown.
+    private static func trimForwardGapSnaps(_ words: inout [AlignedWord], timelines: [ClusterTimeline],
+                                            byID: [String: ClusterTimeline], parameters: AlignmentParameters) {
+        var segStart = 0
+        while segStart < words.count {
+            let segmentID = words[segStart].ref.segmentID
+            var segEnd = segStart + 1
+            while segEnd < words.count, words[segEnd].ref.segmentID == segmentID { segEnd += 1 }
+            defer { segStart = segEnd }
+            for index in segStart..<segEnd {
+                let word = words[index]
+                guard word.coveredSeconds == 0, let cluster = word.label, let timeline = byID[cluster] else { continue }
+                // If `cluster` has a segment at or before `word.start` within `gapSnapSeconds`, it snapped backward.
+                if timeline.backwardDistance(start: word.start, end: word.end)
+                    <= parameters.gapSnapSeconds + timeEpsilon {
+                    continue
+                }
+                let nextCovered = ((index + 1)..<segEnd).first { words[$0].coveredSeconds > 0 }.flatMap { words[$0].label }
+                let prevCovered = (segStart..<index).reversed().first { words[$0].coveredSeconds > 0 }
+                    .flatMap { words[$0].label }
+                let earlierMismatch = (segStart..<index).contains {
+                    guard let earlier = words[$0].label else { return false }
+                    return earlier != cluster
+                }
+                if (nextCovered ?? prevCovered) == cluster && !earlierMismatch {
+                    continue
+                }
+                words[index].label = backwardSnapLabel(for: word, timelines: timelines, parameters: parameters)
+            }
+        }
+    }
+
+    /// The nearest cluster by backward edge distance (segments ending at or before `word.end` and starting at or
+    /// before `word.start`) within `gapSnapSeconds`, or nil.
+    private static func backwardSnapLabel(for word: AlignedWord, timelines: [ClusterTimeline],
+                                          parameters: AlignmentParameters) -> String? {
+        let distances = timelines.map { $0.backwardDistance(start: word.start, end: word.end) }
+        let nearest = distances.min() ?? .infinity
+        guard nearest <= parameters.gapSnapSeconds + timeEpsilon else { return nil }
+        let tied = distances.indices.filter { distances[$0] <= nearest + timeEpsilon }
+        let main = pick(tied, timelines: timelines) {
+            $0.earliestBackwardStart(atDistance: nearest, start: word.start, end: word.end)
+        }
+        return timelines[main].clusterID
     }
 
     /// Steps 2 and 3 for one word.
@@ -409,6 +461,22 @@ struct ClusterTimeline {
     func earliestStart(atDistance distance: Double, start: Double, end: Double) -> Double? {
         segments(near: start - distance, end + distance)
             .first { abs(max(0, $0.start - end, start - $0.end) - distance) <= timeEpsilon }?
+            .start
+    }
+
+    /// Distance from `[start, end)` to the nearest segment ending at or before `start` (0 when a segment touches or
+    /// overlaps `[start, end)` from the left; `.infinity` when every segment starts after `end`).
+    func backwardDistance(start: Double, end: Double) -> Double {
+        let index = Intervals.firstIndex(in: union, endingAfter: start)
+        if index < union.count, union[index].start <= end + timeEpsilon { return 0 }
+        guard index > 0 else { return .infinity }
+        return max(0, start - union[index - 1].end)
+    }
+
+    /// The earliest start of a segment at backward distance `distance` from `[start, end)`.
+    func earliestBackwardStart(atDistance distance: Double, start: Double, end: Double) -> Double? {
+        segments(near: start - distance, end)
+            .first { $0.start <= end + timeEpsilon && abs(max(0, start - $0.end) - distance) <= timeEpsilon }?
             .start
     }
 
