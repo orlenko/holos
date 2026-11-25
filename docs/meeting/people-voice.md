@@ -102,8 +102,8 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   suggestion, no automatic name), and "Confirm all" is refused.
 - **People without voiceprints.** Linking a speaker to a person always creates or links
   the profile, whatever the setting, so names carry across meetings: the review
-  window's name field is a combo box of known people (most recently used first) and the
-  turn pop-up lists them. "This is me" links a speaker to the `isSelf` profile (created
+  window's name field and turn pop-up list known people (docs/meeting/review-window.md §5.10).
+  "This is me" links a speaker to the `isSelf` profile (created
   on first use with `NSFullUserName()`, editable). The People window lists people even
   when "Remember voices" is off.
 - **No stored voice data for unconfirmed people (Codex review of PR #4).** Post-processing

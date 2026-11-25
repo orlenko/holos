@@ -10,6 +10,7 @@ extension ReviewWindow {
 
         // Menus are replaced only when their items changed, so an update never swaps a menu that is open.
         let assignItems = AssignMenu.items(speakers: review.projection.speakers, people: review.knownPeople(),
+                                           suggested: turnList.suggestedPeople,
                                            unknownTitle: "Unknown speaker")
         let assignSignature = assignItems.map { item in
             item.isSeparatorItem ? "-" : item.title + "\u{1f}" + String(describing: (item.representedObject as? AssignChoice)?.kind)

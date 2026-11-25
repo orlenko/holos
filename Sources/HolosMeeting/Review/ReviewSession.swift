@@ -33,6 +33,7 @@ import os
 ///    this window's own word changes did not make. `revision` hands out both, with the labels run shown, as one value.
 /// 4. `exportsPending` is true from a change saved until `exports/` is rewritten (`ReviewExportScheduler`).
 /// 5. Every change to `queue` goes through `mutateQueue`, which recomputes the projection and activity and notifies.
+/// 6. The names, people and speaker-group history used in Review come from one people-store snapshot.
 @MainActor public final class ReviewSession {
     nonisolated static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "review")
     /// `SpeakerEdit.source` of the window's edits.
@@ -182,9 +183,11 @@ import os
     /// it again.
     public var correctionsWritten: (() -> Void)?
 
-    private var savedProjection: SpeakerProjection
-    private var people: [SpeakerProfile]
-    private var profileNames: [String: String]
+    private(set) var savedProjection: SpeakerProjection
+    private(set) var peopleSnapshot: KnownPeople
+    let groupSuggestions = ReviewSpeakerGroupSuggestions()
+    private var people: [SpeakerProfile] { peopleSnapshot.people }
+    private var profileNames: [String: String] { peopleSnapshot.names }
     private var segments: [String: TranscriptSegment]
     private var textCache: [String: (spans: [WordSpan], text: String)] = [:]
     private var wordCache: [String: (spans: [WordSpan], words: [ReviewWord])] = [:]
@@ -312,11 +315,10 @@ import os
         snapshot = loaded.snapshot
         self.projection = projection
         savedProjection = projection
-        people = loaded.people
-        profileNames = loaded.profileNames
-        rememberVoices = loaded.rememberVoices
-        learnVoices = loaded.rememberVoices
-        calibration = loaded.calibration
+        peopleSnapshot = loaded.known
+        rememberVoices = loaded.known.remember
+        learnVoices = loaded.known.remember
+        calibration = loaded.known.calibration
         segments = Self.segmentIndex(loaded.snapshot.transcript)
         knownEditedExports = loaded.editedExports
         Self.log.info("Session \(loaded.snapshot.manifest.id, privacy: .public): review opened on run \(projection.runID, privacy: .public) (\(projection.speakers.count, privacy: .public) speakers, \(projection.turns.count, privacy: .public) turns)")
@@ -3367,10 +3369,9 @@ import os
         let store = profiles
         let loaded = try await Self.detached { try Self.load(session: session, profiles: store) }
         if store != nil {
-            people = loaded.people
-            profileNames = loaded.profileNames
-            rememberVoices = loaded.rememberVoices
-            calibration = loaded.calibration
+            peopleSnapshot = loaded.known
+            rememberVoices = loaded.known.remember
+            calibration = loaded.known.calibration
         }
         return loaded.snapshot
     }
@@ -3378,8 +3379,7 @@ import os
     private func reloadPeople() async {
         guard let store = profiles else { return }
         let loaded = await Self.detachedValue { Self.people(store: store) }
-        people = loaded.people
-        profileNames = loaded.names
+        peopleSnapshot = loaded
         rememberVoices = loaded.remember
         calibration = loaded.calibration
     }

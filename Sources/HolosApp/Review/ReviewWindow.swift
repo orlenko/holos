@@ -449,18 +449,18 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             let matching = Set(review.turns(matching: query).map(\.id))
             paragraphs = paragraphs.filter { $0.turnIDs.contains(where: matching.contains) }
         }
-        let people = review.knownPeople()
+        let (people, suggestedPeople) = (review.knownPeople(), review.suggestedAssignPeople())
         // Words changed elsewhere since a field opened: it is not put back on them (`TurnListView.followWordEdit`).
         turnList.wordsEpoch = review.wordsEpoch
         turnList.runID = runID
         turnList.update(paragraphs: paragraphs, speakers: projection.speakers, people: people,
-                        editable: review.isEditable,
+                        suggestedPeople: suggestedPeople, editable: review.isEditable,
                         hints: review.profiles == nil ? [:] : review.voiceMatches.turnHints,
                         text: { [review] turn in review.text(of: turn) },
                         words: { [review] turn in review.words(of: turn) },
                         resolve: { [review] id in review.resolvedTurnID(id) }, wordMoves: review.shownWordMoves)
-        sidebar.update(rows: sidebarRows(), people: people, editable: review.isEditable,
-                       suggestions: review.suggestionCount)
+        sidebar.update(rows: sidebarRows(), people: AssignMenu.prioritizedPeople(people, suggested: suggestedPeople),
+                       editable: review.isEditable, suggestions: review.suggestionCount)
         refreshToolbar()
         refreshFooter()
         refreshPlayback()

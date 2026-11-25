@@ -9,18 +9,17 @@ extension ReviewSession {
 
     struct Loaded: Sendable {
         var snapshot: SpeakerSessionSnapshot
-        var people: [SpeakerProfile]
-        var profileNames: [String: String]
-        var rememberVoices: Bool
-        var calibration: (thresholds: RecognitionThresholds, model: EmbeddingModelID)?
+        var known: KnownPeople
         var editedExports: Set<String>
     }
 
     /// What one read of the people store gives the window.
     struct KnownPeople: Sendable {
+        let revision = UUID()
         var people: [SpeakerProfile] = []
         var names: [String: String] = [:]
         var remember = false
+        var canUseSamples = false
         /// Calibrated recognition thresholds and the model they were measured on, when calibrated.
         var calibration: (thresholds: RecognitionThresholds, model: EmbeddingModelID)?
     }
@@ -28,10 +27,8 @@ extension ReviewSession {
     nonisolated static func load(session: URL, profiles: SpeakerProfileStore?) throws -> Loaded {
         let known = profiles.map { people(store: $0) } ?? KnownPeople()
         let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: known.names,
-                                                       applyRecognition: recognitionAllowed(profiles))
-        return Loaded(snapshot: snapshot, people: known.people, profileNames: known.names,
-                      rememberVoices: known.remember, calibration: known.calibration,
-                      editedExports: editedExports(session: session))
+                                                       applyRecognition: profiles == nil || known.canUseSamples)
+        return Loaded(snapshot: snapshot, known: known, editedExports: editedExports(session: session))
     }
 
     /// Whether the meeting's stored recognition result may be shown and exported, decided as every other reader of
@@ -42,13 +39,14 @@ extension ReviewSession {
     }
 
     nonisolated static func people(store: SpeakerProfileStore) -> KnownPeople {
-        people(loading: store.load)
+        people(allowingSamples: { VoiceProfileService.recognitionAllowed(in: $0, store: store) }, loading: store.load)
     }
 
     /// The people offered, their names, Remember voices, and the calibration, all from one read of the store, so a
     /// rewrite of `profiles.json` in between cannot mix two versions. Nothing (and Remember voices off) when it cannot
     /// be read.
-    nonisolated static func people(loading load: () throws -> SpeakerProfileDatabase) -> KnownPeople {
+    nonisolated static func people(allowingSamples: (SpeakerProfileDatabase) -> Bool = { $0.rememberVoices },
+                                  loading load: () throws -> SpeakerProfileDatabase) -> KnownPeople {
         do {
             let database = try load()
             let calibration = database.calibratedModel.flatMap { model in
@@ -56,7 +54,8 @@ extension ReviewSession {
             }
             return KnownPeople(people: VoiceProfileService.knownPeople(in: database),
                                names: VoiceProfileService.profileNames(in: database),
-                               remember: database.rememberVoices, calibration: calibration)
+                               remember: database.rememberVoices, canUseSamples: allowingSamples(database),
+                               calibration: calibration)
         } catch {
             log.error("Cannot read people: \(ProcessSpawner.logCategory(error), privacy: .public)")
             return KnownPeople()
