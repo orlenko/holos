@@ -528,7 +528,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         // As listed: an attached interjection plays as its neighbour's speaker. A hidden one is still speech: it is
         // the turn spoken (unknown speaker), and, not being listed, tints no row, as a turn a search left out.
         let turns = review.projection.shownTurnsWithHidden
-        let turn = ReviewTimeline.turnIndex(at: time, turns: turns.map { ($0.start, $0.end) }).map { turns[$0] }
+        let turn = ReviewTimeline.turnIndex(at: time, turns: turns, micMuted: player.micVolume?.isMuted(at: time) == true).map { turns[$0] }
         let speaker = turn.map { turn in turn.speakerID.flatMap { review.speaker($0)?.label } ?? "Unknown speaker" }
         let speaking = speaker ?? "—"
         if speakingLabel.stringValue != speaking {

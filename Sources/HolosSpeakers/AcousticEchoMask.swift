@@ -27,10 +27,11 @@ public struct AcousticEchoMask: Sendable, Equatable {
     /// A word is echo when fewer than this share of its active frames are local frames the word rule trusts
     /// (`trustedWordFrames`).
     public static let localWordShare = 0.3
-    /// The version of the word rule (`isEcho`), part of the mask's identity (`EchoMaskStore.identity`), so transcript
-    /// files written under an earlier rule are out of date. 1: every local frame counted; 2 (2026-10-08): only the
-    /// local frames `trustedWordFrames` trusts.
-    public static let wordRuleVersion = 2
+    /// The version of the word rule (`isEcho` and `EchoFilter.acousticEchoSpans`), part of the mask's identity
+    /// (`EchoMaskStore.identity`), so transcript files written under an earlier rule are out of date. 1: every local
+    /// frame counted; 2: only the local frames `trustedWordFrames` trusts; 3: 1–2 word remnants overlapping system
+    /// speech inside mostly-echo microphone segments are hidden with the segment's echo.
+    public static let wordRuleVersion = 3
     /// A word without active frames is echo when the predicted echo is at least this many decibels relative to the
     /// microphone over the word (median of its frames).
     public static let explainedEchoDB = -5.0

@@ -720,6 +720,30 @@ private let mostlyEcho = timedMask(seconds: 40, echo: [(10, 11.95)])
     #expect(masked.turns.filter { $0.track == "mic" }.count == 1)
 }
 
+@Test func oneWordRemnantInMostlyEchoSegmentOverSystemSpeechIsHidden() {
+    // A 5-word microphone segment whose other 4 words the text filter (or the mask) already dropped as echo of a
+    // concurrent system segment: a 1–2 word remnant overlapping the system speech is hidden as echo too, while a word
+    // the user edited in Review stays.
+    let sys = TranscriptFixtures.segment(["one", "two", "three", "alpha", "five"], id: "S", track: "system",
+                                         start: 10.0, every: 0.4, lasting: 0.3)
+    let mic = TranscriptFixtures.segment(["one", "two", "three", "beta", "five"], id: "M", track: "mic",
+                                         start: 10.1, every: 0.4, lasting: 0.3)
+    let words = transcript([sys, mic])
+    // Suppose a stored run dropped words 0..<3 and 4..<5, leaving word 3 ("beta") as a 1-word turn.
+    let dropped: Set<WordRef> = [WordRef(segmentID: "M", word: 0), WordRef(segmentID: "M", word: 1),
+                                 WordRef(segmentID: "M", word: 2), WordRef(segmentID: "M", word: 4)]
+    let allLocal = timedMask(seconds: 20, echo: [])
+    #expect(EchoFilter.acousticEchoSpans(transcript: words, mask: allLocal, excluding: dropped)
+        == [WordSpan(segmentID: "M", first: 3, end: 4)])
+
+    // Edited in Review, that word is kept.
+    var editedMic = mic
+    editedMic.fixes = [TranscriptWordFix(first: 3, end: 4, heard: "alpha", kind: .reviewEdit)]
+    let editedTranscript = transcript([sys, editedMic])
+    #expect(EchoFilter.acousticEchoSpans(transcript: editedTranscript, mask: allLocal,
+                                         excluding: dropped.union([WordRef(segmentID: "M", word: 3)])).isEmpty)
+}
+
 
 // MARK: - Word rule: local frames need evidence
 

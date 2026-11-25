@@ -445,7 +445,12 @@ public enum VectorMath {
 2. Main cluster of word `[s, e)`: the cluster with the largest overlap with the union of
    its segments. Ties: the cluster whose overlapping segment starts first, then the
    smaller cluster ID. No overlap: the nearest segment by edge distance if that
-   distance ≤ `gapSnapSeconds` (same tie rule), else unknown (`nil`).
+   distance ≤ `gapSnapSeconds` (same tie rule), else unknown (`nil`); a forward snap to a
+   diarization segment starting after `e` applies only when the nearest covered word of the
+   same transcript segment (looking forward first, then backward) belongs to that cluster
+   and no earlier word of the transcript segment has a different non-nil label (otherwise
+   only a backward snap to a diarization segment ending at or before `s` within
+   `gapSnapSeconds` applies).
 3. Overlap: other clusters overlapping the word by at least
    `min(overlapMinSeconds, overlapMinFraction × (e − s))`.
 4. Flicker smoothing (one left-to-right pass over labels, `nil` included). A maximal run

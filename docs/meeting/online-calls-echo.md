@@ -53,7 +53,12 @@ Dropped words go to `run.droppedWords` with reason `echo` and appear in no turn 
 export. Consecutive matches extend one run only while both tracks stay inside
 `EchoFilter.echoRunGapSeconds` (2 s): matches further apart are separate utterances and
 each starts a new run, so the same short word said on both tracks three times over a call
-never adds up to the three-word minimum. A microphone cluster hidden as echo is also taken
+never adds up to the three-word minimum. An interior disagreement of at most
+`EchoFilter.echoMaxBridgeWords` (2) words on each track inside an echoed phrase is bridged
+when both tracks stay inside `EchoFilter.echoRunGapSeconds`, the bridged words on the two
+tracks share no normalized word, each bridged microphone word lies in the echo window of a
+bridged system word, none was edited in Review, and the matched words on both sides reach
+at least `echoMinRunWords + 1`. A microphone cluster hidden as echo is also taken
 out of the overlap metadata of the words that survive, so no turn is marked overlapped
 with a cluster the run does not list as a speaker (which would also keep a real room
 speaker's turn out of voice enrollment). Warning text (start panel, CLI, `echoRisk`): "The laptop speakers are playing
@@ -133,7 +138,10 @@ genuinely local (the user, or people in the room) stays even while the call play
      echo explains its energy (median echo − microphone ≥ −5 dB; a frame with no microphone
      sound or no predicted echo, such as a gap in the recording, explains nothing). A word past
      the last frame, without times, or with estimated times (a segment without word timing) is
-     kept.
+     kept. In a microphone segment at least `EchoFilter.echoClusterShare` (60 %) of whose words
+     are echo (dropped by the text filter or flagged by the mask), an unedited measured remnant
+     of at most `EchoFilter.echoMaxBridgeWords` (2) words overlapping system speech (along with
+     adjacent punctuation) is also flagged as echo (`EchoFilter.acousticEchoSpans`).
 - *Storage.* `echo/mask.json` (`EchoMaskRecord`, schema 1: verdict, delay fit, frame counts,
   the SHA-256 of the frames, analysis seconds) and `echo/frames-<sha>.bin` (one class byte
   per frame, then one byte per frame of predicted echo level in 0.5 dB steps; about 450 KB
@@ -173,7 +181,7 @@ genuinely local (the user, or people in the room) stays even while the call play
   like any other, and the exports leave hidden ones out as they leave out echo.
 - *Out of date when the mask changes.* The transcript files record the mask they were written
   with (`.generated.json` `echoMask`: `EchoMaskStore.identity`, the SHA-256 of the frames and the
-  word rule's version, "<sha256>+words2"; none without a mask), and
+  word rule's version, "<sha256>+words3"; none without a mask), and
   `SessionExports.filesState` calls them out of date when it is not the one the labels show now,
   so the app offers Update Transcript Files. A new word rule (`AcousticEchoMask.wordRuleVersion`)
   is a new identity for the same frames: files written under an earlier rule (which recorded

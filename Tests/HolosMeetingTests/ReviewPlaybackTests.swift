@@ -1,5 +1,6 @@
 import Foundation
 @testable import HolosMeeting
+import HolosSpeakers
 import Testing
 
 // Review playback (docs/meeting/review-window.md §5.10): the word and turn at the play head, ⌘←/⌘→, clicking a word,
@@ -26,6 +27,35 @@ private let playbackTurns: [(start: Double, end: Double)] = [
     #expect(ReviewTimeline.turnIndex(at: 1, turns: [(0, 5), (0, 3)]) == 1)
     // A longer turn listed after a shorter one that started later still loses to it.
     #expect(ReviewTimeline.turnIndex(at: 2, turns: [(1, 3), (0, 9)]) == 0)
+}
+
+@Test func playbackPrefersSystemTurnOverOverlappingUnknownOrMutedMicrophoneTurn() {
+    let systemTurn = ProjectedTurn(
+        id: "T1", track: "system", start: 10.0, end: 14.0, speakerID: "system:S1", clusterID: "system:S1",
+        spans: [], overlap: false, otherClusters: [], assignmentScore: 1, timing: .measured,
+        reassigned: false, modified: false, excludedFromEnrollment: false, uncertain: false)
+    let unknownMicTurn = ProjectedTurn(
+        id: "T2", track: "mic", start: 11.5, end: 12.2, speakerID: nil, clusterID: nil,
+        spans: [], overlap: false, otherClusters: [], assignmentScore: 0, timing: .measured,
+        reassigned: false, modified: false, excludedFromEnrollment: false, uncertain: true)
+    let namedMicTurn = ProjectedTurn(
+        id: "T3", track: "mic", start: 11.5, end: 12.2, speakerID: "mic:S1", clusterID: "mic:S1",
+        spans: [], overlap: false, otherClusters: [], assignmentScore: 1, timing: .measured,
+        reassigned: false, modified: false, excludedFromEnrollment: false, uncertain: false)
+
+    // An unknown microphone turn overlapping an active system turn never hijacks playback from the system turn.
+    #expect(ReviewTimeline.turnIndex(at: 11.8, turns: [systemTurn, unknownMicTurn], micMuted: false) == 0)
+    // In silence on the system track, the unknown microphone turn still plays.
+    #expect(ReviewTimeline.turnIndex(at: 11.8, turns: [unknownMicTurn], micMuted: false) == 0)
+    // A named microphone speaker interrupting with genuine local speech (micMuted == false) wins, but yields when
+    // the echo mix has muted the microphone at that time (micMuted == true).
+    #expect(ReviewTimeline.turnIndex(at: 11.8, turns: [systemTurn, namedMicTurn], micMuted: false) == 1)
+    #expect(ReviewTimeline.turnIndex(at: 11.8, turns: [systemTurn, namedMicTurn], micMuted: true) == 0)
+
+    let volume = ReviewMicVolume.keeping([.init(start: 20, end: 25)], duration: 30)
+    #expect(volume.isMuted(at: 11.8))
+    #expect(!volume.isMuted(at: 22.0))
+    #expect(volume.isMuted(at: 27.0))
 }
 
 @Test func playbackWordAtTimeIsTheLastWordStarted() {

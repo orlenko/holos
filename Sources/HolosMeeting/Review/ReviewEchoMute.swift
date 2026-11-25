@@ -86,6 +86,18 @@ public struct ReviewMicVolume: Sendable, Equatable {
         mix.inputParameters = [parameters]
         return mix
     }
+
+    /// Whether the microphone is muted at `time` (session seconds): its volume there is 0.
+    public func isMuted(at time: Double) -> Bool {
+        guard time.isFinite else { return false }
+        var volume = initial
+        for ramp in ramps {
+            guard time >= ramp.start else { break }
+            if time < ramp.end { return ramp.from == 0 && ramp.to == 0 }
+            volume = ramp.to
+        }
+        return volume == 0
+    }
 }
 
 /// Echo-free review playback: the microphone volume a session's current echo mask calls for.
